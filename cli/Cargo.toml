@@ -6,8 +6,15 @@ license.workspace = true
 
 [dependencies]
 pickle-compiler = { path = "../compiler" }
+pickle-runtime = { path = "../runtime", default-features = false }
+cranelift-codegen = "0.122"
+cranelift-frontend = "0.122"
+cranelift-native = "0.122"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.8", features = ["parse"] }
 rustyline = "16"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

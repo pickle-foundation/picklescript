@@ -37,17 +37,20 @@ fn write_stdout(bytes: &[u8]) {
 }
 
 /// Print raw bytes (from a string literal or the contents of a string).
-#[no_mangle]
-pub extern "C" fn pickle_print_bytes(ptr: *const u8, len: usize) {
+fn print_raw_bytes(ptr: *const u8, len: usize) {
     if !ptr.is_null() && len > 0 {
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
         write_to_con(bytes);
     }
 }
 
-/// Print a NUL-terminated static string.
 #[no_mangle]
-pub extern "C" fn pickle_print_cstr(ptr: *const u8) {
+pub extern "C" fn pickle_print_bytes(ptr: *const u8, len: usize) {
+    print_raw_bytes(ptr, len);
+}
+
+/// Print a NUL-terminated static string.
+fn print_raw_cstr(ptr: *const u8) {
     if ptr.is_null() {
         return;
     }
@@ -57,8 +60,12 @@ pub extern "C" fn pickle_print_cstr(ptr: *const u8) {
             len += 1;
         }
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    write_to_con(bytes);
+    print_raw_bytes(ptr, len);
+}
+
+#[no_mangle]
+pub extern "C" fn pickle_print_cstr(ptr: *const u8) {
+    print_raw_cstr(ptr);
 }
 
 /// Print a signed 64-bit integer as text.
@@ -106,36 +113,38 @@ fn emit_string(s: *mut PickleObject) {
 
 /// Print the text form of a managed object. Strings print their contents;
 /// collections print their length; user objects print their class name.
-#[no_mangle]
-pub extern "C" fn pickle_print_obj(obj: *mut PickleObject) {
+fn print_obj_raw(obj: *mut PickleObject) {
     if obj.is_null() {
         pickle_print_cstr(b"none\0".as_ptr());
         return;
     }
-    unsafe {
-        let class_id = (*obj).class_id;
-        match class_id {
-            PICKLE_CLASS_STRING => emit_string(obj),
-            PICKLE_CLASS_LIST => {
-                pickle_print_cstr(b"List(len=".as_ptr());
-                pickle_print_i64(list_len(obj) as i64);
-                pickle_print_byte(b')');
-            }
-            PICKLE_CLASS_MAP => {
-                pickle_print_cstr(b"Map(len=".as_ptr());
-                pickle_print_i64(map_len(obj) as i64);
-                pickle_print_byte(b')');
-            }
-            _ => {
-                let gc = crate::gc::gc_mut();
-                let name = gc.class_name(class_id);
-                match name {
-                    Some(bytes) => pickle_print_bytes(bytes.as_ptr(), bytes.len()),
-                    None => pickle_print_cstr(b"<object>\0".as_ptr()),
-                }
+    let class_id = unsafe { (*obj).class_id };
+    match class_id {
+        PICKLE_CLASS_STRING => emit_string(obj),
+        PICKLE_CLASS_LIST => {
+            pickle_print_cstr(b"List(len=".as_ptr());
+            pickle_print_i64(list_len(obj) as i64);
+            pickle_print_byte(b')');
+        }
+        PICKLE_CLASS_MAP => {
+            pickle_print_cstr(b"Map(len=".as_ptr());
+            pickle_print_i64(map_len(obj) as i64);
+            pickle_print_byte(b')');
+        }
+        _ => {
+            let gc = crate::gc::gc_mut();
+            let name = gc.class_name(class_id);
+            match name {
+                Some(bytes) => pickle_print_bytes(bytes.as_ptr(), bytes.len()),
+                None => pickle_print_cstr(b"<object>\0".as_ptr()),
             }
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn pickle_print_obj(obj: *mut PickleObject) {
+    print_obj_raw(obj);
 }
 
 /// Write a newline.

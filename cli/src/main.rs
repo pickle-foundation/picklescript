@@ -8,6 +8,8 @@ use pickle_compiler::diag::SourceMap;
 
 use std::io::IsTerminal;
 
+mod jit;
+
 #[derive(Parser)]
 #[command(name = "pickle", version, about = "The PickleScript toolchain")]
 struct Cli {
@@ -30,6 +32,11 @@ enum Command {
     /// Lower a checked module to PickleIR and print it
     Ir {
         /// Source file to lower
+        file: PathBuf,
+    },
+    /// Compile a module with the JIT and run it
+    Run {
+        /// Source file to run
         file: PathBuf,
     },
 }
@@ -88,6 +95,26 @@ fn run() -> Result<()> {
                 Some(m) => println!("{m}"),
                 None => std::process::exit(1),
             }
+        }
+    Command::Run { file } => {
+            let (source, mut map, diags) = load(file)?;
+            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
+                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let rendered = diags.render_all(&map, colored);
+            if !rendered.is_empty() {
+                eprint!("{rendered}");
+            }
+            let module = module.context("frontend failed")?;
+            let runner = jit::Jit::new().with_context(|| "while setting up the JIT")?;
+            // Compiled pickle_* calls need the heap etc. alive while we run.
+            pickle_runtime::abi::pickle_runtime_init();
+            let program = runner.compile(&module).with_context(|| "while JIT-compiling")?;
+            // SAFETY: runtime is initialised and pickle_main is a no-arg
+            // void-returning host-convention function.
+            unsafe {
+                program.run();
+            }
+            pickle_runtime::abi::pickle_runtime_shutdown();
         }
     }
     Ok(())

@@ -548,7 +548,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-native",
+ "libc",
  "pickle-compiler",
+ "pickle-runtime",
  "rustyline",
  "serde",
  "toml",

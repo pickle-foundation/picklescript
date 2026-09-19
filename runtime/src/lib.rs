@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 #![allow(clippy::manual_c_str_literals)]
 
-mod console;
+pub(crate) mod console;
 mod gc;
 mod heap;
 mod layout;
@@ -19,8 +19,8 @@ mod list;
 mod map;
 mod object;
 mod panic;
-mod shadow;
-mod strings;
+pub(crate) mod shadow;
+pub(crate) mod strings;
 mod test;
 mod trace;
 
@@ -131,6 +131,34 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         pickle_runtime_shutdown();
     }
     0
+}
+
+/// Crate-public ABI surface for the sibling `pickle-cli` crate: re-exports the
+/// `pickle_*` symbols under a single stable path.
+#[doc(hidden)]
+pub mod abi {
+    pub use crate::pickle_runtime_init;
+    pub use crate::pickle_runtime_shutdown;
+
+    pub use crate::console::pickle_print_byte;
+    pub use crate::console::pickle_print_bytes;
+    pub use crate::console::pickle_print_bool;
+    pub use crate::console::pickle_print_cstr;
+    pub use crate::console::pickle_print_f64;
+    pub use crate::console::pickle_print_i64;
+    pub use crate::console::pickle_print_newline;
+    pub use crate::console::pickle_print_obj;
+    pub use crate::console::pickle_print_u64;
+
+    pub use crate::shadow::pickle_shadow_get;
+    pub use crate::shadow::pickle_shadow_pop;
+    pub use crate::shadow::pickle_shadow_push;
+    pub use crate::shadow::pickle_shadow_set;
+
+    pub use crate::strings::pickle_str_cmp;
+    pub use crate::strings::pickle_str_concat;
+    pub use crate::strings::pickle_str_from_bytes;
+    pub use crate::strings::pickle_str_len;
 }
 
 #[cfg(test)]
