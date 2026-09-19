@@ -683,3 +683,78 @@ fn emits_class_methods_statics_and_this() {
     let zero = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_sm_zero").expect("zero");
     assert!(zero.params.is_empty(), "static method has no receiver");
 }
+
+#[test]
+fn emits_explicit_ctor_field_inits_and_init_block() {
+    let m = emit_str(
+        r#"class Counter {
+            var count: int = 0
+
+            constructor(start: int) {
+                this.count = this.count + start
+            }
+
+            init {
+                this.count = this.count + 1
+            }
+
+            fn total() -> int {
+                return this.count
+            }
+        }
+
+        fn main() {
+            let c = Counter(1)
+            println(c.total())
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    assert!(
+        syms.iter().any(|s| s == "pkl_Counter_new"),
+        "symbols: {syms:?}"
+    );
+    let new = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_new").expect("new");
+    assert_eq!(new.params.len(), 1, "explicit ctor params win over fields");
+    assert_eq!(new.params[0].name, "start");
+    let allocs = new
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_new")
+            } else {
+                false
+            }
+        })
+        .count();
+    assert!(allocs >= 1, "ctor allocates the object");
+}
+
+#[test]
+fn synthesized_ctor_skips_initialized_fields() {
+    let m = emit_str(
+        r#"class Point {
+            var x: int = 0
+            y: int
+        }
+
+        class Label {
+            text: string
+            var times: int = 3
+        }
+
+        fn main() {
+            let p = Point(5)
+            let l = Label("hi")
+            println(p.y)
+            println(l.text)
+        }"#,
+    );
+    let point = m.funcs.iter().find(|f| f.symbol == "pkl_Point_new").expect("Point.new");
+    let names: Vec<&str> = point.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["y"], "initialized field `x` is not a parameter");
+    let label = m.funcs.iter().find(|f| f.symbol == "pkl_Label_new").expect("Label.new");
+    let names: Vec<&str> = label.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["text"], "`times` has an initializer so it is skipped");
+}

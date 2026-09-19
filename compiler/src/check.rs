@@ -405,6 +405,31 @@ impl<'a> Checker<'a> {
         table.properties.iter().find(|p| p.name == name).cloned()
     }
 
+    /// The instance field names that carry an initializer in the class/struct
+    /// declaration, used to derive the synthesized constructor's parameters.
+    fn initialized_fields(&self, name: &str) -> Vec<String> {
+        let members = self.prog.items.iter().find_map(|item| match &item.kind {
+            ItemKind::Class(c) if c.name == name => Some(&c.members[..]),
+            ItemKind::Struct(c) if c.name == name => Some(&c.members[..]),
+            _ => None,
+        });
+        match members {
+            Some(members) => members
+                .iter()
+                .filter_map(|m| match m {
+                    ClassMember::Field {
+                        name,
+                        init: Some(_),
+                        is_static: false,
+                        ..
+                    } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     // ---- bodies ------------------------------------------------------------
 
     fn check_fn_signature_bodies(&mut self, f: &FnDecl) {
@@ -771,6 +796,15 @@ impl<'a> Checker<'a> {
                         self.declare(&p.name, pt, true);
                     }
                     self.check_block(&cd.body);
+                    self.pop_scope();
+                }
+                ClassMember::Init(b) => {
+                    // `init` runs after the fields and constructor body, with
+                    // `this` live.
+                    self.push_scope();
+                    self.ret_ty = Ty::Empty;
+                    self.fn_generics = Vec::new();
+                    self.check_block(b);
                     self.pop_scope();
                 }
                 ClassMember::Property(p) => {
@@ -1196,12 +1230,22 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if let Some(c) = self.class_table(cname) {
-                    let params: Vec<Ty> = c
-                        .fields
-                        .iter()
-                        .map(|f| f.ty.clone())
-                        .collect();
-                    self.check_args(e, &params, args);
+                    if let Some(ctor) = &c.ctor {
+                        // Explicit constructor: check against its parameters.
+                        let params: Vec<Ty> = ctor.params.iter().map(|p| p.ty.clone()).collect();
+                        self.check_args(e, &params, args);
+                    } else {
+                        // Synthesized constructor: parameters are the fields
+                        // without initializers (those run during construction).
+                        let initialized = self.initialized_fields(cname);
+                        let params: Vec<Ty> = c
+                            .fields
+                            .iter()
+                            .filter(|f| !f.is_static && !initialized.contains(&f.name))
+                            .map(|f| f.ty.clone())
+                            .collect();
+                        self.check_args(e, &params, args);
+                    }
                 }
                 return ct;
             }

@@ -183,15 +183,22 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No explicit constructor, no properties, no `static var` fields, no field
-  initializers, no `init`/`deinit`, no `Const` members, no generics/extends/
-  implements -> the class is *registered*. Anything else bails with
+- No properties, no `static var` fields, no `deinit`, no `Const` members, no
+  named constructors (`constructor.guest()`), no generics/extends/implements
+  -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
-- `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: parameters
-  are the instance fields in declaration order, slot 0 of the object is
-  `pickle_class_new(id, field_count)`, each field value is boxed per the
-  scalar list rules and stored with `pickle_obj_slot_set`. Only non-static
-  fields occupy slots; a class with 64+ fields empties the mask.
+- `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
+  object is `pickle_class_new(id, field_count)`, then each field value is boxed
+  per the scalar list rules and stored with `pickle_obj_slot_set`. Only
+  non-static fields occupy slots; a class with 64+ fields empties the mask.
+- Constructor parameters are the explicit `constructor(...)`'s parameters when
+  one is declared; otherwise they are the instance fields *without*
+  initializers (declaration order). Fields with initializers (`var x: int = 0`)
+  and `init { ... }` blocks run during construction: field initializers in
+  declaration order, then the explicit constructor body (an implicit one has
+  none), then any `init` blocks. `this` is live throughout, so initializers can
+  read earlier fields and the body can assign any member. An initialized field
+  therefore needs no constructor argument, but still occupies a slot.
 - Instance methods compile to `pkl_<TypeName>_<m>`, with the receiver passed
   first as a managed pointer (IR param slot 0, declared as `this`); static
   methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/

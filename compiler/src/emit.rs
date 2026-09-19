@@ -85,8 +85,18 @@ struct LoopCtx {
 enum FnSource<'a> {
     /// Top-level `fn` (or `test`) declaration.
     TopLevel(&'a FnDecl),
-    /// The implicit constructor of a class/struct.
-    Ctor { table: ClassTable },
+    /// The constructor of a class/struct: synthesized from the fields unless an
+    /// explicit `constructor(...)` body is present.
+    Ctor {
+        table: ClassTable,
+        /// (slot, initializer) for each instance field with an initializer,
+        /// in declaration order.
+        inits: Vec<(usize, &'a Expr)>,
+        /// `init { ... }` blocks, in declaration order.
+        init_blocks: Vec<&'a Block>,
+        /// The explicit `constructor(...) { ... }` declaration, if any.
+        ctor: Option<&'a ConstructorDecl>,
+    },
     /// A class/struct method (instance or static).
     Method { table: ClassTable, md: &'a MethodDecl },
 }
@@ -256,15 +266,21 @@ impl<'a> Emitter<'a> {
         table: ClassTable,
         span: Span,
     ) {
-        let bad = |e: &mut Self, what: &str| {
+let bad = |e: &mut Self, what: &str| {
             let _ = e.bad_class::<()>(span, name, what);
         };
         if !table.generics.is_empty() || table.extends.is_some() || !table.implements.is_empty() {
             return;
         }
-        if table.ctor.is_some() {
-            bad(self, "explicit constructors");
-            return;
+        let ctor_decl = members.iter().find_map(|m| match m {
+            ClassMember::Constructor(cd) => Some(cd),
+            _ => None,
+        });
+        if let Some(cd) = ctor_decl {
+            if cd.name.is_some() {
+                bad(self, "named constructors");
+                return;
+            }
         }
         if !table.properties.is_empty() {
             bad(self, "properties");
@@ -282,16 +298,21 @@ impl<'a> Emitter<'a> {
             bad(self, "`char` fields");
             return;
         }
+        let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
+        let mut init_blocks: Vec<&'a Block> = Vec::new();
         for m in members {
             match m {
-                ClassMember::Field { init: Some(_), .. } => {
-                    bad(self, "field initializers");
-                    return;
+                ClassMember::Field {
+                    name,
+                    init: Some(x),
+                    is_static: false,
+                    ..
+                } => {
+                    if let Some(slot) = table.fields.iter().position(|f| f.name == *name) {
+                        inits.push((slot, x));
+                    }
                 }
-                ClassMember::Init(_) => {
-                    bad(self, "`init` blocks");
-                    return;
-                }
+                ClassMember::Init(b) => init_blocks.push(b),
                 ClassMember::Deinit(_) => {
                     bad(self, "`deinit` blocks");
                     return;
@@ -306,11 +327,20 @@ impl<'a> Emitter<'a> {
 
         let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
 
-        // Implicit constructor: `pkl_<Name>_new(field0, field1, ...) -> Ptr`.
+        // Constructor: `pkl_<Name>_new(...) -> Ptr`. Its parameters are the
+        // explicit constructor's params when one is declared, otherwise the
+        // fields without initializers (defaults are filled while running the
+        // field initializers).
+
         let ctor_fid = self.push_class_func(
             &format!("{name}.new"),
             &format!("pkl_{name}_new"),
-            FnSource::Ctor { table: table.clone() },
+            FnSource::Ctor {
+                table: table.clone(),
+                inits,
+                init_blocks,
+                ctor: ctor_decl,
+            },
         );
         self.ctor_ids.insert(cid, ctor_fid);
 
@@ -426,8 +456,14 @@ impl<'a> Emitter<'a> {
                 self.fret = self.map_ty(&info.ret, f.span).unwrap_or(IrTy::Unit);
                 self.emit_body(&f.body);
             }
-            FnSource::Ctor { table } => {
-                let _ = self.build_ctor_body(&table);
+            FnSource::Ctor {
+                table,
+                inits,
+                init_blocks,
+                ctor,
+            } => {
+                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                let _ = self.build_ctor_body(&table, &inits, &init_blocks, ctor);
             }
             FnSource::Method { table, md } => {
                 let Some(info) = self.finfo.get(&fid).cloned() else {
@@ -475,20 +511,44 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Lower the implicit constructor: params are the instance fields in
-    /// declaration order; the body allocates the object, boxes each param into
-    /// its field slot, and returns the new object.
-    fn build_ctor_body(&mut self, table: &ClassTable) -> Result<(), ()> {
+    /// Lower a constructor. Parameters are the explicit `constructor(...)`'s
+    /// params when one is declared, otherwise the instance fields without
+    /// initializers (in declaration order). The body allocates the object,
+    /// runs each field initializer in declaration order, runs the explicit
+    /// constructor body followed by any `init` blocks, and returns the object.
+    fn build_ctor_body(
+        &mut self,
+        table: &ClassTable,
+        inits: &[(usize, &'a Expr)],
+        init_blocks: &[&'a Block],
+        ctor: Option<&'a ConstructorDecl>,
+    ) -> Result<(), ()> {
         let ifields: Vec<&FieldInfo> = table.fields.iter().filter(|f| !f.is_static).collect();
-        for (i, f) in ifields.iter().enumerate() {
-            let ir = self.map_ty(&f.ty, table.span).unwrap_or(IrTy::Ptr);
+        // `(name, ty, span, field_slot)`: synthesized constructor parameters
+        // carry the field slot they must be stored into; explicit constructor
+        // parameters are plain locals assigned by the body.
+        let params: Vec<(String, Ty, Span, Option<usize>)> = if let Some(c) = &table.ctor {
+            c.params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone(), p.span, None))
+                .collect()
+        } else {
+            ifields
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !inits.iter().any(|(si, _)| si == i))
+                .map(|(i, f)| (f.name.clone(), f.ty.clone(), f.span, Some(i)))
+                .collect()
+        };
+        for (i, (name, ty, _span, _)) in params.iter().enumerate() {
+            let ir = self.map_ty(ty, table.span).unwrap_or(IrTy::Ptr);
             let slot = Slot(i as u32);
             self.fslots.push(ir);
             self.fparams.push(IrParam {
-                name: f.name.clone(),
+                name: name.clone(),
                 ty: ir,
             });
-            self.declare(&f.name, slot);
+            self.declare(name, slot);
         }
         self.fret = IrTy::Ptr;
 
@@ -511,15 +571,57 @@ impl<'a> Emitter<'a> {
         self.instr(IrInstr::StoreSlot { slot: this_slot, v: this });
 
         let this = self.load(this_slot);
-        for (i, f) in ifields.iter().enumerate() {
-            let v = self.load(Slot(i as u32));
-            let rep = self.elem_rep(&f.ty, table.span)?;
-            let boxed = self.box_for_store(&rep, v, elem_ir(&f.ty))?;
-            self.field_store(this, i as i64, &f.ty, boxed);
+
+        // Field initializers, in declaration order; they may read earlier
+        // fields through `this`.
+        for &(slot, init) in inits {
+            let ty = ifields[slot].ty.clone();
+            let v = self.expr(init)?;
+            let rep = self.elem_rep(&ty, table.span)?;
+            let boxed = self.box_for_store(&rep, v, elem_ir(&ty))?;
+            self.field_store(this, slot as i64, &ty, boxed);
         }
+
+        // Store every synthesized parameter into its field slot (explicit
+        // constructor parameters are locals the body assigns itself).
+        for (i, (_, ty, span, field_slot)) in params.iter().enumerate() {
+            if let Some(field_slot) = field_slot {
+                let v = self.load(Slot(i as u32));
+                let rep = self.elem_rep(ty, *span)?;
+                let boxed = self.box_for_store(&rep, v, elem_ir(ty))?;
+                self.field_store(this, *field_slot as i64, ty, boxed);
+            }
+        }
+
+        // Explicit constructor body, then any `init` blocks.
+        if let Some(cd) = ctor {
+            self.emit_ctor_block(&cd.body)?;
+        }
+        for b in init_blocks {
+            self.emit_ctor_block(b)?;
+        }
+
         let done = self.load(this_slot);
         self.term(IrTerm::Return { v: Some(done) });
         let _ = self.tail_cleanup();
+        Ok(())
+    }
+
+    /// Run a `Block` without turning its tail expression into the function's
+    /// return value (used for constructor bodies and `init` blocks, where the
+    /// constructor always returns `this`).
+    fn emit_ctor_block(&mut self, b: &Block) -> Result<(), ()> {
+        self.push_scope();
+        for s in &b.stmts {
+            if self.stmt(s).is_err() {
+                self.pop_scope();
+                return Err(());
+            }
+        }
+        if let Some(e) = &b.expr {
+            let _ = self.expr(e);
+        }
+        self.pop_scope();
         Ok(())
     }
 
