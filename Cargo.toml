@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pickle-compiler",
+    "crates/pickle-runtime",
+    "crates/pickle-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/picklescript/picklescript"
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[profile.dev]
+opt-level = 1
