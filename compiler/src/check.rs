@@ -1371,6 +1371,20 @@ impl<'a> Checker<'a> {
         }
 
         let ot = self.check_expr(object);
+        if let Ty::List(inner) = &ot {
+            // Builtin list methods (slice subset).
+            return match name {
+                "push" => Ty::Fn(vec![inner.as_ref().clone()], Box::new(Ty::Empty)),
+                "pop" => Ty::Fn(vec![], Box::new(inner.as_ref().clone())),
+                other => {
+                    self.err(
+                        e.span,
+                        format!("no member `{other}` on `List<{}>`", inner.bare_name()),
+                    );
+                    Ty::Unknown
+                }
+            };
+        }
         let Some((class, args_map)) = self.type_key(&ot) else {
             self.err_note(
                 e.span,
@@ -1638,11 +1652,26 @@ impl<'a> Checker<'a> {
                     self.err(target.span, "cannot assign to a member of a non-class value");
                 }
             }
-            ExprKind::Index { object, .. } => {
+            ExprKind::Index { object, index } => {
                 let ot = self.check_expr(object);
-                if !matches!(ot, Ty::List(_) | Ty::Map(_, _) | Ty::String) {
-                    self.err(target.span, "index assignment target must be a List, Map, or string");
+                let it = self.check_expr(index);
+                if ot != Ty::Unknown && it != Ty::Unknown && it != Ty::Int {
+                    self.err(target.span, "index must be an `int`");
                 }
+                let elem_ty = match &ot {
+                    Ty::List(inner) => inner.as_ref().clone(),
+                    Ty::Map(_, v) => v.as_ref().clone(),
+                    Ty::String => Ty::Char,
+                    _ => {
+                        self.err(
+                            target.span,
+                            "index assignment target must be a List, Map, or string",
+                        );
+                        Ty::Unknown
+                    }
+                };
+                self.types.insert(target.span, elem_ty.clone());
+                self.check_assignable(&elem_ty, &vt, target.span, "assignment");
             }
             _ => {
                 self.err(target.span, "assignment target must be a variable, member, or index");

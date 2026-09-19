@@ -56,6 +56,13 @@ let s  = {1, 2, 3}       // Set when element type is monomorphic
 let bs = [byte] { 1, 2 }
 ```
 
+Compiled list operations today: array literals `[a, b, c]`, `xs[i]` reads
+and assignments (including `+=`-style compounds), `len(xs)`, `xs.push(v)` /
+`xs.pop()`, `for (x in xs)` iteration, and `print`/`println` on a list
+(prints `List(len=N)`). Scalar elements are boxed at the runtime boundary;
+strings/lists and other managed values pass through as pointers. Lists of
+`char` and string indexing are not lowered yet.
+
 ## I/O model
 
 File/streams expose `read(n)? -> bytes`, `write(bytes)`, `flush()`,

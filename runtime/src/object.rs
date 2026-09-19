@@ -23,7 +23,12 @@ use std::ffi::c_void;
 pub const PICKLE_CLASS_STRING: u32 = 0;
 pub const PICKLE_CLASS_LIST: u32 = 1;
 pub const PICKLE_CLASS_MAP: u32 = 2;
-pub const PICKLE_CLASS_USER_BASE: u32 = 3;
+/// Boxed scalars: single 8-byte payload objects so `int`/`float`/`bool`
+/// values can live in managed collections and optionals.
+pub const PICKLE_CLASS_BOX_INT: u32 = 3;
+pub const PICKLE_CLASS_BOX_FLOAT: u32 = 4;
+pub const PICKLE_CLASS_BOX_BOOL: u32 = 5;
+pub const PICKLE_CLASS_USER_BASE: u32 = 6;
 
 /// Object flags.
 pub const PICKLE_FLAG_MARKED: u32 = 1 << 0;

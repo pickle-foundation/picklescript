@@ -125,6 +125,13 @@ Two details keep the AOT path self-contained:
   must be registered in the same symbol maps, or their references keep a
   test-case name and emission panics.
 
+Every other runtime helper is a plain imported `pickle_*` symbol resolved at
+link time against the runtime rlib (the JIT resolves the same names through
+its symbol table). That includes the list slice ABI added later: `pickle_box_*` /
+`pickle_unbox_*` for scalar list elements and `pickle_list_new` / `len` /
+`get` / `set` / `push` / `pop` for `List<T>`, which flow through this shared
+extern path with no extra object glue.
+
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.
 

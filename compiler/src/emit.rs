@@ -69,6 +69,27 @@ struct LoopCtx {
     break_target: BlockId,
 }
 
+/// Runtime representation of a `List<T>` element.
+#[derive(Clone, Copy)]
+enum ElemRep {
+    /// Pass the managed value through as a pointer (strings, classes, lists…).
+    Ptr,
+    /// Boxed/unboxed at the runtime boundary; `(box_sym, unbox_sym, ir_ty)`.
+    Scalar(&'static str, &'static str, IrTy),
+}
+
+/// The IR type a `List<T>` element value carries outside the runtime.
+fn elem_ir(elem: &Ty) -> IrTy {
+    match elem {
+        Ty::Int => IrTy::Int,
+        Ty::Float => IrTy::Float,
+        Ty::Bool => IrTy::Bool,
+        Ty::Char => IrTy::Char,
+        Ty::String => IrTy::Str,
+        _ => IrTy::Ptr,
+    }
+}
+
 struct Emitter<'a> {
     prog: &'a Program,
     resolved: &'a ResolvedProgram,
@@ -453,7 +474,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// `for (x in a..b)`: slice-1 supports integer range sequences only.
+    /// `for (x in <seq>)`: slice-1 supports integer range sequences and lists.
     fn for_in(
         &mut self,
         pattern: &Pattern,
@@ -464,6 +485,9 @@ impl<'a> Emitter<'a> {
         let Pattern::Binding { name, .. } = pattern else {
             return self.bad(span, "iteration patterns other than a binding are not lowered yet");
         };
+        if let Some(Ty::List(_)) = self.ty_of(&sequence.span) {
+            return self.for_in_list(name, sequence, body, span);
+        }
         let (start, end, incl) = match &sequence.kind {
             ExprKind::Binary {
                 op: AstBinOp::Range,
@@ -477,7 +501,7 @@ impl<'a> Emitter<'a> {
             } => (lhs, rhs, true),
             _ => return self.bad(
                 sequence.span,
-                "`for (x in ...)` over non-range sequences is not lowered yet",
+                "`for (x in ...)` over non-range, non-list sequences is not lowered yet",
             ),
         };
         self.ensure_int(start)?;
@@ -542,6 +566,105 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// `for (x in xs)` where `xs` is a `List<T>`. Iterates by index over the
+    /// (boxed, managed) elements; scalar elements are unboxed each trip. The
+    /// list itself lives in a managed slot so the collector keeps it and its
+    /// boxed elements reachable for the whole loop.
+    fn for_in_list(
+        &mut self,
+        name: &str,
+        sequence: &Expr,
+        body: &Block,
+        span: Span,
+    ) -> Result<(), ()> {
+        let elem = match self.ty_of(&sequence.span) {
+            Some(Ty::List(inner)) => inner.as_ref().clone(),
+            _ => return self.bad(span, "`for (x in ...)` sequence is not a `List`"),
+        };
+        let rep = self.elem_rep(&elem, sequence.span)?;
+        let elem_ir = elem_ir(&elem);
+        let seq_slot = self.new_slot(IrTy::Ptr);
+        let idx_slot = self.new_slot(IrTy::Int);
+        let len_slot = self.new_slot(IrTy::Int);
+        let seq_t = self.expr(sequence)?;
+        self.instr(IrInstr::StoreSlot { slot: seq_slot, v: seq_t });
+        let zero = self.temp();
+        self.instr(IrInstr::Const {
+            dst: zero,
+            c: IrConst::Int(0),
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        let seq_l = self.load(seq_slot);
+        let len_t = self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
+        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+
+        let cond_id = self.new_block();
+        let body_id = self.new_block();
+        let next_id = self.new_block();
+        let end_id = self.new_block();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = cond_id;
+        let cur_t = self.load(idx_slot);
+        let end_l = self.load(len_slot);
+        let cmp = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: cmp,
+            op: IrBinOp::Lt,
+            a: cur_t,
+            b: end_l,
+        });
+        self.term(IrTerm::BranchIf {
+            cond: cmp,
+            then: body_id,
+            else_: end_id,
+        });
+        self.cur = body_id;
+        self.loops.push(LoopCtx {
+            continue_target: next_id,
+            break_target: end_id,
+        });
+        self.push_scope();
+        let cur_i = self.load(idx_slot);
+        let seq_l = self.load(seq_slot);
+        let raw = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![seq_l, cur_i],
+        )?;
+        let v = match rep {
+            ElemRep::Scalar(_, unbox_sym, _) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], elem_ir, vec![raw])?
+            }
+            ElemRep::Ptr => raw,
+        };
+        let elem_slot = self.new_slot(elem_ir);
+        self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
+        self.declare(name, elem_slot);
+        self.block_body_only(body)?;
+        self.pop_scope();
+        self.loops.pop();
+        self.term(IrTerm::Branch { target: next_id });
+        self.cur = next_id;
+        let c = self.load(idx_slot);
+        let one = self.temp();
+        self.instr(IrInstr::Const {
+            dst: one,
+            c: IrConst::Int(1),
+        });
+        let nxt = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: nxt,
+            op: IrBinOp::Add,
+            a: c,
+            b: one,
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = end_id;
+        Ok(())
+    }
+
     fn block_body_only(&mut self, b: &Block) -> Result<(), ()> {
         for s in &b.stmts {
             self.stmt(s)?;
@@ -577,7 +700,7 @@ impl<'a> Emitter<'a> {
             ExprKind::This => self.bad(e.span, "`this` is not lowered yet"),
             ExprKind::Super => self.bad(e.span, "`super` is not lowered yet"),
             ExprKind::Member { .. } => self.bad(e.span, "member access is not lowered yet"),
-            ExprKind::Index { .. } => self.bad(e.span, "indexing is not lowered yet"),
+            ExprKind::Index { object, index } => self.index_read(e, object, index),
             ExprKind::OptAccess { .. } => self.bad(e.span, "optional access is not lowered yet"),
             ExprKind::OptUnwrap(_) => self.bad(e.span, "`!` unwrap is not lowered yet"),
             ExprKind::Lambda { .. } => self.bad(e.span, "lambda values are not lowered yet"),
@@ -587,7 +710,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Cast { .. } => self.bad(e.span, "casts are not lowered yet"),
             ExprKind::Unsafe(_) => self.bad(e.span, "`unsafe` blocks are not lowered yet"),
             ExprKind::Tuple(_) => self.bad(e.span, "tuple values are not lowered yet"),
-            ExprKind::Array(_) => self.bad(e.span, "array values are not lowered yet"),
+            ExprKind::Array(items) => self.array_literal(e, items),
             ExprKind::Map(_) => self.bad(e.span, "map values are not lowered yet"),
             ExprKind::Range { .. } => self.bad(e.span, "range values are not lowered yet"),
         }
@@ -856,6 +979,9 @@ impl<'a> Emitter<'a> {
 
     fn assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Result<Temp, ()> {
         let span = target.span;
+        if let ExprKind::Index { object, index } = &target.kind {
+            return self.index_assign(e, op, object, index, value);
+        }
         let ExprKind::Ident(name) = &target.kind else {
             return self.bad(span, "assignment targets other than names are not lowered yet");
         };
@@ -868,16 +994,167 @@ impl<'a> Emitter<'a> {
             return Ok(v);
         }
         let cur = self.load(slot);
+        let dst = match self.fslots.get(slot.0 as usize).copied() {
+            Some(IrTy::Str) => self.extern_call_t1(
+                "pickle_str_concat",
+                vec![IrTy::Str, IrTy::Str],
+                IrTy::Str,
+                vec![cur, v],
+            )?,
+            _ => {
+                let t = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: t,
+                    op: assign_opcode(op),
+                    a: cur,
+                    b: v,
+                });
+                t
+            }
+        };
+        self.instr(IrInstr::StoreSlot { slot, v: dst });
+        let _ = e;
+        Ok(dst)
+    }
+
+    /// `xs[i] = v` and `xs[i] op= v` for `List<T>` targets.
+    fn index_assign(
+        &mut self,
+        e: &Expr,
+        op: AssignOp,
+        object: &Expr,
+        index: &Expr,
+        value: &Expr,
+    ) -> Result<Temp, ()> {
+        let ot = self.ty_of(&object.span);
+        if !matches!(ot, Some(Ty::List(_))) {
+            // Maps and strings are typed but unlowered for assignment yet.
+            return self.bad(e.span, "index assignment over this type is not lowered yet");
+        }
+        let elem = match &ot {
+            Some(Ty::List(inner)) => inner.as_ref().clone(),
+            _ => unreachable!(),
+        };
+        let rep = self.elem_rep(&elem, e.span)?;
+        let obj = self.expr(object)?;
+        let idx = self.expr(index)?;
+        if op == AssignOp::Assign {
+            let v = self.expr(value)?;
+            self.list_store(obj, idx, &rep, &elem, v)?;
+            return Ok(v);
+        }
+        if matches!(rep, ElemRep::Ptr) {
+            return self.bad(
+                e.span,
+                "compound assignment to a non-scalar list element is not lowered yet",
+            );
+        }
+        let cur = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![obj, idx],
+        )?;
+        let cur_v = match rep {
+            ElemRep::Scalar(_, unbox_sym, ir) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![cur])?
+            }
+            ElemRep::Ptr => cur,
+        };
+        let v = self.expr(value)?;
         let dst = self.temp();
         self.instr(IrInstr::BinOp {
             dst,
             op: assign_opcode(op),
-            a: cur,
+            a: cur_v,
             b: v,
         });
-        self.instr(IrInstr::StoreSlot { slot, v: dst });
-        let _ = e;
+        self.list_store(obj, idx, &rep, &elem, dst)?;
         Ok(dst)
+    }
+
+    /// `pickle_list_set(obj, idx, boxed)`: boxes a scalar element first.
+    fn list_store(
+        &mut self,
+        obj: Temp,
+        idx: Temp,
+        rep: &ElemRep,
+        elem: &Ty,
+        v: Temp,
+    ) -> Result<(), ()> {
+        let boxed = match rep {
+            ElemRep::Scalar(box_sym, _, _) => {
+                self.extern_call_t1(box_sym, vec![elem_ir(elem)], IrTy::Ptr, vec![v])?
+            }
+            ElemRep::Ptr => v,
+        };
+        self.extern_call_void(
+            "pickle_list_set",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+            vec![obj, idx, boxed],
+        );
+        Ok(())
+    }
+
+    /// `xs[i]` element read for a `List<T>` (and a clear error for strings).
+    fn index_read(&mut self, e: &Expr, object: &Expr, index: &Expr) -> Result<Temp, ()> {
+        let ot = self.ty_of(&object.span);
+        let elem = match ot {
+            Some(Ty::List(inner)) => inner.as_ref().clone(),
+            Some(Ty::String) => {
+                return self.bad(e.span, "string indexing is not lowered yet")
+            }
+            _ => return self.bad(e.span, "indexing this type is not lowered yet"),
+        };
+        let rep = self.elem_rep(&elem, e.span)?;
+        let obj = self.expr(object)?;
+        let idx = self.expr(index)?;
+        let raw = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![obj, idx],
+        )?;
+        match rep {
+            ElemRep::Scalar(_, unbox_sym, ir) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
+            }
+            ElemRep::Ptr => Ok(raw),
+        }
+    }
+
+    /// `[a, b, c]` array literal: build a `List` by pushing each element,
+    /// boxing scalar elements along the way.
+    fn array_literal(&mut self, e: &Expr, items: &[Expr]) -> Result<Temp, ()> {
+        let elem = match self.ty_of(&e.span) {
+            Some(Ty::List(inner)) => inner.as_ref().clone(),
+            _ => return self.bad(e.span, "array literal does not have a `List` type"),
+        };
+        if items.is_empty() {
+            return self.bad(
+                e.span,
+                "empty array literal cannot be typed; add an element to infer `List<T>`",
+            );
+        }
+        let rep = self.elem_rep(&elem, e.span)?;
+        let cap = self.temp();
+        self.instr(IrInstr::Const {
+            dst: cap,
+            c: IrConst::Int(items.len() as i64),
+        });
+        let list = self.extern_call_t1("pickle_list_new", vec![IrTy::Int], IrTy::Ptr, vec![cap])?;
+        for it in items {
+            let v = self.expr(it)?;
+            let push_v = match rep {
+                ElemRep::Scalar(box_sym, _, _) => {
+                    let v_ty = self.irty(it.span)?;
+                    self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![v])?
+                }
+                ElemRep::Ptr => v,
+            };
+            self.extern_call_void("pickle_list_push", vec![IrTy::Ptr, IrTy::Ptr], vec![list, push_v]);
+        }
+        Ok(list)
     }
 
     fn if_expr(
@@ -953,6 +1230,9 @@ impl<'a> Emitter<'a> {
     }
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
+        if let ExprKind::Member { object, name } = &callee.kind {
+            return self.method_call(e, object, name, args);
+        }
         let ExprKind::Ident(name) = &callee.kind else {
             return self.bad(e.span, "only plain function calls are lowered yet");
         };
@@ -990,6 +1270,7 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Bool) => "pickle_print_bool",
                         Some(Ty::Char) => "pickle_print_byte",
                         Some(Ty::String) => "pickle_print_obj",
+                        Some(Ty::List(_)) => "pickle_print_obj",
                         _ => {
                             return self.bad(
                                 a.value.span,
@@ -1002,7 +1283,7 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Float) => IrTy::Float,
                         Some(Ty::Bool) => IrTy::Bool,
                         Some(Ty::Char) => IrTy::Char,
-                        Some(Ty::String) => IrTy::Ptr,
+                        Some(Ty::String) | Some(Ty::List(_)) => IrTy::Ptr,
                         _ => IrTy::Ptr,
                     };
                     self.extern_call_void(sym, vec![pty], vec![t]);
@@ -1022,6 +1303,9 @@ impl<'a> Emitter<'a> {
                     Some(Ty::String) => {
                         self.extern_call_t1("pickle_str_len", vec![IrTy::Str], IrTy::Int, vec![t])
                     }
+                    Some(Ty::List(_)) => {
+                        self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![t])
+                    }
                     _ => self.bad(e.span, "`len` over this type is not lowered yet"),
                 }
             }
@@ -1029,7 +1313,92 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.
+    fn method_call(
+        &mut self,
+        e: &Expr,
+        object: &Expr,
+        name: &str,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let ot = self.ty_of(&object.span);
+        if !matches!(ot, Some(Ty::List(_))) {
+            return self.bad(e.span, "method calls on this type are not lowered yet");
+        }
+        if args.iter().any(|a| a.spread) {
+            return self.bad(e.span, "spread arguments are not lowered yet");
+        }
+        let elem = match &ot {
+            Some(Ty::List(inner)) => inner.as_ref().clone(),
+            _ => unreachable!(),
+        };
+        let obj = self.expr(object)?;
+        match name {
+            "push" => {
+                if args.len() != 1 {
+                    return self.bad(e.span, "`push` takes one argument");
+                }
+                let rep = self.elem_rep(&elem, e.span)?;
+                let v = self.expr(&args[0].value)?;
+                let push_v = match rep {
+                    ElemRep::Scalar(box_sym, _, _) => {
+                        let vt = self.irty(args[0].value.span)?;
+                        self.extern_call_t1(box_sym, vec![vt], IrTy::Ptr, vec![v])?
+                    }
+                    ElemRep::Ptr => v,
+                };
+                self.extern_call_void(
+                    "pickle_list_push",
+                    vec![IrTy::Ptr, IrTy::Ptr],
+                    vec![obj, push_v],
+                );
+                Ok(self.unit_temp())
+            }
+            "pop" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, "`pop` takes no arguments");
+                }
+                let rep = self.elem_rep(&elem, e.span)?;
+                let raw = self.extern_call_t1("pickle_list_pop", vec![IrTy::Ptr], IrTy::Ptr, vec![obj])?;
+                match rep {
+                    ElemRep::Scalar(_, unbox_sym, ir) => {
+                        self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
+                    }
+                    ElemRep::Ptr => Ok(raw),
+                }
+            }
+            other => {
+                self.bad(e.span, format!("`{other}` method on `List` is not lowered yet"))
+            }
+        }
+    }
+
     // ---- primitive ops ----
+
+    /// How a `List<T>` element is represented at the runtime boundary.
+    fn elem_rep(&mut self, elem: &Ty, span: Span) -> Result<ElemRep, ()> {
+        use ElemRep::*;
+        match elem {
+            Ty::Int => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
+            Ty::Float => Ok(Scalar("pickle_box_f64", "pickle_unbox_f64", IrTy::Float)),
+            Ty::Bool => Ok(Scalar("pickle_box_bool", "pickle_unbox_bool", IrTy::Bool)),
+            Ty::Char => self.bad(span, "lists of `char` are not lowered yet"),
+            Ty::String
+            | Ty::Option(..)
+            | Ty::Class(..)
+            | Ty::Struct(..)
+            | Ty::Enum(..)
+            | Ty::Interface(..)
+            | Ty::List(..)
+            | Ty::Map(..)
+            | Ty::Tuple(..)
+            | Ty::Range(..) => Ok(Ptr),
+            Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
+            Ty::Fn(..) => self.bad(span, "function values are not lowered yet"),
+            Ty::Unknown => self.bad(span, "list element type is not statically known"),
+            Ty::Var(_) => self.bad(span, "generic element types are not lowered yet"),
+        }
+    }
 
     fn extern_call_void(&mut self, symbol: &str, params: Vec<IrTy>, args: Vec<Temp>) {
         let ex = self.module.extern_id(IrExtern {

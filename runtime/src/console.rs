@@ -3,7 +3,10 @@
 //! formatting is left to `std.text` later.
 
 use crate::layout::{list_len, map_len, str_bytes, str_len};
-use crate::object::{PickleObject, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING};
+use crate::object::{
+    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT, PICKLE_CLASS_LIST,
+    PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
+};
 #[cfg(not(test))]
 use std::io::Write;
 
@@ -122,15 +125,18 @@ fn print_obj_raw(obj: *mut PickleObject) {
     match class_id {
         PICKLE_CLASS_STRING => emit_string(obj),
         PICKLE_CLASS_LIST => {
-            pickle_print_cstr(b"List(len=".as_ptr());
+            pickle_print_cstr(b"List(len=\0".as_ptr());
             pickle_print_i64(list_len(obj) as i64);
             pickle_print_byte(b')');
         }
         PICKLE_CLASS_MAP => {
-            pickle_print_cstr(b"Map(len=".as_ptr());
+            pickle_print_cstr(b"Map(len=\0".as_ptr());
             pickle_print_i64(map_len(obj) as i64);
             pickle_print_byte(b')');
         }
+        PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),
+        PICKLE_CLASS_BOX_FLOAT => pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64)),
+        PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 { b"true\0".as_ptr() } else { b"false\0".as_ptr() }),
         _ => {
             let gc = crate::gc::gc_mut();
             let name = gc.class_name(class_id);

@@ -22,6 +22,12 @@ pub const MAP_LEN_OFF: usize = HEADER; // usize
 pub const MAP_CAP_OFF: usize = HEADER + 8; // usize
 pub const MAP_ENTRIES_OFF: usize = HEADER + 16; // *mut Entry
 
+/// Boxed scalar `{ header, bits: i64 }` — 8-byte payload holding the raw bits
+/// of an `int`/`float`/`bool` value.
+pub const BOX_PAYLOAD_OFF: usize = HEADER; // i64
+pub const BOX_PAYLOAD: usize = 8;
+pub const BOX_OBJECT_SIZE: usize = HEADER + BOX_PAYLOAD;
+
 /// Fixed payload sizes of the builtin objects.
 pub const STRING_PAYLOAD: usize = 8;
 pub const LIST_PAYLOAD: usize = 24;

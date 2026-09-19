@@ -12,6 +12,7 @@
 #![allow(clippy::manual_c_str_literals)]
 
 pub(crate) mod console;
+mod boxscalar;
 mod gc;
 mod heap;
 mod layout;
@@ -29,6 +30,9 @@ const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     string_desc(),
     list_desc(),
     map_desc(),
+    box_int_desc(),
+    box_float_desc(),
+    box_bool_desc(),
 ];
 
 const fn string_desc() -> object::ClassDescriptor {
@@ -59,6 +63,42 @@ const fn map_desc() -> object::ClassDescriptor {
     object::ClassDescriptor {
         name_ptr: b"Map\0".as_ptr(),
         name_len: 3,
+        flags: 0,
+        slot_count: 0,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: object::builtin_nop_finalizer,
+    }
+}
+
+const fn box_int_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"int\0".as_ptr(),
+        name_len: 3,
+        flags: 0,
+        slot_count: 0,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: object::builtin_nop_finalizer,
+    }
+}
+
+const fn box_float_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"float\0".as_ptr(),
+        name_len: 5,
+        flags: 0,
+        slot_count: 0,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: object::builtin_nop_finalizer,
+    }
+}
+
+const fn box_bool_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"bool\0".as_ptr(),
+        name_len: 4,
         flags: 0,
         slot_count: 0,
         mask_words: 0,
@@ -149,6 +189,20 @@ pub mod abi {
     pub use crate::console::pickle_print_newline;
     pub use crate::console::pickle_print_obj;
     pub use crate::console::pickle_print_u64;
+
+    pub use crate::boxscalar::pickle_box_bool;
+    pub use crate::boxscalar::pickle_box_f64;
+    pub use crate::boxscalar::pickle_box_i64;
+    pub use crate::boxscalar::pickle_unbox_bool;
+    pub use crate::boxscalar::pickle_unbox_f64;
+    pub use crate::boxscalar::pickle_unbox_i64;
+
+    pub use crate::list::pickle_list_get;
+    pub use crate::list::pickle_list_len;
+    pub use crate::list::pickle_list_new;
+    pub use crate::list::pickle_list_pop;
+    pub use crate::list::pickle_list_push;
+    pub use crate::list::pickle_list_set;
 
     pub use crate::shadow::pickle_shadow_get;
     pub use crate::shadow::pickle_shadow_pop;

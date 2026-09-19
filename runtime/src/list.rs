@@ -104,6 +104,48 @@ pub fn list_elements(list: *const PickleObject) -> *mut *mut PickleObject {
     list_data(list)
 }
 
+// ---- Exported ABI ----------------------------------------------------------
+// Thin `extern "C"` wrappers over the internal Rust APIs so compiled programs
+// can build and manipulate lists. Scalars must be boxed first
+// (`boxscalar::pickle_box_*`) before being stored, and unboxed after reading.
+
+/// Create an empty list with at least `cap` capacity.
+#[no_mangle]
+pub extern "C" fn pickle_list_new(cap: usize) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    list_new(cap, gc)
+}
+
+/// Number of elements.
+#[no_mangle]
+pub extern "C" fn pickle_list_len(list: *const PickleObject) -> usize {
+    list_len_of(list)
+}
+
+/// Bound-checked element read; returns null when out of bounds.
+#[no_mangle]
+pub extern "C" fn pickle_list_get(list: *const PickleObject, index: usize) -> *mut PickleObject {
+    list_get(list, index)
+}
+
+/// Element write; panics on index out of bounds.
+#[no_mangle]
+pub extern "C" fn pickle_list_set(list: *mut PickleObject, index: usize, value: *mut PickleObject) {
+    list_set(list, index, value)
+}
+
+/// Append an element.
+#[no_mangle]
+pub extern "C" fn pickle_list_push(list: *mut PickleObject, value: *mut PickleObject) {
+    list_push(list, value);
+}
+
+/// Remove and return the last element (null when empty).
+#[no_mangle]
+pub extern "C" fn pickle_list_pop(list: *mut PickleObject) -> *mut PickleObject {
+    list_pop(list)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +186,28 @@ mod tests {
             list_push(l, s);
         }
         assert!(list_cap(l) >= 200);
+    }
+
+    #[test]
+    fn abi_roundtrip_boxed_ints() {
+        let _guard = setup();
+        crate::pickle_runtime_init();
+        let l = crate::list::pickle_list_new(0);
+        assert_eq!(crate::list::pickle_list_len(l), 0);
+        for v in [3i64, -7, 1000, 0] {
+            crate::list::pickle_list_push(l, crate::boxscalar::pickle_box_i64(v));
+        }
+        assert_eq!(crate::list::pickle_list_len(l), 4);
+        for (i, v) in [3, -7, 1000, 0].iter().enumerate() {
+            let e = crate::list::pickle_list_get(l, i);
+            assert!(!e.is_null());
+            assert_eq!(crate::boxscalar::pickle_unbox_i64(e), *v);
+        }
+        assert!(crate::list::pickle_list_get(l, 99).is_null());
+        crate::list::pickle_list_set(l, 0, crate::boxscalar::pickle_box_i64(42));
+        assert_eq!(crate::boxscalar::pickle_unbox_i64(crate::list::pickle_list_get(l, 0)), 42);
+        let popped = crate::list::pickle_list_pop(l);
+        assert_eq!(crate::boxscalar::pickle_unbox_i64(popped), 0);
+        assert_eq!(crate::list::pickle_list_len(l), 3);
     }
 }

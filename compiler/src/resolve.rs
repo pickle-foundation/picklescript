@@ -450,6 +450,10 @@ impl<'a> TypeCtx<'a> {
 
     fn resolve_path(&self, path: &[String], generics: &[String], span: Span) -> Ty {
         if path.len() == 1 {
+            if path[0] == "List" {
+                // Builtin list type; elements resolved by `instantiate`.
+                return Ty::List(Box::new(Ty::Unknown));
+            }
             if let Some(g) = generics.iter().find(|g| **g == path[0]) {
                 return Ty::Var(g.clone());
             }
@@ -498,6 +502,9 @@ impl<'a> TypeCtx<'a> {
 
     fn instantiate(&self, bare: &Ty, args: &[Ty], span: Span) -> Ty {
         let (name, expected): (String, Vec<String>) = match bare {
+            Ty::List(_) => {
+                return Ty::List(Box::new(args.first().cloned().unwrap_or(Ty::Unknown)));
+            }
             Ty::Class(n, _) | Ty::Struct(n, _) | Ty::Enum(n, _) | Ty::Interface(n, _) => {
                 (n.clone(), self.generics_of(n))
             }

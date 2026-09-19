@@ -264,3 +264,129 @@ fn emits_short_circuit_and_or() {
     // &&: rhs block + short block + join, beyond the entry.
     assert!(both.blocks.len() >= 4, "dump:\n{m}");
 }
+
+// ---- lists (slice 1.5) ----
+
+fn externs(m: &IrModule) -> Vec<String> {
+    m.externs.iter().map(|e| e.symbol.clone()).collect()
+}
+
+#[test]
+fn emits_array_literal_materializes_list() {
+    let m = emit_str(
+        r#"fn main() {
+            let xs = [1, 2, 3]
+            println(len(xs))
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_new"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_list_len"), "externs: {syms:?}");
+}
+
+#[test]
+fn emits_index_read_unboxes() {
+    let m = emit_str(
+        r#"fn head(xs: List<int>) -> int {
+            xs[0]
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+}
+
+#[test]
+fn emits_index_assign_boxes() {
+    let m = emit_str(
+        r#"fn put(xs: List<int>, v: int) {
+            xs[0] = v
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_set"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+}
+
+#[test]
+fn emits_list_methods() {
+    let m = emit_str(
+        r#"fn main() {
+            var xs = [1]
+            xs.push(2)
+            let last = xs.pop()
+            println(last)
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_list_pop"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+}
+
+#[test]
+fn emits_for_in_list_with_get_and_unbox() {
+    let m = emit_str(
+        r#"fn sum(xs: List<int>) -> int {
+            var total = 0
+            for (x in xs) {
+                total = total + x
+            }
+            return total
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    let sum = m.funcs.iter().find(|f| f.name == "sum").expect("sum");
+    let cond = sum
+        .blocks
+        .iter()
+        .find(|b| matches!(b.term, IrTerm::BranchIf { .. }))
+        .expect("loop condition block");
+    assert!(
+        sum.blocks.iter().any(|b| {
+            if let IrTerm::Branch { target } = &b.term {
+                *target == cond.id
+                    && b.instrs.iter().any(|i| {
+                        if let IrInstr::Call { callee: Callee::Extern(ex), args, .. } = i {
+                            m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_list_len")
+                                && args.len() == 1
+                        } else {
+                            false
+                        }
+                    })
+            } else {
+                false
+            }
+        }),
+        "the for-loop must bound iterations by `pickle_list_len`, dump:\n{sum}"
+    );
+}
+
+#[test]
+fn rejects_char_lists_in_codegen() {
+    // `char` elements have no boxed representation yet, so generation bails
+    // with a diagnostic rather than miscompiling.
+    let mut map = pickle_compiler::diag::SourceMap::default();
+    let diags = DiagnosticSink::new();
+    let out = frontend(
+        "test.pkl",
+        r#"fn main() {
+            let cs = ['a', 'b']
+        }"#,
+        &mut map,
+        &diags,
+    )
+    .expect("frontend failed");
+    let res = emit_ir(&out.program, &out.resolved, &diags);
+    assert!(res.is_none(), "char lists must not emit IR");
+    let text = diags.render_all(&map, false);
+    assert!(
+        text.contains("lists of `char` are not lowered yet"),
+        "diags:\n{text}"
+    );
+}
