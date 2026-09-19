@@ -30,7 +30,7 @@ use std.test        assert, assertEqual, assertThrows, bench
 2. Consistent naming: verbs do (`readFile`), nouns are (`File`, `Dir`);
    no `getX()`/`setX()` — properties instead.
 3. Errors are values, not exceptions: functions return `T?` or
-   `Result<T, Error>`; `try (expr)` unwraps an option or panics with
+   `Result<T, Error>`; postfix `?` unwraps an option or panics with
    context. A `try`/`catch`-with-patterns form is reserved for cross-module
    failures and marked experimental.
 4. Async versions are `await`-able on the same name as sync (`http.get`

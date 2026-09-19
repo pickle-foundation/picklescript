@@ -645,7 +645,9 @@ let bad = |e: &mut Self, what: &str| {
             let ty = ifields[slot].ty.clone();
             let v = self.expr(init)?;
             let rep = self.elem_rep(&ty, table.span)?;
-            let boxed = self.box_for_store(&rep, v, elem_ir(&ty))?;
+            let vt = self.ty_of(&init.span).unwrap_or(Ty::Unknown);
+            let packed = self.pack_for_pointer_boundary(&rep, v, &vt, init.span)?;
+            let boxed = self.box_for_store(&rep, packed, elem_ir(&ty))?;
             self.field_store(this, slot as i64, &ty, boxed);
         }
 
@@ -655,7 +657,8 @@ let bad = |e: &mut Self, what: &str| {
             if let Some(field_slot) = field_slot {
                 let v = self.load(Slot(i as u32));
                 let rep = self.elem_rep(ty, *span)?;
-                let boxed = self.box_for_store(&rep, v, elem_ir(ty))?;
+                let packed = self.pack_for_pointer_boundary(&rep, v, ty, *span)?;
+                let boxed = self.box_for_store(&rep, packed, elem_ir(ty))?;
                 self.field_store(this, *field_slot as i64, ty, boxed);
             }
         }
@@ -861,6 +864,12 @@ let bad = |e: &mut Self, what: &str| {
                 if self.fret.is_unit() {
                     let _ = self.expr(e);
                 } else if let Ok(t) = self.expr(e) {
+                    let t = if self.fret == IrTy::Ptr {
+                        let vt = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                        self.option_wrap(t, &vt, e.span).unwrap_or(t)
+                    } else {
+                        t
+                    };
                     self.term(IrTerm::Return { v: Some(t) });
                 }
             }
@@ -881,6 +890,12 @@ let bad = |e: &mut Self, what: &str| {
         match &b.expr {
             Some(e) if !self.fret.is_unit() => {
                 if let Ok(t) = self.expr(e) {
+                    let t = if self.fret == IrTy::Ptr {
+                        let vt = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                        self.option_wrap(t, &vt, e.span).unwrap_or(t)
+                    } else {
+                        t
+                    };
                     self.term(IrTerm::Return { v: Some(t) });
                 }
             }
@@ -928,15 +943,30 @@ let bad = |e: &mut Self, what: &str| {
                 span,
             } => {
                 match pattern {
-                    Pattern::Binding { .. } => {
-                        let slot_ty = match init {
-                            Some(e) => self.irty(e.span)?,
-                            None => self.annot_ty(ty, *span)?,
+                    Pattern::Binding { ty: pat_ty, .. } => {
+                        let annot: &Option<TypeExpr> = if pat_ty.is_some() { pat_ty } else { ty };
+                        let ann_option = matches!(
+                            annot.as_ref().map(|t| &t.kind),
+                            Some(TypeExprKind::Option(_))
+                        );
+                        let slot_ty = if ann_option {
+                            IrTy::Ptr
+                        } else {
+                            match init {
+                                Some(e) => self.irty(e.span)?,
+                                None => self.annot_ty(annot, *span)?,
+                            }
                         };
                         let slot = self.new_slot(slot_ty);
                         if let Some(e) = init {
                             let t = self.expr(e)?;
-                            self.instr(IrInstr::StoreSlot { slot, v: t });
+                            let v = if slot_ty == IrTy::Ptr {
+                                let vt = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                                self.option_wrap(t, &vt, e.span)?
+                            } else {
+                                t
+                            };
+                            self.instr(IrInstr::StoreSlot { slot, v });
                         }
                         if let Pattern::Binding { name, .. } = pattern {
                             self.declare(name, slot);
@@ -956,13 +986,27 @@ let bad = |e: &mut Self, what: &str| {
                 let t = self.expr(value)?;
                 let ty = self.irty(value.span)?;
                 let slot = self.new_slot(ty);
-                self.instr(IrInstr::StoreSlot { slot, v: t });
+                let v = if ty == IrTy::Ptr {
+                    let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+                    self.option_wrap(t, &vt, value.span)?
+                } else {
+                    t
+                };
+                self.instr(IrInstr::StoreSlot { slot, v });
                 self.declare(name, slot);
                 Ok(())
             }
             Stmt::Return { value, .. } => {
                 let v = match value {
-                    Some(e) => Some(self.expr(e)?),
+                    Some(e) => {
+                        let t = self.expr(e)?;
+                        if self.fret == IrTy::Ptr {
+                            let vt = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                            Some(self.option_wrap(t, &vt, e.span)?)
+                        } else {
+                            Some(t)
+                        }
+                    }
                     None => None,
                 };
                 self.term(IrTerm::Return { v });
@@ -1387,8 +1431,8 @@ let bad = |e: &mut Self, what: &str| {
             ExprKind::Super => self.bad(e.span, "`super` is not lowered yet"),
             ExprKind::Member { object, name } => self.member_value(e, object, name),
             ExprKind::Index { object, index } => self.index_read(e, object, index),
-            ExprKind::OptAccess { .. } => self.bad(e.span, "optional access is not lowered yet"),
-            ExprKind::OptUnwrap(_) => self.bad(e.span, "`!` unwrap is not lowered yet"),
+            ExprKind::OptAccess { object, name } => self.opt_access(e, object, name),
+            ExprKind::OptUnwrap(inner) => self.opt_unwrap(e, inner),
             ExprKind::Lambda { .. } => self.bad(e.span, "lambda values are not lowered yet"),
             ExprKind::Match {
                 scrutinee,
@@ -1433,12 +1477,7 @@ let bad = |e: &mut Self, what: &str| {
             Lit::String(parts) => {
                 return self.string_literal(parts);
             }
-            Lit::None => {
-                return self.bad(
-                    self.fname_span_fallback(),
-                    "`none` literals are not lowered yet",
-                )
-            }
+            Lit::None => return self.null_temp(),
         };
         self.instr(IrInstr::Const { dst, c });
         Ok(dst)
@@ -1606,7 +1645,8 @@ let bad = |e: &mut Self, what: &str| {
         let both_str = matches!(lt, Some(Ty::String)) && matches!(rt, Some(Ty::String));
         match op {
             AstBinOp::And | AstBinOp::Or => return self.logic(e, op, lhs, rhs),
-            AstBinOp::Range | AstBinOp::RangeIncl | AstBinOp::NullCoalesce | AstBinOp::Send
+            AstBinOp::NullCoalesce => return self.null_coalesce(e, lhs, rhs),
+            AstBinOp::Range | AstBinOp::RangeIncl | AstBinOp::Send
             | AstBinOp::Is | AstBinOp::In | AstBinOp::Pow => {
                 return self.bad(e.span, "this operator is not lowered yet")
             }
@@ -1697,6 +1737,184 @@ let bad = |e: &mut Self, what: &str| {
         Ok(self.load(res_slot))
     }
 
+    /// Test a pointer-valued option for presence (`ptr != null`), yielding a
+    /// `Bool` temp so it can drive a branch.
+    fn opt_is_present(&mut self, p: Temp) -> Result<Temp, ()> {
+        let null = self.null_temp()?;
+        let dst = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: IrBinOp::Ne,
+            a: p,
+            b: null,
+        });
+        Ok(dst)
+    }
+
+    /// Resolve a present option pointer to its inner value: scalars are
+    /// unboxed to the element IR type; managed values pass through.
+    fn opt_resolve(&mut self, p: Temp, inner: &Ty, span: Span) -> Result<Temp, ()> {
+        match self.map_ty(inner, span)? {
+            IrTy::Int => {
+                self.extern_call_t1("pickle_unbox_i64", vec![IrTy::Ptr], IrTy::Int, vec![p])
+            }
+            IrTy::Float => {
+                self.extern_call_t1("pickle_unbox_f64", vec![IrTy::Ptr], IrTy::Float, vec![p])
+            }
+            IrTy::Bool => {
+                self.extern_call_t1("pickle_unbox_bool", vec![IrTy::Ptr], IrTy::Bool, vec![p])
+            }
+            IrTy::Char => {
+                self.extern_call_t1("pickle_unbox_char", vec![IrTy::Ptr], IrTy::Char, vec![p])
+            }
+            _ => Ok(p),
+        }
+    }
+
+    /// `a ?? b`: yield the unwrapped `a` when present, else `b`. `a` is an
+    /// option pointer; the result is the inner type (scalar or managed).
+    fn null_coalesce(&mut self, e: &Expr, lhs: &Expr, rhs: &Expr) -> Result<Temp, ()> {
+        let Some(inner) = self.ty_of(&lhs.span).and_then(|t| t.inner_option()) else {
+            return self.bad(e.span, "left side of `??` is not an option");
+        };
+        let res_ir = self.map_ty(&inner, e.span)?;
+        let res_slot = self.new_slot(res_ir);
+        let a = self.expr(lhs)?;
+        let present = self.opt_is_present(a)?;
+        let some_id = self.new_block();
+        let rhs_id = self.new_block();
+        let join = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: present,
+            then: some_id,
+            else_: rhs_id,
+        });
+        self.cur = some_id;
+        let av = self.opt_resolve(a, &inner, e.span)?;
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: av });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = rhs_id;
+        let b = self.expr(rhs)?;
+        let b = if res_ir == IrTy::Ptr {
+            let vt = self.ty_of(&rhs.span).unwrap_or(Ty::Unknown);
+            self.option_wrap(b, &vt, rhs.span)?
+        } else {
+            b
+        };
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = join;
+        Ok(self.load(res_slot))
+    }
+
+    /// `a!`: unwrap `a` to its inner value, panicking at runtime on `none`.
+    fn opt_unwrap(&mut self, e: &Expr, operand: &Expr) -> Result<Temp, ()> {
+        let Some(inner) = self.ty_of(&operand.span).and_then(|t| t.inner_option()) else {
+            return self.bad(e.span, "`!` operand is not an option");
+        };
+        let res_ir = self.map_ty(&inner, e.span)?;
+        let res_slot = self.new_slot(res_ir);
+        let p = self.expr(operand)?;
+        let present = self.opt_is_present(p)?;
+        let some_id = self.new_block();
+        let none_id = self.new_block();
+        let join = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: present,
+            then: some_id,
+            else_: none_id,
+        });
+        self.cur = none_id;
+        self.extern_call_void("pickle_panic_none_unwrap", vec![], vec![]);
+        self.term(IrTerm::Branch { target: join });
+        self.cur = some_id;
+        let v = self.opt_resolve(p, &inner, e.span)?;
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = join;
+        Ok(self.load(res_slot))
+    }
+
+    /// `a?.name`: when `a` is present, read `name` off the receiver and lift it
+    /// to `T?`; when it is `none`, the result is `none`. The receiver is
+    /// evaluated exactly once.
+    fn opt_access(&mut self, e: &Expr, object: &Expr, name: &str) -> Result<Temp, ()> {
+        let Some(inner) = self.ty_of(&object.span).and_then(|t| t.inner_option()) else {
+            return self.bad(e.span, "`?.` requires an option receiver");
+        };
+        let o = self.expr(object)?;
+        let res_slot = self.new_slot(IrTy::Ptr);
+        let present = self.opt_is_present(o)?;
+        let some_id = self.new_block();
+        let none_id = self.new_block();
+        let join = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: present,
+            then: some_id,
+            else_: none_id,
+        });
+        self.cur = none_id;
+        let n = self.null_temp()?;
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: n });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = some_id;
+        let (member_ty, mv) = self.opt_member_read(e, o, &inner, name)?;
+        let mv = self.option_wrap(mv, &member_ty, e.span)?;
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: mv });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = join;
+        Ok(self.load(res_slot))
+    }
+
+    /// Read field `name` (or dispatch the getter for property `name`) from an
+    /// already-evaluated class/struct receiver, returning its declared type and
+    /// the value temp.
+    fn opt_member_read(
+        &mut self,
+        e: &Expr,
+        obj: Temp,
+        recv_ty: &Ty,
+        name: &str,
+    ) -> Result<(Ty, Temp), ()> {
+        let (cid, cname) = match recv_ty {
+            Ty::Class(cn, _) | Ty::Struct(cn, _) => {
+                (self.class_by_name.get(cn).copied(), cn.clone())
+            }
+            _ => (None, String::new()),
+        };
+        let Some(cid) = cid else {
+            return self
+                .bad(e.span, "optional access is only lowered for class/struct members");
+        };
+        if let Some(slot) = self.instance_field_index(cid as i64, name) {
+            let field_ty = self.field_at(cid as i64, slot).ty.clone();
+            let v = self.field_read(e.span, obj, &field_ty, slot)?;
+            return Ok((field_ty, v));
+        }
+        if let Some(&fid) = self.property_ids.get(&(cid, name.to_string(), false)) {
+            let pty = self.property_ty_of(&cname, name);
+            let v = self.call_method(e, fid, &[], Some(obj))?;
+            return Ok((pty, v));
+        }
+        self.bad(
+            e.span,
+            format!("no field or property `{name}` for optional access"),
+        )
+    }
+
+    /// The declared type of property `name` on class `cname`.
+    fn property_ty_of(&self, cname: &str, name: &str) -> Ty {
+        match self.resolved.types.get(cname) {
+            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => t
+                .properties
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or(Ty::Unknown),
+            _ => Ty::Unknown,
+        }
+    }
+
     fn assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Result<Temp, ()> {
         let span = target.span;
         if let ExprKind::Index { object, index } = &target.kind {
@@ -1709,9 +1927,15 @@ let bad = |e: &mut Self, what: &str| {
             return self.bad(span, "assignment targets other than names are not lowered yet");
         };
         let v = self.expr(value)?;
+        let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
         if let Some(slot) = self.lookup(name) {
             if op == AssignOp::Assign {
-                self.instr(IrInstr::StoreSlot { slot, v });
+                let sv = if matches!(self.fslots.get(slot.0 as usize), Some(IrTy::Ptr)) {
+                    self.option_wrap(v, &vt, value.span)?
+                } else {
+                    v
+                };
+                self.instr(IrInstr::StoreSlot { slot, v: sv });
                 return Ok(v);
             }
             let cur = self.load(slot);
@@ -1741,7 +1965,7 @@ let bad = |e: &mut Self, what: &str| {
             if let Some(idx) = self.instance_field_index(cid, name) {
                 let field_ty = self.field_at(cid, idx).ty.clone();
                 let this = self.this_value(e)?;
-                return self.field_assign(e.span, op, this, &field_ty, idx, v);
+                return self.field_assign(e.span, op, this, &field_ty, idx, v, &vt);
             }
         }
         self.bad(span, format!("cannot assign to `{name}`"))
@@ -1767,11 +1991,20 @@ let bad = |e: &mut Self, what: &str| {
                         );
                     }
                     let v = self.expr(value)?;
+                    let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+                    let packed = if matches!(
+                        self.module.funcs[fid.0].params.first().map(|p| p.ty),
+                        Some(IrTy::Ptr)
+                    ) {
+                        self.option_wrap(v, &vt, value.span)?
+                    } else {
+                        v
+                    };
                     let dst = self.temp();
                     self.instr(IrInstr::Call {
                         dst: Some(dst),
                         callee: Callee::Func(fid),
-                        args: vec![v],
+                        args: vec![packed],
                     });
                     return Ok(v);
                 }
@@ -1799,11 +2032,20 @@ let bad = |e: &mut Self, what: &str| {
                 }
                 let obj = self.expr(object)?;
                 let v = self.expr(value)?;
+                let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+                let packed = if matches!(
+                    self.module.funcs[fid.0].params.get(1).map(|p| p.ty),
+                    Some(IrTy::Ptr)
+                ) {
+                    self.option_wrap(v, &vt, value.span)?
+                } else {
+                    v
+                };
                 let dst = self.temp();
                 self.instr(IrInstr::Call {
                     dst: Some(dst),
                     callee: Callee::Func(fid),
-                    args: vec![obj, v],
+                    args: vec![obj, packed],
                 });
                 return Ok(v);
             }
@@ -1817,11 +2059,13 @@ let bad = |e: &mut Self, what: &str| {
         };
         let field_ty = self.field_at(cid as i64, idx).ty.clone();
         let v = self.expr(value)?;
+        let vvt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
         let obj = self.expr(object)?;
-        self.field_assign(e.span, op, obj, &field_ty, idx, v)
+        self.field_assign(e.span, op, obj, &field_ty, idx, v, &vvt)
     }
 
     /// Read-modify-write/plain store of one field slot.
+    #[allow(clippy::too_many_arguments)]
     fn field_assign(
         &mut self,
         span: Span,
@@ -1830,10 +2074,12 @@ let bad = |e: &mut Self, what: &str| {
         field_ty: &Ty,
         slot: usize,
         v: Temp,
+        vt: &Ty,
     ) -> Result<Temp, ()> {
         let rep = self.elem_rep(field_ty, span)?;
         if op == AssignOp::Assign {
-            let boxed = self.box_for_store(&rep, v, elem_ir(field_ty))?;
+            let packed = self.pack_for_pointer_boundary(&rep, v, vt, span)?;
+            let boxed = self.box_for_store(&rep, packed, elem_ir(field_ty))?;
             self.field_store(obj, slot as i64, field_ty, boxed);
             return Ok(v);
         }
@@ -2215,6 +2461,45 @@ let bad = |e: &mut Self, what: &str| {
         }
     }
 
+    /// Lift a scalar value to the managed-pointer representation used for
+    /// `Option<T>` (and for any pointer-typed boundary). A `none` or an
+    /// already-managed value passes through untouched; scalars are boxed.
+    fn option_wrap(&mut self, v: Temp, ty: &Ty, span: Span) -> Result<Temp, ()> {
+        match ty {
+            Ty::Int => self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![v]),
+            Ty::Float => {
+                self.extern_call_t1("pickle_box_f64", vec![IrTy::Float], IrTy::Ptr, vec![v])
+            }
+            Ty::Bool => {
+                self.extern_call_t1("pickle_box_bool", vec![IrTy::Bool], IrTy::Ptr, vec![v])
+            }
+            Ty::Char => {
+                self.extern_call_t1("pickle_box_char", vec![IrTy::Char], IrTy::Ptr, vec![v])
+            }
+            _ => {
+                let _ = span;
+                Ok(v)
+            }
+        }
+    }
+
+    /// Mirror of `box_for_store` for boundaries that are not list/map element
+    /// slots: when the destination representation is `Ptr`, a scalar source
+    /// (e.g. `let m: int? = 5`) must be lifted via `option_wrap` first.
+    fn pack_for_pointer_boundary(
+        &mut self,
+        rep: &ElemRep,
+        v: Temp,
+        vt: &Ty,
+        span: Span,
+    ) -> Result<Temp, ()> {
+        if matches!(rep, ElemRep::Ptr) {
+            self.option_wrap(v, vt, span)
+        } else {
+            Ok(v)
+        }
+    }
+
     /// The zero value of a scalar type, as an IR temp.
     fn zero_scalar(&mut self, ir: IrTy, span: Span) -> Result<Temp, ()> {
         let dst = self.temp();
@@ -2591,12 +2876,20 @@ let bad = |e: &mut Self, what: &str| {
         };
         // User function?
         if let Some(&fid) = self.module.funcs_by_name.get(name) {
+            let fparams = self.module.funcs[fid.0].params.clone();
             let mut arg_temps = Vec::new();
-            for a in args {
+            for (i, a) in args.iter().enumerate() {
                 if a.spread {
                     return self.bad(a.span, "spread arguments are not lowered yet");
                 }
-                arg_temps.push(self.expr(&a.value)?);
+                let t = self.expr(&a.value)?;
+                let t = if matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                    let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                    self.option_wrap(t, &vt, a.value.span)?
+                } else {
+                    t
+                };
+                arg_temps.push(t);
             }
             let dst = self.temp();
             self.instr(IrInstr::Call {
@@ -2611,12 +2904,20 @@ let bad = |e: &mut Self, what: &str| {
             let Some(&fid) = self.ctor_ids.get(&cid) else {
                 return self.bad(e.span, format!("`{name}` has no constructor"));
             };
+            let fparams = self.module.funcs[fid.0].params.clone();
             let mut arg_temps = Vec::new();
-            for a in args {
+            for (i, a) in args.iter().enumerate() {
                 if a.spread {
                     return self.bad(a.span, "spread arguments are not lowered yet");
                 }
-                arg_temps.push(self.expr(&a.value)?);
+                let t = self.expr(&a.value)?;
+                let t = if matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                    let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                    self.option_wrap(t, &vt, a.value.span)?
+                } else {
+                    t
+                };
+                arg_temps.push(t);
             }
             let dst = self.temp();
             self.instr(IrInstr::Call {
@@ -2751,12 +3052,9 @@ let bad = |e: &mut Self, what: &str| {
             let ft = &ftypes[i];
             let rep = self.elem_rep(ft, e.span)?;
             let v = self.expr(&a.value)?;
-            let boxed = match &rep {
-                ElemRep::Ptr => v,
-                ElemRep::Scalar(box_sym, _, ir) => {
-                    self.extern_call_t1(box_sym, vec![*ir], IrTy::Ptr, vec![v])?
-                }
-            };
+            let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+            let packed = self.pack_for_pointer_boundary(&rep, v, &vt, e.span)?;
+            let boxed = self.box_for_store(&rep, packed, elem_ir(ft))?;
             let idx = self.temp();
             self.instr(IrInstr::Const {
                 dst: idx,
@@ -3014,12 +3312,21 @@ let bad = |e: &mut Self, what: &str| {
         args: &[CallArg],
         receiver: Option<Temp>,
     ) -> Result<Temp, ()> {
+        let fparams = self.module.funcs[fid.0].params.clone();
         let mut call_args = match receiver {
             Some(r) => vec![r],
             None => Vec::new(),
         };
-        for a in args {
-            call_args.push(self.expr(&a.value)?);
+        let base = call_args.len();
+        for (i, a) in args.iter().enumerate() {
+            let t = self.expr(&a.value)?;
+            let t = if matches!(fparams.get(base + i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(t, &vt, a.value.span)?
+            } else {
+                t
+            };
+            call_args.push(t);
         }
         let dst = self.temp();
         self.instr(IrInstr::Call {

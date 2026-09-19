@@ -1160,3 +1160,71 @@ fn emits_string_index_and_char_iteration() {
         .count();
     assert!(iter >= 1, "the loop bound uses pickle_str_len, dump:\n{init}");
 }
+
+#[test]
+fn emits_option_lift_coalesce_and_unwrap() {
+    // `T` initializers lift into `T?` slots by boxing, `none` is a null
+    // constant, `??` unboxes/selects, and postfix `?` unwraps with a runtime
+    // panic on `none`.
+    let m = emit_str(
+        r#"fn maybe(flag: bool) -> int? {
+            if (flag) {
+                return 5
+            }
+            return none
+        }
+
+        fn main() {
+            let a: int? = 7
+            let b: int? = none
+            println(a ?? 0)
+            println(b ?? 1)
+            println(maybe(true)?)
+        }"#,
+    );
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_box_i64", "pickle_unbox_i64", "pickle_panic_none_unwrap"] {
+        assert!(externs.contains(&want), "externs: {externs:?}");
+    }
+    let has_null = m.funcs.iter().any(|f| {
+        f.blocks.iter().any(|b| {
+            b.instrs
+                .iter()
+                .any(|i| matches!(i, IrInstr::Const { c: IrConst::Null, .. }))
+        })
+    });
+    assert!(has_null, "`none` must lower to a null const, dump:\n{m}");
+    let maybe = m.funcs.iter().find(|f| f.name == "maybe").expect("maybe");
+    assert_eq!(maybe.ret.to_string(), "ptr", "options are pointers");
+}
+
+#[test]
+fn emits_optional_access_with_null_test() {
+    // `b?.value` null-tests the receiver, reads the field off the present
+    // branch, and lifts the scalar member into an option.
+    let m = emit_str(
+        r#"class Box {
+            var value: int
+            constructor(value: int) {
+                this.value = value
+            }
+        }
+
+        fn main() {
+            let b: Box? = Box(9)
+            println(b?.value ?? -1)
+        }"#,
+    );
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_box_i64", "pickle_obj_slot_get"] {
+        assert!(externs.contains(&want), "externs: {externs:?}");
+    }
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let nulls = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Const { c: IrConst::Null, .. }))
+        .count();
+    assert!(nulls >= 1, "`?.` none branch stores null, dump:\n{main}");
+}

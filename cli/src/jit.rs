@@ -931,6 +931,7 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_obj_slot_get" => abi::pickle_obj_slot_get as *const () as usize,
         "pickle_obj_slot_set" => abi::pickle_obj_slot_set as *const () as usize,
         "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,
+        "pickle_panic_none_unwrap" => abi::pickle_panic_none_unwrap as *const () as usize,
         "pickle_fmod" => pickle_fmod as *const () as usize,
         _ => return None,
     };

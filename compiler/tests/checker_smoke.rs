@@ -126,6 +126,24 @@ fn accepts_option_flows() {
 }
 
 #[test]
+fn coalesce_yields_inner_type() {
+    // `a ?? b` is the unwrapped inner type, so its result assigns to `int`
+    // (not `int?`).
+    let d = check_str(
+        r#"fn maybe() -> int? {
+            return none
+        }
+
+        fn main() {
+            let m: int? = maybe()
+            let v: int = m ?? 0
+            print(v)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn rejects_mismatched_list_elements() {
     let d = check_str(
         r#"fn main() {

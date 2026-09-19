@@ -94,6 +94,13 @@ pub extern "C" fn pickle_panic_no_match() -> ! {
     pickle_panic_cstr(b"pickle: match is not exhaustive\0".as_ptr())
 }
 
+/// ABI: a `!` unwrap applied to a `none` option. Reuses the panic path so
+/// compiled programs fail loudly instead of reading null as a value.
+#[no_mangle]
+pub extern "C" fn pickle_panic_none_unwrap() -> ! {
+    pickle_panic_cstr(b"pickle: unwrapped none value\0".as_ptr())
+}
+
 /// Replace the Rust panic hook so an internal panic cannot unwind across the
 /// `extern "C"` ABI. It prints `internal error: <msg>` and exits 1.
 ///

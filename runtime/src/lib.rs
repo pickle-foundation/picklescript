@@ -258,6 +258,7 @@ pub mod abi {
     pub use crate::r#enum::pickle_enum_tag;
 
     pub use crate::panic::pickle_panic_no_match;
+    pub use crate::panic::pickle_panic_none_unwrap;
 
     pub use crate::shadow::pickle_shadow_get;
     pub use crate::shadow::pickle_shadow_pop;

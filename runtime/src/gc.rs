@@ -298,6 +298,10 @@ mod tests {
     #[test]
     fn rooted_object_survives_collect() {
         let _guard = test_begin();
+        // Register the builtin descriptors first so user classes occupy the
+        // reserved id range (>= PICKLE_CLASS_USER_BASE); otherwise `leaf_class`
+        // above lands on id 0 and is mistraced as the `string` builtin.
+        crate::pickle_runtime_init();
         let gc = gc_mut();
         let cls = leaf_class(gc);
         let obj = gc.alloc(48, cls);
@@ -315,6 +319,7 @@ mod tests {
     #[test]
     fn unreachable_object_is_collected_and_reused() {
         let _guard = test_begin();
+        crate::pickle_runtime_init();
         let gc = gc_mut();
         let cls = leaf_class(gc);
         let orphan = gc.alloc(64, cls);
@@ -330,6 +335,7 @@ mod tests {
     #[test]
     fn auto_collect_runs_at_threshold_and_reclaims() {
         let _guard = test_begin();
+        crate::pickle_runtime_init();
         let gc = gc_mut();
         let cls = leaf_class(gc);
         pickle_gc_set_threshold(256);
@@ -350,6 +356,11 @@ mod tests {
     #[test]
     fn collect_clears_marks_and_keeps_live() {
         let _guard = test_begin();
+        // Register the builtin descriptors first: a bare table has `cls_parent`
+        // land on id 1 == PICKLE_CLASS_LIST, so `pair` gets mistraced as a list
+        // and the collector walks uninitialised payload slots for `list_len`
+        // bytes (a misaligned-deref on Linux, where a fresh arena can be dirty).
+        crate::pickle_runtime_init();
         let gc = gc_mut();
         let cls_leaf = leaf_class(gc);
         let cls_parent = gc.register_class(crate::object::ClassDescriptor {

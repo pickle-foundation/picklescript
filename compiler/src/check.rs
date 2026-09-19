@@ -1594,7 +1594,7 @@ impl<'a> Checker<'a> {
             None => {
                 self.err_note(
                     e.span,
-                    format!("`!` cannot unwrap non-option value of type `{t}`"),
+                    format!("`?` cannot unwrap non-option value of type `{t}`"),
                     "only `Option` values may be unwrapped",
                 );
                 t
@@ -1682,7 +1682,7 @@ impl<'a> Checker<'a> {
                         if rt != Ty::Unknown {
                             self.check_assignable(&inner_t, &rt, rhs.span, "`??` default");
                         }
-                        lt
+                        inner_t
                     }
                     None => {
                         self.err_note(

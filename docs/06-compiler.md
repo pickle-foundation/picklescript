@@ -255,6 +255,30 @@ Lowering rules:
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
   which prints the class name plus `Class` fields when available.
 
+Options lower as a managed pointer with no dedicated allocation:
+
+- `Option<T>` (`T?`) occupies a `ptr` slot/return; `none` is a null constant.
+  `some(v)` is `v` itself when `v` is already managed (class/struct/enum/
+  string/`List`/`Map`/nested option) and a `pickle_box_<scalar>` pointer when
+  `v` is a primitive. A boxed value is a class, so it is never boxed twice.
+- The checker does not rewrite the lifted expression's type, so the emitter
+  lifts by *value* type: a value whose natural type is a scalar flowing into a
+  `ptr` boundary — annotated/typed `let`/`const`, `return`, a function tail
+  expression, a call argument at a `T?` parameter, a ctor/field store, or a
+  property setter — is boxed once; managed values pass through. `none`/managed
+  values are never boxed.
+- `a ?? b` evaluates `a`, null-tests it, and yields `a`'s unboxed value when
+  present or the already-evaluated `b` otherwise. Its type is the inner type,
+  so it assigns to `T`, not `T?`.
+- Postfix `?` unwraps: it null-tests and calls `pickle_panic_none_unwrap`
+  ("pickle: unwrapped none value") on `none`, otherwise unboxes/returns the
+  value. (`!` is logical not.)
+- `obj?.member` evaluates the receiver once, null-tests it, reads the field or
+  dispatches the property getter on the present branch (lifting a scalar
+  member back into an option), and yields `none` on the absent branch. The
+  member's declared type — a field slot's type or the property table's `ty` —
+  drives the re-lift.
+
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.
 
