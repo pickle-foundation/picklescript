@@ -48,9 +48,13 @@ pub fn emit_object(module: &IrModule) -> Result<Vec<u8>> {
     }
 
     // `pickle_fmod` is supplied by the process for the JIT; for AOT define it
-    // here in the object so we do not need a glue library.
+    // here in the object so we do not need a glue library. Register it in the
+    // symbol map too, or callers keep a `TestCase` reference to it and the
+    // object backend panics on the relocation.
+    let mut func_ids: HashMap<String, (ModFuncId, bool)> = HashMap::new();
     if let Some(sig) = externs.remove("pickle_fmod") {
         let id = obj.declare_function("pickle_fmod", Linkage::Export, &sig)?;
+        func_ids.insert("pickle_fmod".to_string(), (id, true));
         let mut ctx = ClifContext::new();
         ctx.func = fmod_binding();
         obj.define_function(id, &mut ctx)?;
@@ -58,7 +62,6 @@ pub fn emit_object(module: &IrModule) -> Result<Vec<u8>> {
 
     // Declare the runtime imports as functions. The `pkl_strdata_*` names in
     // the extern list are actually string data, declared below.
-    let mut func_ids: HashMap<String, (ModFuncId, bool)> = HashMap::new();
     for (sym, sig) in &externs {
         if sym.starts_with("pkl_strdata_") {
             continue;

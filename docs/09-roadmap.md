@@ -1,5 +1,13 @@
 # PickleScript — Implementation Roadmap
 
+## End goal
+The project's north star is for **Pickle to be self-hosted**: one day the
+compiler and its toolchain are written in Pickle and compile themselves. Every
+phase below is sequenced so the language keeps growing toward that: the front
+end and runtime evolve together, `pickle run`/`pickle build` stay working
+throughout, and each new feature is landed end-to-end rather than half-built
+(see "Guiding principles for sequencing").
+
 ## Milestone 0 — Foundations (done in first pass)
 - [x] Workspace, crates, docs
 - [x] Language design (this repo's `docs/`)

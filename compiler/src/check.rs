@@ -1490,6 +1490,8 @@ impl<'a> Checker<'a> {
                 }
                 if lt == Ty::Float || rt == Ty::Float {
                     Ty::Float
+                } else if matches!(op, Add) && (lt == Ty::String || rt == Ty::String) {
+                    Ty::String
                 } else {
                     Ty::Int
                 }

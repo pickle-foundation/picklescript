@@ -235,6 +235,37 @@ fn parses_generics_fn_and_lambda() {
 }
 
 #[test]
+fn parses_trailing_expr_after_newline() {
+    // A final expression followed by a newline before the closing brace must
+    // still be recorded as the block's tail value, not a discarded statement.
+    use pickle_compiler::ast::{Block, FnBody, Stmt};
+    let p = parse_str(
+        r#"fn add(a: int, b: int) -> int {
+            let sum = a + b
+            sum
+        }"#,
+    );
+    let body = match &p.items[0].kind {
+        ItemKind::Fn(f) => f.body.as_ref().expect("fn body"),
+        other => panic!("expected fn, got {other:?}"),
+    };
+    let block: &Block = match body {
+        FnBody::Block(b) => b,
+        FnBody::Expr(_) => panic!("expected block body"),
+    };
+    assert!(block.expr.is_some(), "tail expr lost, stmts={}", block.stmts.len());
+    let kinds: Vec<&str> = block
+        .stmts
+        .iter()
+        .map(|s| match s {
+            Stmt::Let { .. } => "let",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["let"], "the trailing `sum` must not be a statement");
+}
+
+#[test]
 fn parses_while_and_operators() {
     use pickle_compiler::ast::ItemKind;
     let p = parse_str(

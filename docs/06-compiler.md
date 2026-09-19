@@ -121,6 +121,9 @@ Two details keep the AOT path self-contained:
 - symbol references are carried between lowering phases as Cranelift
   test-case names, which the object backend rejects; emission remaps them to
   user names (namespace 0 = functions, 1 = data) before writing the object.
+  Symbols the object *defines itself* (like the `pickle_fmod` binding above)
+  must be registered in the same symbol maps, or their references keep a
+  test-case name and emission panics.
 
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.

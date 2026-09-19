@@ -640,8 +640,16 @@ impl<'a> Parser<'a> {
                 break;
             }
             let s = self.parse_stmt()?;
-            let is_tail = self.at(&Tok::RBrace) || self.at(&Tok::Eof);
+            // The block tail is the final expression before the closing brace.
+            // It may sit directly at `}` or be separated from it by a newline.
+            // Peek past newlines (without consuming) so a trailing `expr\n}`
+            // still counts as the block's value instead of being dropped as a
+            // discarded statement.
+            let is_tail = self.at(&Tok::RBrace)
+                || self.at(&Tok::Eof)
+                || matches!(self.peek_non_nl(1), None | Some(Tok::RBrace));
             if is_tail {
+                self.newlines();
                 match s {
                     Stmt::Expr(e) => {
                         expr = Some(Box::new(e));
@@ -651,7 +659,6 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.expect_stmt_end()?;
-            let _ = stmts.len();
             stmts.push(s);
         }
         self.expect(&Tok::RBrace)?;

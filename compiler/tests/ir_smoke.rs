@@ -7,7 +7,7 @@
 use pickle_compiler::diag::{DiagnosticSink, SourceMap};
 use pickle_compiler::emit::emit_ir;
 use pickle_compiler::front::frontend;
-use pickle_compiler::ir::{Callee, IrInstr, IrModule, IrTerm};
+use pickle_compiler::ir::{BinOp, Callee, IrInstr, IrModule, IrTerm};
 
 fn emit_str(src: &str) -> IrModule {
     let mut map = SourceMap::default();
@@ -163,6 +163,86 @@ fn emits_string_concat_and_cmp() {
     assert!(symbols.contains(&"pickle_str_cmp"), "{:?}", symbols);
     let dump = format!("{m}");
     assert!(dump.contains("binop.eq"), "dump:\n{dump}");
+}
+
+#[test]
+fn emits_trailing_expr_after_newline_as_return() {
+    // Regression: `expr` followed by a newline before `}` was parsed as a
+    // discarded statement instead of the block tail, so a value-returning
+    // function ended in `unreachable` (a fatal JIT trap at runtime).
+    let m = emit_str(
+        r#"fn add(a: int, b: int) -> int {
+            a + b
+        }
+
+        fn main() {
+            println(add(1, 2))
+        }"#,
+    );
+    let add = m.funcs.iter().find(|f| f.name == "add").expect("add");
+    assert!(
+        add.blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerm::Return { v: Some(_) })),
+        "the tail expression must feed the return, dump:\n{m}"
+    );
+    assert!(
+        !add.blocks.iter().any(|b| matches!(b.term, IrTerm::Unreachable)),
+        "no dead tail may remain, dump:\n{m}"
+    );
+}
+
+#[test]
+fn emits_for_continue_increments() {
+    let m = emit_str(
+        r#"fn take_odds(n: int) -> int {
+            var total = 0
+            for (x in 0..n) {
+                if (x == 2) {
+                    continue
+                }
+                total = total + x
+            }
+            return total
+        }"#,
+    );
+    let f = m.funcs.iter().find(|g| g.name == "take_odds").expect("fn");
+    let cond = f
+        .blocks
+        .iter()
+        .find(|b| matches!(b.term, IrTerm::BranchIf { .. }))
+        .expect("loop condition block");
+    // `continue` must land in an increment block: it bumps the loop var and
+    // then re-enters the condition. Jumping straight to the condition skips
+    // the increment and loops forever.
+    let inc = f.blocks.iter().find(|b| {
+        if let IrTerm::Branch { target } = &b.term {
+            *target == cond.id
+                && b.instrs
+                    .iter()
+                    .any(|i| matches!(i, IrInstr::BinOp { op: BinOp::Add, .. }))
+        } else {
+            false
+        }
+    });
+    assert!(inc.is_some(), "missing increment block, dump:\n{f}");
+}
+
+#[test]
+fn emits_empty_string_literal() {
+    let m = emit_str(
+        r#"fn blank() -> string {
+            ""
+        }
+
+        fn main() {
+            println(blank())
+        }"#,
+    );
+    assert!(
+        m.strings.iter().any(|s| s.is_empty()),
+        "the empty string must land in the pool, dump:\n{m}"
+    );
 }
 
 #[test]

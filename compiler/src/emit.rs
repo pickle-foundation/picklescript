@@ -421,6 +421,7 @@ impl<'a> Emitter<'a> {
                 self.stmt(init)?;
                 let cond_id = self.new_block();
                 let body_id = self.new_block();
+                let step_id = self.new_block();
                 let end_id = self.new_block();
                 self.term(IrTerm::Branch { target: cond_id });
                 self.cur = cond_id;
@@ -432,14 +433,18 @@ impl<'a> Emitter<'a> {
                 });
                 self.cur = body_id;
                 self.loops.push(LoopCtx {
-                    continue_target: cond_id,
+                    // `continue` must still run the step expression, so it
+                    // targets the step block, not the condition.
+                    continue_target: step_id,
                     break_target: end_id,
                 });
                 self.push_scope();
                 self.block_body_only(body)?;
-                let _ = self.expr(step);
                 self.pop_scope();
                 self.loops.pop();
+                self.term(IrTerm::Branch { target: step_id });
+                self.cur = step_id;
+                let _ = self.expr(step);
                 self.term(IrTerm::Branch { target: cond_id });
                 self.cur = end_id;
                 Ok(())
@@ -486,6 +491,7 @@ impl<'a> Emitter<'a> {
 
         let cond_id = self.new_block();
         let body_id = self.new_block();
+        let next_id = self.new_block();
         let end_id = self.new_block();
         self.term(IrTerm::Branch { target: cond_id });
         self.cur = cond_id;
@@ -505,7 +511,9 @@ impl<'a> Emitter<'a> {
         });
         self.cur = body_id;
         self.loops.push(LoopCtx {
-            continue_target: cond_id,
+            // `continue` must still advance the loop variable, so it targets
+            // the increment block, not the condition.
+            continue_target: next_id,
             break_target: end_id,
         });
         self.push_scope();
@@ -513,6 +521,8 @@ impl<'a> Emitter<'a> {
         self.block_body_only(body)?;
         self.pop_scope();
         self.loops.pop();
+        self.term(IrTerm::Branch { target: next_id });
+        self.cur = next_id;
         let c = self.load(idx);
         let one = self.temp();
         self.instr(IrInstr::Const {
@@ -694,7 +704,18 @@ impl<'a> Emitter<'a> {
         }
         match acc {
             Some(t) => Ok(t),
-            None => self.bad(Span::new(crate::diag::FileId(0), 0, 0), "empty string literal"),
+            None => {
+                // `""`: the lexer drops empty text parts, so there are no
+                // parts to concatenate. Still intern the empty string so a
+                // zero-length string-data symbol exists downstream.
+                let sid = StrId(self.intern_string(""));
+                let t = self.temp();
+                self.instr(IrInstr::Const {
+                    dst: t,
+                    c: IrConst::Str(sid),
+                });
+                Ok(t)
+            }
         }
     }
 

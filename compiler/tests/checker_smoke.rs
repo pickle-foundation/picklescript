@@ -275,6 +275,22 @@ fn accepts_control_flow_while_for_if() {
 }
 
 #[test]
+fn accepts_string_concatenation() {
+    // `"a" + "b"` must be typed `string`, not `int`.
+    let d = check_str(
+        r#"fn greet(name: string) -> string {
+            "hello " + name
+        }
+
+        fn main() {
+            let s: string = "a" + "b"
+            print(s)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn accepts_operators_inference() {
     let d = check_str(
         r#"fn main() {
