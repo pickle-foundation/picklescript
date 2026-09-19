@@ -1,7 +1,9 @@
 pub mod ast;
 pub mod check;
 pub mod diag;
+pub mod emit;
 pub mod front;
+pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;

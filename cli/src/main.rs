@@ -27,6 +27,11 @@ enum Command {
         /// Source file to parse
         file: PathBuf,
     },
+    /// Lower a checked module to PickleIR and print it
+    Ir {
+        /// Source file to lower
+        file: PathBuf,
+    },
 }
 
 fn read_source(path: &PathBuf) -> Result<String> {
@@ -69,6 +74,19 @@ fn run() -> Result<()> {
             }
             if diags.any_error() {
                 std::process::exit(1);
+            }
+        }
+        Command::Ir { file } => {
+            let (source, mut map, diags) = load(file)?;
+            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
+                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let rendered = diags.render_all(&map, colored);
+            if !rendered.is_empty() {
+                eprint!("{rendered}");
+            }
+            match module {
+                Some(m) => println!("{m}"),
+                None => std::process::exit(1),
             }
         }
     }

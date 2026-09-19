@@ -126,6 +126,44 @@ pub fn string_cmp(a: *const PickleObject, b: *const PickleObject) -> i32 {
     }
 }
 
+// ---- compiler ABI ------------------------------------------------
+//
+// Symbols the emitted `pkl_*` code calls for `string` operations. All take and
+// return managed `string` pointers directly (the codegen mangles the caller
+// side); `pickle_str_cmp`/`pickle_str_len` widen to `i64` for the compiler's
+// `int` ABI.
+
+/// Allocate a `string` object from raw bytes.
+#[no_mangle]
+pub extern "C" fn pickle_str_from_bytes(ptr: *const u8, len: usize) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    string_from_bytes(ptr, len, gc)
+}
+
+/// Concatenate two strings.
+#[no_mangle]
+pub extern "C" fn pickle_str_concat(
+    a: *const PickleObject,
+    b: *const PickleObject,
+) -> *mut PickleObject {
+    string_concat(a, b)
+}
+
+/// Byte length of a string.
+#[no_mangle]
+pub extern "C" fn pickle_str_len(obj: *const PickleObject) -> i64 {
+    string_bytes_len(obj) as i64
+}
+
+/// Lexicographic comparison; -1/0/1 as `i64`.
+#[no_mangle]
+pub extern "C" fn pickle_str_cmp(
+    a: *const PickleObject,
+    b: *const PickleObject,
+) -> i64 {
+    string_cmp(a, b) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

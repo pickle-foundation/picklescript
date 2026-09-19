@@ -23,12 +23,27 @@ pub fn check_program(
     ck.check();
 }
 
+/// Type-check and return the inferred type of every expression, keyed by its
+/// `Span`. Used by codegen (`emit`) so IR emission reuses the checker's
+/// inference instead of re-deriving types.
+pub fn collect_expr_types(
+    prog: &Program,
+    resolved: &ResolvedProgram,
+    diags: &DiagnosticSink,
+) -> HashMap<Span, Ty> {
+    let mut ck = Checker::new(prog, resolved, diags);
+    ck.check();
+    std::mem::take(&mut ck.types)
+}
+
 struct Checker<'a> {
     prog: &'a Program,
     resolved: &'a ResolvedProgram,
     diags: &'a DiagnosticSink,
     /// Lexical scopes; bottom (last) is innermost.
     scopes: Vec<HashMap<String, Local>>,
+    /// Inferred type of each checked expression (codegen side table).
+    types: HashMap<Span, Ty>,
     /// Current enclosing class name and its instantiated type args.
     self_ty: Option<Ty>,
     /// Type args for the current class's generic params (name -> Ty).
@@ -53,6 +68,7 @@ impl<'a> Checker<'a> {
             resolved,
             diags,
             scopes,
+            types: HashMap::new(),
             self_ty: None,
             self_args: HashMap::new(),
             ret_ty: Ty::Empty,
@@ -928,6 +944,12 @@ impl<'a> Checker<'a> {
     // ---- expressions ------------------------------------------------------
 
     fn check_expr(&mut self, e: &Expr) -> Ty {
+        let t = self.check_expr_impl(e);
+        self.types.insert(e.span, t.clone());
+        t
+    }
+
+    fn check_expr_impl(&mut self, e: &Expr) -> Ty {
         match &e.kind {
             ExprKind::Lit(l) => self.lit_ty(l),
             ExprKind::Ident(name) => self.ident_ty(e, name),

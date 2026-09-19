@@ -527,12 +527,18 @@ impl<'a> Lexer<'a> {
                 match c {
                     '"' => {
                         self.bump();
+                        if !text.is_empty() {
+                            segments.push(StrSeg::Text { text });
+                        }
                         let lit = StrLit { segments };
                         return LexedToken::new(Tok::Str(lit), self.span(start, self.pos));
                     }
                     '{' if self.peek(1) != '{' => {
                         // interpolation
                         self.bump();
+                        if !text.is_empty() {
+                            segments.push(StrSeg::Text { text });
+                        }
                         let tok_start = self.pos;
                         let expr = self.lex_interpolated_tokens(tok_start);
                         segments.push(StrSeg::Expr { tokens: expr });
