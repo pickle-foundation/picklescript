@@ -183,8 +183,8 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No properties, no `static var` fields, no `deinit`, no `Const` members, no
-  named constructors (`constructor.guest()`), no generics/extends/implements
+- No `static var` fields, no `deinit`, no `Const` members, no static properties,
+  no named constructors (`constructor.guest()`), no generics/extends/implements
   -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
@@ -212,6 +212,15 @@ Lowering rules:
 - `Type.staticMethod(...)` and `instance.method(...)` dispatch through
   `method_ids` (parameterized by class id and method name); `this` is the
   first call argument for instance methods.
+- Instance properties compile to `pkl_<TypeName>_<p>_get` and
+  `pkl_<TypeName>_<p>_set` functions. A getter takes `this` in slot 0 and
+  returns the property type; a setter takes `this` and a `value` parameter and
+  returns unit. `obj.prop` reads dispatch the getter and `obj.prop = v` writes
+  dispatch the setter; a bare property name inside an instance method falls
+  back to `this.<prop>` through the getter. Getters/setters use `=> expr` or
+  `{ ... }` bodies and may reference fields and methods through `this`.
+  Compound assignment to a property bails with "compound assignment to a
+  property is not lowered yet". Static properties stay deferred.
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
   which prints the class name plus `Class` fields when available.
 

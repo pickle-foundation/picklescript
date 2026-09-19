@@ -758,3 +758,110 @@ fn synthesized_ctor_skips_initialized_fields() {
     let names: Vec<&str> = label.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, vec!["text"], "`times` has an initializer so it is skipped");
 }
+
+#[test]
+fn emits_property_accessors_and_dispatches() {
+    let m = emit_str(
+        r#"class Counter {
+            var count: int
+
+            property doubled: int {
+                get => this.count * 2
+            }
+
+            property mirrored: int {
+                get => this.count
+                set { this.count = value }
+            }
+
+            property label: string {
+                get { return "c" }
+            }
+        }
+
+        fn main() {
+            let c = Counter(1)
+            println(c.doubled)
+            c.mirrored = 9
+            println(c.mirrored)
+            println(c.label)
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    for sym in [
+        "pkl_Counter_doubled_get",
+        "pkl_Counter_mirrored_get",
+        "pkl_Counter_mirrored_set",
+        "pkl_Counter_label_get",
+    ] {
+        assert!(syms.iter().any(|s| s == sym), "symbols: {syms:?}");
+    }
+    let get = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_doubled_get").expect("get");
+    assert_eq!(get.params.first().map(|p| p.ty), Some(IrTy::Ptr), "getter receiver first");
+    assert_eq!(get.ret, IrTy::Int, "getter returns the property type");
+    let set = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_mirrored_set").expect("set");
+    assert_eq!(set.params.len(), 2, "setter takes `this` and `value`");
+    assert_eq!(set.params[1].name, "value");
+    assert_eq!(set.ret, IrTy::Unit, "setter returns unit");
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let used: Vec<String> = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Func(fid), .. } = i {
+                Some(m.funcs.get(fid.0).map(|f| f.symbol.clone()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+    for want in ["pkl_Counter_doubled_get", "pkl_Counter_mirrored_get", "pkl_Counter_mirrored_set"] {
+        assert!(used.iter().any(|s| s == want), "main calls: {used:?}");
+    }
+}
+
+#[test]
+fn property_getter_reads_bare_field_and_this() {
+    // Bare field names and bare property names inside accessors resolve
+    // through `this`; the getter/setter bodies must lower without unset `this`.
+    let m = emit_str(
+        r#"class Meter {
+            var value: int
+
+            property squared: int {
+                get => value * value
+            }
+
+            property plus: int {
+                get => this.value + this.squared
+            }
+
+            init {
+                this.value = this.value + 1
+            }
+        }
+
+        fn main() {
+            let x = Meter(3)
+            println(x.squared)
+            println(x.plus)
+        }"#,
+    );
+    let get = m.funcs.iter().find(|f| f.symbol == "pkl_Meter_squared_get").expect("get");
+    let reads: Vec<&str> = get
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_obj_slot_get")
+        .collect();
+    assert!(reads.len() >= 2, "bare `value` reads dispatch through `this`, dump:\n{get}");
+}

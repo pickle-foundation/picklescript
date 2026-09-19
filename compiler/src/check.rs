@@ -807,24 +807,7 @@ impl<'a> Checker<'a> {
                     self.check_block(b);
                     self.pop_scope();
                 }
-                ClassMember::Property(p) => {
-                    for acc in [&p.get, &p.set].into_iter().flatten() {
-                        self.push_scope();
-                        self.ret_ty = p
-                            .ty
-                            .as_ref()
-                            .map(|t| self.resolved_fn_ty(t, &table.generics))
-                            .unwrap_or(Ty::Unknown);
-                        self.fn_generics = Vec::new();
-                        let t = match acc {
-                            PropertyAccessor::Expr(e) => self.check_expr(e),
-                            PropertyAccessor::Block(b) => self.check_block(b),
-                        };
-                        let want = self.ret_ty.clone();
-                        self.check_assignable(&want, &t, p.span, "property accessor");
-                        self.pop_scope();
-                    }
-                }
+                ClassMember::Property(p) => self.check_property_bodies(p, &table.generics),
                 _ => {}
             }
         }
@@ -878,6 +861,7 @@ impl<'a> Checker<'a> {
                 }
                 ClassMember::Field { init: None, .. } => {}
                 ClassMember::Method(md) => self.check_method_body(md, &table),
+                ClassMember::Property(p) => self.check_property_bodies(p, &table.generics),
                 _ => {}
             }
         }
@@ -919,6 +903,49 @@ impl<'a> Checker<'a> {
         self.ret_ty = Ty::Empty;
         self.fn_generics = Vec::new();
         self.pop_scope();
+    }
+
+    /// Type-check a property's accessor bodies. The getter is a value of the
+    /// property type and runs with `this` live; the setter receives the new
+    /// value bound to `value` and reads `this`.
+    fn check_property_bodies(&mut self, p: &PropertyDecl, generics: &[String]) {
+        let pty = p
+            .ty
+            .as_ref()
+            .map(|t| self.resolved_fn_ty(t, generics))
+            .unwrap_or(Ty::Unknown);
+        if let Some(get) = &p.get {
+            self.push_scope();
+            self.fn_generics = Vec::new();
+            self.ret_ty = pty.clone();
+            if let Some(st) = &self.self_ty {
+                self.declare("this", st.clone(), false);
+            }
+            let t = match get {
+                PropertyAccessor::Expr(e) => self.check_expr(e),
+                PropertyAccessor::Block(b) => self.check_block(b),
+            };
+            // Like `fn ... -> T`: a block ending in `return` has already
+            // checked its value, so an `Empty` tail is not gated again.
+            if t != Ty::Empty {
+                self.check_assignable(&pty, &t, p.span, "property getter");
+            }
+            self.pop_scope();
+        }
+        if let Some(set) = &p.set {
+            self.push_scope();
+            self.fn_generics = Vec::new();
+            self.ret_ty = Ty::Empty;
+            if let Some(st) = &self.self_ty {
+                self.declare("this", st.clone(), false);
+            }
+            self.declare("value", pty.clone(), true);
+            let _ = match set {
+                PropertyAccessor::Expr(e) => self.check_expr(e),
+                PropertyAccessor::Block(b) => self.check_block(b),
+            };
+            self.pop_scope();
+        }
     }
 
     fn check_interface_conformance(&mut self) {
@@ -1734,6 +1761,12 @@ impl<'a> Checker<'a> {
                                 format!("property `{name}` has no setter"),
                             );
                         }
+                        self.check_assignable(
+                            &self.subst(&p.ty, &args_map),
+                            &vt,
+                            target.span,
+                            "assignment",
+                        );
                     } else {
                         self.err(
                             target.span,

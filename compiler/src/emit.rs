@@ -14,7 +14,7 @@ use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
-use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, ResolvedProgram, TypeTableEntry};
+use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, PropertyInfo, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
 
 /// Runtime class ids for user classes start at this id: the runtime reserves
@@ -52,6 +52,7 @@ pub fn emit_ir(
         class_by_name: HashMap::new(),
         ctor_ids: HashMap::new(),
         method_ids: HashMap::new(),
+        property_ids: HashMap::new(),
         owner: None,
         fname: String::new(),
         symbol: String::new(),
@@ -99,6 +100,14 @@ enum FnSource<'a> {
     },
     /// A class/struct method (instance or static).
     Method { table: ClassTable, md: &'a MethodDecl },
+    /// A property accessor: slot 0 is `this`, and setters take a `value`
+    /// parameter, over the resolved property signature.
+    Property {
+        table: ClassTable,
+        pd: &'a PropertyDecl,
+        info: PropertyInfo,
+        is_set: bool,
+    },
 }
 
 /// A registered, lowerable user class/struct.
@@ -150,6 +159,8 @@ struct Emitter<'a> {
     ctor_ids: HashMap<u32, FuncId>,
     /// (Class id, method name) -> (function, is_static).
     method_ids: HashMap<(u32, String), (FuncId, bool)>,
+    /// (Class id, property name, is_setter) -> accessor function.
+    property_ids: HashMap<(u32, String, bool), FuncId>,
     /// Class id of the method/ctor currently being built (implicit receiver).
     owner: Option<i64>,
 
@@ -282,8 +293,8 @@ let bad = |e: &mut Self, what: &str| {
                 return;
             }
         }
-        if !table.properties.is_empty() {
-            bad(self, "properties");
+        if table.properties.iter().any(|p| p.is_static) {
+            bad(self, "static properties");
             return;
         }
         if !table.consts.is_empty() {
@@ -373,6 +384,44 @@ let bad = |e: &mut Self, what: &str| {
             );
             self.finfo.insert(mid, info.clone());
             self.method_ids.insert((cid, md.name.clone()), (mid, info.is_static));
+        }
+
+        // Property accessors: `pkl_<Name>_<p>_get` and `pkl_<Name>_<p>_set`.
+        // Getters return the property type; setters take a `value` parameter
+        // and return unit. Static properties were rejected above.
+        for pd in members.iter().filter_map(|m| match m {
+            ClassMember::Property(pd) => Some(pd),
+            _ => None,
+        }) {
+            let Some(info) = table.properties.iter().find(|i| i.name == pd.name) else {
+                continue;
+            };
+            if info.has_get {
+                let fid = self.push_class_func(
+                    &format!("{}.{}.get", name, pd.name),
+                    &format!("pkl_{name}_{}_get", pd.name),
+                    FnSource::Property {
+                        table: table.clone(),
+                        pd,
+                        info: info.clone(),
+                        is_set: false,
+                    },
+                );
+                self.property_ids.insert((cid, pd.name.clone(), false), fid);
+            }
+            if info.has_set {
+                let fid = self.push_class_func(
+                    &format!("{}.{}.set", name, pd.name),
+                    &format!("pkl_{name}_{}_set", pd.name),
+                    FnSource::Property {
+                        table: table.clone(),
+                        pd,
+                        info: info.clone(),
+                        is_set: true,
+                    },
+                );
+                self.property_ids.insert((cid, pd.name.clone(), true), fid);
+            }
         }
 
         self.classes.push(ClassPlan {
@@ -471,6 +520,10 @@ let bad = |e: &mut Self, what: &str| {
                 };
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
                 let _ = self.build_method_body(&table, md, &info);
+            }
+            FnSource::Property { table, pd, info, is_set } => {
+                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                let _ = self.build_property_body(&table, pd, &info, is_set);
             }
         }
         if self.failed {
@@ -656,6 +709,54 @@ let bad = |e: &mut Self, what: &str| {
         }
         self.fret = self.map_ty(&info.ret, md.span).unwrap_or(IrTy::Unit);
         self.emit_body(&md.body);
+        let _ = self.tail_cleanup();
+        Ok(())
+    }
+
+    /// Lower a property accessor. Slot 0 is `this` (always; static properties
+    /// are deferred). Getters return the property value; setters take `value`
+    /// in slot 1, run the accessor body, and return unit.
+    fn build_property_body(
+        &mut self,
+        _table: &ClassTable,
+        pd: &PropertyDecl,
+        info: &PropertyInfo,
+        is_set: bool,
+    ) -> Result<(), ()> {
+        self.fslots.push(IrTy::Ptr);
+        self.fparams.push(IrParam {
+            name: "this".to_string(),
+            ty: IrTy::Ptr,
+        });
+        self.declare("this", Slot(0));
+        if is_set {
+            let ir = self.map_ty(&info.ty, pd.span).unwrap_or(IrTy::Ptr);
+            self.fslots.push(ir);
+            self.fparams.push(IrParam {
+                name: "value".to_string(),
+                ty: ir,
+            });
+            self.declare("value", Slot(1));
+            self.fret = IrTy::Unit;
+        } else {
+            self.fret = self.map_ty(&info.ty, pd.span).unwrap_or(IrTy::Ptr);
+        }
+        let accessor = if is_set { &pd.set } else { &pd.get };
+        if let Some(a) = accessor {
+            match a {
+                PropertyAccessor::Expr(e) => {
+                    if self.fret.is_unit() {
+                        let _ = self.expr(e);
+                        self.term(IrTerm::Return { v: None });
+                    } else if let Ok(t) = self.expr(e) {
+                        self.term(IrTerm::Return { v: Some(t) });
+                    }
+                }
+                PropertyAccessor::Block(b) => {
+                    let _ = self.emit_body(&Some(FnBody::Block(Box::new(b.clone()))));
+                }
+            }
+        }
         let _ = self.tail_cleanup();
         Ok(())
     }
@@ -1344,6 +1445,11 @@ let bad = |e: &mut Self, what: &str| {
                 let this = self.this_value(e)?;
                 return self.field_read(e.span, this, &field_ty, slot);
             }
+            // Inside an instance method a bare property name reads the getter.
+            if let Some(&fid) = self.property_ids.get(&(cid as u32, name.to_string(), false)) {
+                let this = self.this_value(e)?;
+                return self.call_method(e, fid, &[], Some(this));
+            }
         }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
     }
@@ -1543,10 +1649,25 @@ let bad = |e: &mut Self, what: &str| {
             return self.bad(e.span, "assignment over this member type is not lowered yet");
         };
         let Some(idx) = self.instance_field_index(cid as i64, name) else {
+            // `obj.prop = value` dispatches the property's setter.
+            if let Some(&fid) = self.property_ids.get(&(cid, name.to_string(), true)) {
+                if op != AssignOp::Assign {
+                    return self.bad(e.span, "compound assignment to a property is not lowered yet");
+                }
+                let obj = self.expr(object)?;
+                let v = self.expr(value)?;
+                let dst = self.temp();
+                self.instr(IrInstr::Call {
+                    dst: Some(dst),
+                    callee: Callee::Func(fid),
+                    args: vec![obj, v],
+                });
+                return Ok(v);
+            }
             return self.bad(
                 e.span,
                 format!(
-                    "`{name}` is not a field of this `{}`",
+                    "`{name}` is not a field or settable property of this `{}`",
                     self.class_name_of(cid)
                 ),
             );
@@ -2488,6 +2609,10 @@ let bad = |e: &mut Self, what: &str| {
                 let field_ty = self.field_at(cid as i64, slot).ty.clone();
                 let obj = self.expr(object)?;
                 return self.field_read(e.span, obj, &field_ty, slot);
+            }
+            if let Some(&fid) = self.property_ids.get(&(cid, name.to_string(), false)) {
+                let obj = self.expr(object)?;
+                return self.call_method(e, fid, &[], Some(obj));
             }
             return self.bad(
                 e.span,
