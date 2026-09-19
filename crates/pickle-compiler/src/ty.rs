@@ -51,6 +51,15 @@ impl Ty {
         matches!(self, Ty::Int | Ty::Float)
     }
 
+    /// Element type of a `List<T>`, `Map<K, V>` (value type), or `Range<T>`.
+    pub fn elem(&self) -> Option<Ty> {
+        match self {
+            Ty::List(t) | Ty::Range(t) => Some(t.as_ref().clone()),
+            Ty::Map(_, v) => Some(v.as_ref().clone()),
+            _ => None,
+        }
+    }
+
     /// `T?` of this type (flattening nested options).
     pub fn opt_of(&self) -> Ty {
         match self {

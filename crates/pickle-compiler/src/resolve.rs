@@ -173,6 +173,8 @@ impl<'a> Resolver<'a> {
             .map(|m| m.path.clone())
             .unwrap_or_default();
 
+        self.declare_builtins();
+
         for imp in &prog.imports {
             if let ImportKind::Module { path, alias } = &imp.kind {
                 let alias = alias
@@ -273,6 +275,55 @@ impl<'a> Resolver<'a> {
         let _ = is_test;
     }
 
+    /// Register built-in functions that every module sees without imports.
+    /// User declarations with the same name win over these defaults.
+    fn declare_builtins(&mut self) {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0, 0);
+        let mk = |name: &str,
+                  params: Vec<ParamInfo>,
+                  ret: Ty,
+                  rest: bool|
+         -> CallableInfo {
+            CallableInfo {
+                name: name.to_string(),
+                span,
+                visibility: Visibility::Public,
+                is_async: false,
+                is_static: true,
+                is_override: false,
+                is_abstract: false,
+                operator: None,
+                generics: Vec::new(),
+                params: params
+                    .into_iter()
+                    .map(|mut p| {
+                        p.rest = rest;
+                        p
+                    })
+                    .collect(),
+                ret,
+            }
+        };
+        let any = |name: &str| ParamInfo {
+            name: name.to_string(),
+            ty: Ty::Unknown,
+            has_default: false,
+            rest: true,
+            span,
+        };
+        // Variadic `print`/`println` accept any number of args (rest=truthy so
+        // the checker treats remaining args as unconstrained).
+        let builtins: Vec<CallableInfo> = vec![
+            mk("print", vec![any("args")], Ty::Empty, true),
+            mk("println", vec![any("args")], Ty::Empty, true),
+            mk("len", vec![any("items")], Ty::Int, true),
+            mk("abs", vec![any("x")], Ty::Unknown, true),
+        ];
+        for c in builtins {
+            self.fns.entry(c.name.clone()).or_default().push(c);
+        }
+    }
+
     fn declare_const(&mut self, c: &ConstDecl) {
         self.consts.push(FieldInfo {
             name: c.name.clone(),
@@ -305,6 +356,60 @@ fn render_list(items: &[String]) -> String {
 impl<'a> Resolver<'a> {
     // ---- type expression resolution ---------------------------------------
 
+    /// Resolve a type expression against this resolver's declared tables.
+    pub fn resolve_ty(&self, te: &TypeExpr, generics: &[String]) -> Ty {
+        self.type_ctx().resolve_ty(te, generics)
+    }
+
+    fn type_ctx(&self) -> TypeCtx<'_> {
+        TypeCtx {
+            diags: self.diags,
+            types: &self.types,
+            import_aliases: &self.import_aliases,
+        }
+    }
+
+    fn resolve_param(&self, p: &Param, generics: &[String]) -> ParamInfo {
+        let ctx = self.type_ctx();
+        ParamInfo {
+            name: p.name.clone(),
+            ty: p
+                .ty
+                .as_ref()
+                .map(|t| ctx.resolve_ty(t, generics))
+                .unwrap_or(Ty::Unknown),
+            has_default: p.default.is_some(),
+            rest: p.rest,
+            span: p.span,
+        }
+    }
+
+    fn resolve_params(&self, params: &[Param], generics: &[String]) -> Vec<ParamInfo> {
+        params
+            .iter()
+            .map(|p| self.resolve_param(p, generics))
+            .collect()
+    }
+
+    fn resolve_ret(&self, rt: &Option<TypeExpr>, generics: &[String]) -> Ty {
+        let ctx = self.type_ctx();
+        match rt {
+            Some(t) => ctx.resolve_ty(t, generics),
+            None => Ty::Empty,
+        }
+    }
+}
+
+/// Context for resolving `TypeExpr`s against already-collected tables.
+/// Shared by `Resolver` (during name resolution) and `ResolvedProgram`
+/// (during type-checking, e.g. resolving bodies' param types).
+pub struct TypeCtx<'a> {
+    pub diags: &'a DiagnosticSink,
+    pub types: &'a HashMap<String, TypeTableEntry>,
+    pub import_aliases: &'a HashMap<String, Vec<String>>,
+}
+
+impl<'a> TypeCtx<'a> {
     pub fn resolve_ty(&self, te: &TypeExpr, generics: &[String]) -> Ty {
         match &te.kind {
             TypeExprKind::Path(p) => self.resolve_path(p, generics, te.span),
@@ -373,8 +478,8 @@ impl<'a> Resolver<'a> {
         let t = match name {
             "bool" => Ty::Bool,
             "char" => Ty::Char,
-            "int" => Ty::Int,
-            "float" => Ty::Float,
+            "int" | "i64" => Ty::Int,
+            "float" | "f64" => Ty::Float,
             "string" => Ty::String,
             "void" => Ty::Empty,
             _ => return None,
@@ -431,33 +536,23 @@ impl<'a> Resolver<'a> {
             .map(|e| e.generics().to_vec())
             .unwrap_or_default()
     }
+}
 
-    fn resolve_param(&self, p: &Param, generics: &[String]) -> ParamInfo {
-        ParamInfo {
-            name: p.name.clone(),
-            ty: p
-                .ty
-                .as_ref()
-                .map(|t| self.resolve_ty(t, generics))
-                .unwrap_or(Ty::Unknown),
-            has_default: p.default.is_some(),
-            rest: p.rest,
-            span: p.span,
+impl ResolvedProgram {
+    /// Convenience entry point for type-checking: resolve `te` with the final
+    /// module-wide tables (not a fresh resolver).
+    pub fn resolve_ty(
+        &self,
+        te: &TypeExpr,
+        generics: &[String],
+        diags: &DiagnosticSink,
+    ) -> Ty {
+        TypeCtx {
+            diags,
+            types: &self.types,
+            import_aliases: &self.import_aliases,
         }
-    }
-
-    fn resolve_params(&self, params: &[Param], generics: &[String]) -> Vec<ParamInfo> {
-        params
-            .iter()
-            .map(|p| self.resolve_param(p, generics))
-            .collect()
-    }
-
-    fn resolve_ret(&self, rt: &Option<TypeExpr>, generics: &[String]) -> Ty {
-        match rt {
-            Some(t) => self.resolve_ty(t, generics),
-            None => Ty::Empty,
-        }
+        .resolve_ty(te, generics)
     }
 }
 
