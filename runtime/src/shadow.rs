@@ -41,9 +41,22 @@ pub struct GcThread {
     pub next: *mut GcThread,
 }
 
+/// Serialises mutations of and walks over the thread registry (`THREAD_HEAD`)
+/// and each node's frame list. The collector takes it for the whole walk so a
+/// concurrent `register_thread`/`unregister_thread`/`pickle_shadow_push` cannot
+/// free or mutate a node while it is being traced.
+static REGISTRY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Flat registry of threads; also the intrusive list of `GcThread` nodes.
 static mut THREAD_HEAD: *mut GcThread = std::ptr::null_mut();
 static THREAD_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Lock the thread registry for mutation or traversal. Returns the guard;
+/// hold it for the duration of any operation that touches `THREAD_HEAD` or a
+/// node's `frames` list.
+pub(crate) fn lock_registry() -> std::sync::MutexGuard<'static, ()> {
+    REGISTRY.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 std::thread_local! {
     /// Thread-local handle into the registry (null until registered).
@@ -91,41 +104,39 @@ pub fn current_thread() -> *mut GcThread {
 ///
 /// Returns the new node. Safe to call once per OS thread.
 pub fn register_thread() -> *mut GcThread {
+    let _guard = lock_registry();
+    ensure_registered_locked(&_guard)
+}
+
+/// Insert `node` into the registry under the already-held registry guard.
+/// Does not touch the thread-local handle (that is the caller's job).
+fn insert_thread_locked(_guard: &std::sync::MutexGuard<'static, ()>, node: *mut GcThread) {
     unsafe {
-        let existing = current_thread();
-        if !existing.is_null() {
-            return existing;
-        }
-        let node = Box::into_raw(Box::new(GcThread {
-            frames: std::ptr::null_mut(),
-            id: THREAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-            next: std::ptr::null_mut(),
-        }));
-        // Insert into the intrusive list. Guard with a tiny spinlock to be safe
-        // on multi-threaded startup (single writer takes the lock).
-        static LOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        while LOCK
-            .compare_exchange_weak(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_err()
-        {
-            std::hint::spin_loop();
-        }
         (*node).next = THREAD_HEAD;
         THREAD_HEAD = node;
-        LOCK.store(false, std::sync::atomic::Ordering::Release);
-
-        CURRENT_THREAD.with(|c| c.set(node));
-        node
     }
+}
+
+/// Ensure the current thread is registered, assuming the registry guard is held.
+/// Returns the thread's `GcThread` node (thread-local, so no lock needed to read).
+fn ensure_registered_locked(guard: &std::sync::MutexGuard<'static, ()>) -> *mut GcThread {
+    let existing = current_thread();
+    if !existing.is_null() {
+        return existing;
+    }
+    let node = Box::into_raw(Box::new(GcThread {
+        frames: std::ptr::null_mut(),
+        id: THREAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        next: std::ptr::null_mut(),
+    }));
+    insert_thread_locked(guard, node);
+    CURRENT_THREAD.with(|c| c.set(node));
+    node
 }
 
 /// Remove `node` (and any frames it still has) from the registry and detach.
 pub fn unregister_thread(node: *mut GcThread) {
+    let _guard = lock_registry();
     unsafe {
         let mut cur = THREAD_HEAD;
         let mut prev: *mut GcThread = std::ptr::null_mut();
@@ -147,42 +158,58 @@ pub fn unregister_thread(node: *mut GcThread) {
     }
 }
 
-/// Push `frame` onto the current thread's stack. Must be LIFO-matched with
-/// `pop_frame`.
-#[no_mangle]
-pub extern "C" fn pickle_shadow_push(frame: *mut ShadowFrame) {
+fn push_frame(frame: *mut ShadowFrame) {
+    assert!(!frame.is_null());
+    let _guard = lock_registry();
     unsafe {
-        assert!(!frame.is_null());
-        let thread = register_thread();
+        let thread = ensure_registered_locked(&_guard);
         (*frame).prev = (*thread).frames;
         (*thread).frames = frame;
     }
 }
 
-/// Pop `frame`, which must be the current top of this thread's stack.
+/// Push `frame` onto the current thread's stack. Must be LIFO-matched with
+/// `pop_frame`.
 #[no_mangle]
-pub extern "C" fn pickle_shadow_pop(frame: *mut ShadowFrame) {
+pub extern "C" fn pickle_shadow_push(frame: *mut ShadowFrame) {
+    push_frame(frame);
+}
+
+fn pop_frame(frame: *mut ShadowFrame) {
+    let _guard = lock_registry();
     unsafe {
-        let thread = register_thread();
+        let thread = ensure_registered_locked(&_guard);
         assert_eq!((*thread).frames, frame, "shadow stack pop out of order");
         (*thread).frames = (*frame).prev;
         (*frame).prev = std::ptr::null_mut();
     }
 }
 
+/// Pop `frame`, which must be the current top of this thread's stack.
+#[no_mangle]
+pub extern "C" fn pickle_shadow_pop(frame: *mut ShadowFrame) {
+    pop_frame(frame);
+}
+
+fn set_frame_slot(frame: *mut ShadowFrame, index: u32, value: *mut PickleObject) {
+    assert!(!frame.is_null());
+    unsafe { (*frame).set_slot(index, value) }
+}
+
 /// Set slot `index` of `frame` to a managed pointer.
 #[no_mangle]
 pub extern "C" fn pickle_shadow_set(frame: *mut ShadowFrame, index: u32, value: *mut PickleObject) {
-    unsafe {
-        assert!(!frame.is_null());
-        (*frame).set_slot(index, value)
-    }
+    set_frame_slot(frame, index, value);
+}
+
+fn get_frame_slot(frame: *mut ShadowFrame, index: u32) -> *mut PickleObject {
+    unsafe { (*frame).slot(index) }
 }
 
 /// Read slot `index` of `frame` as a managed pointer.
 #[no_mangle]
 pub extern "C" fn pickle_shadow_get(frame: *mut ShadowFrame, index: u32) -> *mut PickleObject {
-    unsafe { (*frame).slot(index) }
+    get_frame_slot(frame, index)
 }
 
 /// Register the calling OS thread with the collector. Returns the thread's id.
@@ -217,6 +244,11 @@ mod tests {
 
     #[test]
     fn slots_roundtrip() {
+        // Must not run concurrently with a collector: the trace walks every
+        // registered thread's frame slots, and this test stuffs them with
+        // deliberately-garbage fake pointers (0x11/0x22) which would segfault
+        // the walker. `test_begin` serialises it with all GC/registry tests.
+        let _guard = crate::gc::test_begin();
         register_thread();
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),

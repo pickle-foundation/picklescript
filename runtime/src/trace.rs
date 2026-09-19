@@ -19,7 +19,12 @@ pub fn trace_from_roots(descriptors: &DescriptorTable, roots: &[*mut *mut Pickle
             enqueue(&mut worklist, r);
         }
     }
-    // Shadow-stack slots of every registered thread.
+    // Shadow-stack slots of every registered thread. Hold the registry lock for
+    // the whole walk: without it, a concurrent `register_thread`/
+    // `unregister_thread`/`pickle_shadow_push` in another test (OS) thread can
+    // free a node or install a frame while we iterate, and `slots_roundtrip`
+    // runs in parallel with the collector on Linux CI, dereferencing garbage.
+    let _guard = crate::shadow::lock_registry();
     let mut thread = all_threads();
     unsafe {
         while !thread.is_null() {
@@ -124,6 +129,10 @@ mod tests {
 
     #[test]
     fn marks_through_builtin_list() {
+        // Serialise with `shadow::tests::slots_roundtrip`: this walker reads
+        // every registered thread's frame slots, and that test pushes fake
+        // pointers (0x11/0x22) which would be dereferenced here.
+        let _guard = crate::gc::test_begin();
         use crate::heap::Heap;
         let mut heap = Heap::new();
         let desc = DescriptorTable::new();
