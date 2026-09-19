@@ -45,6 +45,7 @@ pub fn emit_ir(
         types,
         module: IrModule::default(),
         consts_inits: HashMap::new(),
+        class_consts: HashMap::new(),
         const_inlining: Vec::new(),
         fid_list: Vec::new(),
         fsource: HashMap::new(),
@@ -175,6 +176,9 @@ struct Emitter<'a> {
     module: IrModule,
     /// Top-level `const` name -> its initializer (inlined at use sites).
     consts_inits: HashMap<String, &'a Expr>,
+    /// `(class id, const name)` -> declared info + initializer, inlined at use
+    /// sites (`Type.NAME`, or the bare name inside the class body).
+    class_consts: HashMap<(u32, String), (FieldInfo, &'a Expr)>,
     const_inlining: Vec<String>,
     /// Registered functions in emission order (mirrors `module.funcs`).
     fid_list: Vec<FuncId>,
@@ -343,10 +347,6 @@ let bad = |e: &mut Self, what: &str| {
                 return;
             }
         }
-        if !table.consts.is_empty() {
-            bad(self, "constants");
-            return;
-        }
         let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
         let mut init_blocks: Vec<&'a Block> = Vec::new();
         for m in members {
@@ -364,10 +364,6 @@ let bad = |e: &mut Self, what: &str| {
                 ClassMember::Init(b) => init_blocks.push(b),
                 ClassMember::Deinit(_) => {
                     bad(self, "`deinit` blocks");
-                    return;
-                }
-                ClassMember::Const { .. } => {
-                    bad(self, "constants");
                     return;
                 }
                 _ => {}
@@ -400,6 +396,18 @@ let bad = |e: &mut Self, what: &str| {
         let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
         for (slot, x) in static_inits {
             self.static_inits.push((cid, slot, x));
+        }
+        // Class constants are compile-time values: record the declared info and
+        // the initializer so reads can inline it (`Type.NAME` / bare name).
+        for f in &table.consts {
+            let Some(value) = members.iter().find_map(|m| match m {
+                ClassMember::Const { name, value, .. } if name == &f.name => Some(value),
+                _ => None,
+            }) else {
+                continue;
+            };
+            self.class_consts
+                .insert((cid, f.name.clone()), (f.clone(), value));
         }
 
         // Constructor: `pkl_<Name>_new(...) -> Ptr`. Its parameters are the
@@ -1696,6 +1704,10 @@ let bad = |e: &mut Self, what: &str| {
             // A bare name may also be a static field of the enclosing class.
             if let Some((slot, info)) = self.static_field(cid, name) {
                 return self.static_read(e.span, cid as u32, slot, &info.ty);
+            }
+            // ... or a constant of the enclosing class.
+            if let Some(r) = self.read_class_const(e.span, cid, name) {
+                return r;
             }
         }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
@@ -3537,6 +3549,9 @@ let bad = |e: &mut Self, what: &str| {
                 if let Some((slot, info)) = self.static_field(cid as i64, name) {
                     return self.static_read(e.span, cid, slot, &info.ty);
                 }
+                if let Some(r) = self.read_class_const(e.span, cid as i64, name) {
+                    return r;
+                }
                 return self.bad(
                     e.span,
                     format!(
@@ -3562,6 +3577,35 @@ let bad = |e: &mut Self, what: &str| {
         let slot = static_field_slot(&plan.table, name)?;
         let info = static_field_info(&plan.table, name)?;
         Some((slot, info))
+    }
+
+    /// Inline a class constant's initializer at a use site. Returns `None` when
+    /// `name` is not a constant of class `cid`; `Some(Err)` on a cyclic constant.
+    fn read_class_const(
+        &mut self,
+        span: Span,
+        cid: i64,
+        name: &str,
+    ) -> Option<Result<Temp, ()>> {
+        let (_, value) = self
+            .class_consts
+            .get(&(cid as u32, name.to_string()))?
+            .clone();
+        let key = format!("{}.{}", self.class_name_of(cid as u32), name);
+        if self.const_inlining.iter().any(|n| n == &key) {
+            return Some(
+                self.bad(span, format!("cyclic `const` initialization of `{key}`")),
+            );
+        }
+        self.const_inlining.push(key);
+        // Constant initializers are evaluated in the declaring class's scope so
+        // a constant can reference another constant of the same class by name.
+        let saved_owner = self.owner;
+        self.owner = Some(cid);
+        let t = self.expr(value);
+        self.owner = saved_owner;
+        self.const_inlining.pop();
+        Some(t)
     }
 
     fn field_at(&self, cid: i64, idx: usize) -> &FieldInfo {

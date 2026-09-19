@@ -111,7 +111,11 @@ declaring is rejected to keep contracts explicit.)
 - `static var` fields: one per class, initialized once at program start (in
   class-registration order) to their declared value or the field type's
   default. Reads and writes use the type name (`Employee.count`); a static
-  method may use the bare name. `static const` members are still deferred.
+  method may use the bare name.
+- `const NAME = value` members: compile-time constants. Reads use the type
+  name (`Employee.MAX`), or the bare name inside the class body; one constant
+  may reference another. They are inlined at each use, immutable, and cannot
+  be reached through an instance.
 - `static fn`: callable as `Employee.create()`; has no receiver, cannot see
   instance state.
 - Statics are inherited through the type name.

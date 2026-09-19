@@ -677,3 +677,69 @@ fn rejects_static_field_instance_misuse() {
         "missing type-to-instance write diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_class_const_access() {
+    // Class constants type-qualify through the class name and are reachable by
+    // bare name inside the class body (static and instance methods); one
+    // constant may reference another.
+    let d = check_str(
+        r#"class Config {
+            const BASE: int = 2
+            const DOUBLE: int = BASE * 2
+            const NAME: string = "cfg"
+
+            static fn label() -> string {
+                return NAME
+            }
+
+            fn limit() -> int {
+                return DOUBLE + 1
+            }
+        }
+
+        fn main() {
+            println(Config.BASE)
+            println(Config.DOUBLE)
+            println(Config.NAME)
+            println(Config.label())
+            let c = Config()
+            println(c.limit())
+            let x: int = Config.BASE * 10
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_const_misuse() {
+    // Constants are immutable and static: assigning one, reading one through an
+    // instance, and a value of the wrong type must all be rejected.
+    let d = check_str(
+        r#"class Config {
+            const BASE: int = 2
+            const BAD: int = "nope"
+        }
+
+        fn main() {
+            Config.BASE = 5
+            let c = Config()
+            println(c.BASE)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("cannot assign to immutable static field `BASE`"),
+        "missing const-assignment diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains(
+            "static field `BASE` must be accessed on the type `Config`, not on an instance"
+        ),
+        "missing instance-to-const read diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("const initializer"),
+        "missing const initializer type diagnostic, got:\n{msgs}"
+    );
+}

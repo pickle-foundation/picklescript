@@ -1341,3 +1341,57 @@ fn emits_static_field_cells_and_init() {
         "bare-name static write: {bump_externs:?}"
     );
 }
+
+#[test]
+fn emits_class_const_inlining() {
+    // Class constants are compile-time values: reads of `Type.NAME` (and bare
+    // names inside the class body) inline the initializer; no static cell or
+    // init function is synthesized.
+    let m = emit_str(
+        r#"class Config {
+            const BASE: int = 2
+            const DOUBLE: int = BASE * 2
+            const NAME: string = "cfg"
+
+            fn limit() -> int {
+                return DOUBLE + 1
+            }
+        }
+
+        fn main() {
+            println(Config.BASE)
+            println(Config.NAME)
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    assert!(
+        !syms.iter().any(|s| s == "pkl_static_init"),
+        "constants must not synthesize a static initializer: {syms:?}"
+    );
+
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    assert!(
+        !externs.contains(&"pickle_static_get") && !externs.contains(&"pickle_static_set"),
+        "constants are inlined, not stored in cells: {externs:?}"
+    );
+
+    // `Config.BASE` in main inlines to the literal 2.
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let has_two = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Const { c: IrConst::Int(2), .. }));
+    assert!(has_two, "Config.BASE should inline as an int const");
+
+    // A bare-name const read inside a method also inlines (`DOUBLE + 1`,
+    // where DOUBLE is `BASE * 2`).
+    let limit = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Config_limit")
+        .expect("limit");
+    let dump = format!("{limit}");
+    assert!(dump.contains("binop.mul"), "DOUBLE inlines BASE * 2, dump:\n{dump}");
+    assert!(dump.contains("binop.add"), "limit adds 1, dump:\n{dump}");
+}

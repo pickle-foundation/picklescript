@@ -193,8 +193,8 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No `deinit`, no `Const` members, no named constructors
-  (`constructor.guest()`), no generics/extends/implements
+- No `deinit`, no named constructors (`constructor.guest()`), no
+  generics/extends/implements
   -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
@@ -249,6 +249,13 @@ Lowering rules:
   static-field name inside the class's own static method resolves to the same
   cell. The checker enforces direction: a static field is reached through the
   type name, an instance field only through an instance.
+- `const` members are compile-time values: the emitter inlines their
+  initializer at every read (`Type.NAME`, or the bare name inside the class
+  body), evaluating it in the declaring class's scope so one constant may
+  reference another. No cell or static-init entry is created; the emitted code
+  is the same as writing the literal at the use site. Assigning a constant and
+  reaching one through an instance are rejected by the checker, and a cyclic
+  constant is a codegen error ("cyclic `const` initialization").
 - `char` values are boxed/unboxed exactly like the other scalars: the runtime
   provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
   elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`
