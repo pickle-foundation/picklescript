@@ -190,6 +190,87 @@ pub fn map_len_of(map: *const PickleObject) -> usize {
     map_len(map)
 }
 
+/// Materialize the live keys (or values) as a fresh `List`.
+fn map_snapshot(map: *const PickleObject, want_keys: bool) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    let l = crate::list::list_new(0, gc);
+    let cap = map_cap(map);
+    let entries = map_entries(map);
+    unsafe {
+        for i in 0..cap {
+            let e = &*entries.add(i);
+            if e.key.is_null() || std::ptr::eq(e.key, crate::object::nil_sentinel()) {
+                continue;
+            }
+            let val = if want_keys { e.key } else { e.value };
+            crate::list::list_push(l, val);
+        }
+    }
+    l
+}
+
+// ---- Exported ABI ----------------------------------------------------------
+// Thin `extern "C"` wrappers over the internal Rust APIs. Keys must already be
+// string objects; scalar values must be boxed first (`boxscalar::pickle_box_*`)
+// before being stored, and unboxed after reading.
+
+/// Create an empty map; `cap` is a requested capacity hint (a power of two).
+#[no_mangle]
+pub extern "C" fn pickle_map_new(cap: usize) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    map_new(cap, gc)
+}
+
+/// Insert `key -> value`. The previous value (if any) is dropped.
+#[no_mangle]
+pub extern "C" fn pickle_map_set(
+    map: *mut PickleObject,
+    key: *const PickleObject,
+    value: *mut PickleObject,
+) {
+    let _ = map_set(map, key, value);
+}
+
+/// Look up `key`; when absent, returns `default` instead of null so compiled
+/// code never unboxes a null pointer.
+#[no_mangle]
+pub extern "C" fn pickle_map_get_boxed(
+    map: *const PickleObject,
+    key: *const PickleObject,
+    default: *mut PickleObject,
+) -> *mut PickleObject {
+    let got = map_get(map, key);
+    if got.is_null() {
+        default
+    } else {
+        got
+    }
+}
+
+/// Whether `key` is present.
+#[no_mangle]
+pub extern "C" fn pickle_map_has(map: *const PickleObject, key: *const PickleObject) -> bool {
+    !map_get(map, key).is_null()
+}
+
+/// Number of live entries.
+#[no_mangle]
+pub extern "C" fn pickle_map_len(map: *const PickleObject) -> usize {
+    map_len_of(map)
+}
+
+/// All live keys as a fresh `List` (string pointers).
+#[no_mangle]
+pub extern "C" fn pickle_map_keys(map: *const PickleObject) -> *mut PickleObject {
+    map_snapshot(map, true)
+}
+
+/// All live values as a fresh `List` (boxed/pointer values).
+#[no_mangle]
+pub extern "C" fn pickle_map_values(map: *const PickleObject) -> *mut PickleObject {
+    map_snapshot(map, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +322,32 @@ mod tests {
             assert_eq!(map_get(m, k), *v, "key {i}");
         }
         assert_eq!(map_len_of(m), 500);
+    }
+
+    #[test]
+    fn abi_roundtrip_boxed_ints() {
+        let _guard = setup();
+        crate::pickle_runtime_init();
+        let m = crate::map::pickle_map_new(0);
+        let k1 = crate::strings::string_from_bytes(b"alpha".as_ptr(), 5, crate::gc::gc_mut());
+        let k2 = crate::strings::string_from_bytes(b"beta".as_ptr(), 4, crate::gc::gc_mut());
+        crate::map::pickle_map_set(m, k1, crate::boxscalar::pickle_box_i64(7));
+        crate::map::pickle_map_set(m, k2, crate::boxscalar::pickle_box_i64(-3));
+        assert!(crate::map::pickle_map_has(m, k1));
+        let missing = crate::strings::string_from_bytes(b"gamma".as_ptr(), 5, crate::gc::gc_mut());
+        assert!(!crate::map::pickle_map_has(m, missing));
+        assert_eq!(crate::map::pickle_map_len(m), 2);
+        let default = crate::boxscalar::pickle_box_i64(0);
+        let v1 = crate::map::pickle_map_get_boxed(m, k1, default);
+        assert_eq!(crate::boxscalar::pickle_unbox_i64(v1), 7);
+        let missing = crate::strings::string_from_bytes(b"gamma".as_ptr(), 5, crate::gc::gc_mut());
+        assert_eq!(
+            crate::boxscalar::pickle_unbox_i64(crate::map::pickle_map_get_boxed(m, missing, default)),
+            0
+        );
+        let keys = crate::map::pickle_map_keys(m);
+        assert_eq!(crate::list::pickle_list_len(keys), 2);
+        let vals = crate::map::pickle_map_values(m);
+        assert_eq!(crate::list::pickle_list_len(vals), 2);
     }
 }

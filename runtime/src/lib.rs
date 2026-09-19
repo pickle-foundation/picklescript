@@ -204,6 +204,14 @@ pub mod abi {
     pub use crate::list::pickle_list_push;
     pub use crate::list::pickle_list_set;
 
+    pub use crate::map::pickle_map_get_boxed;
+    pub use crate::map::pickle_map_has;
+    pub use crate::map::pickle_map_keys;
+    pub use crate::map::pickle_map_len;
+    pub use crate::map::pickle_map_new;
+    pub use crate::map::pickle_map_set;
+    pub use crate::map::pickle_map_values;
+
     pub use crate::shadow::pickle_shadow_get;
     pub use crate::shadow::pickle_shadow_pop;
     pub use crate::shadow::pickle_shadow_push;

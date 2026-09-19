@@ -337,3 +337,60 @@ fn rejects_option_type_mix() {
         error_msgs(&d)
     );
 }
+
+#[test]
+fn accepts_map_typing() {
+    let d = check_str(
+        r#"fn total(m: Map<string, int>) -> int {
+            let a = m["x"]
+            let ks = m.keys()
+            let vs = m.values()
+            return a + len(ks) + len(vs)
+        }
+
+        fn main() {
+            var m = {"alpha": 10, "beta": 20}
+            m["beta"] = m["beta"] + m["missing"]
+            let hasit: bool = m.has("alpha")
+            print(hasit, total(m))
+            for (x in m) {
+                print(x)
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_non_string_map_keys() {
+    let d = check_str(
+        r#"fn main() {
+            var m = {1: "one"}
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a map-key type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_non_string_map_index() {
+    let d = check_str(
+        r#"fn main() {
+            var m = {"a": 1}
+            let x = m[42]
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a map-index type error, got:\n{}",
+        error_msgs(&d)
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("string"),
+        "expected a `string` key diagnostic, got:\n{msgs}"
+    );
+}

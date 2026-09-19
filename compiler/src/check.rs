@@ -1013,6 +1013,12 @@ impl<'a> Checker<'a> {
                     Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown))
                 } else {
                     let k = self.check_expr(&pairs[0].0);
+                    if k != Ty::Unknown && k != Ty::String {
+                        self.err(
+                            pairs[0].0.span,
+                            "map keys must be `string` values",
+                        );
+                    }
                     let vt = self.check_expr(&pairs[0].1);
                     for (kk, vv) in pairs.iter().skip(1) {
                         let tk = self.check_expr(kk);
@@ -1385,6 +1391,25 @@ impl<'a> Checker<'a> {
                 }
             };
         }
+        if let Ty::Map(k, v) = &ot {
+            // Builtin map methods (slice subset).
+            return match name {
+                "has" => Ty::Fn(vec![k.as_ref().clone()], Box::new(Ty::Bool)),
+                "keys" => Ty::Fn(vec![], Box::new(Ty::List(k.clone()))),
+                "values" => Ty::Fn(vec![], Box::new(Ty::List(v.clone()))),
+                other => {
+                    self.err(
+                        e.span,
+                        format!(
+                            "no member `{other}` on `Map<{}, {}>`",
+                            k.bare_name(),
+                            v.bare_name()
+                        ),
+                    );
+                    Ty::Unknown
+                }
+            };
+        }
         let Some((class, args_map)) = self.type_key(&ot) else {
             self.err_note(
                 e.span,
@@ -1461,11 +1486,17 @@ impl<'a> Checker<'a> {
         let ot = self.check_expr(object);
         let it = self.check_expr(index);
         match &ot {
-            Ty::List(_) | Ty::Range(_) | Ty::Map(_, _) => {
+            Ty::List(_) | Ty::Range(_) => {
                 if it != Ty::Unknown && it != Ty::Int {
                     self.err(e.span, "index must be an `int`");
                 }
                 ot.elem().unwrap_or(Ty::Unknown)
+            }
+            Ty::Map(_, val_ty) => {
+                if it != Ty::Unknown && it != Ty::String {
+                    self.err(e.span, "map index must be a `string`");
+                }
+                val_ty.as_ref().clone()
             }
             Ty::String => {
                 if it != Ty::Unknown && it != Ty::Int {
@@ -1655,8 +1686,14 @@ impl<'a> Checker<'a> {
             ExprKind::Index { object, index } => {
                 let ot = self.check_expr(object);
                 let it = self.check_expr(index);
-                if ot != Ty::Unknown && it != Ty::Unknown && it != Ty::Int {
-                    self.err(target.span, "index must be an `int`");
+                match &ot {
+                    Ty::List(_) | Ty::Range(_) if it != Ty::Unknown && it != Ty::Int => {
+                        self.err(target.span, "index must be an `int`");
+                    }
+                    Ty::Map(_, _) if it != Ty::Unknown && it != Ty::String => {
+                        self.err(target.span, "map index must be a `string`");
+                    }
+                    _ => {}
                 }
                 let elem_ty = match &ot {
                     Ty::List(inner) => inner.as_ref().clone(),

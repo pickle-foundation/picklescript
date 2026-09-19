@@ -454,6 +454,10 @@ impl<'a> TypeCtx<'a> {
                 // Builtin list type; elements resolved by `instantiate`.
                 return Ty::List(Box::new(Ty::Unknown));
             }
+            if path[0] == "Map" {
+                // Builtin map type; key/value resolved by `instantiate`.
+                return Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown));
+            }
             if let Some(g) = generics.iter().find(|g| **g == path[0]) {
                 return Ty::Var(g.clone());
             }
@@ -504,6 +508,11 @@ impl<'a> TypeCtx<'a> {
         let (name, expected): (String, Vec<String>) = match bare {
             Ty::List(_) => {
                 return Ty::List(Box::new(args.first().cloned().unwrap_or(Ty::Unknown)));
+            }
+            Ty::Map(..) => {
+                let k = args.first().cloned().unwrap_or(Ty::Unknown);
+                let v = args.get(1).cloned().unwrap_or(Ty::Unknown);
+                return Ty::Map(Box::new(k), Box::new(v));
             }
             Ty::Class(n, _) | Ty::Struct(n, _) | Ty::Enum(n, _) | Ty::Interface(n, _) => {
                 (n.clone(), self.generics_of(n))

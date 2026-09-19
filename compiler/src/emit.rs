@@ -485,8 +485,23 @@ impl<'a> Emitter<'a> {
         let Pattern::Binding { name, .. } = pattern else {
             return self.bad(span, "iteration patterns other than a binding are not lowered yet");
         };
-        if let Some(Ty::List(_)) = self.ty_of(&sequence.span) {
-            return self.for_in_list(name, sequence, body, span);
+        if let Some(Ty::List(inner)) = self.ty_of(&sequence.span) {
+            let elem = inner.as_ref().clone();
+            let seq_t = self.expr(sequence)?;
+            return self.for_in_values(name, seq_t, elem, body, span);
+        }
+        if let Some(Ty::Map(k, v)) = self.ty_of(&sequence.span) {
+            if k.as_ref() != &Ty::String {
+                return self.bad(sequence.span, "map keys must be `string` values");
+            }
+            let map_t = self.expr(sequence)?;
+            let vals = self.extern_call_t1(
+                "pickle_map_values",
+                vec![IrTy::Ptr],
+                IrTy::Ptr,
+                vec![map_t],
+            )?;
+            return self.for_in_values(name, vals, v.as_ref().clone(), body, span);
         }
         let (start, end, incl) = match &sequence.kind {
             ExprKind::Binary {
@@ -566,27 +581,24 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// `for (x in xs)` where `xs` is a `List<T>`. Iterates by index over the
-    /// (boxed, managed) elements; scalar elements are unboxed each trip. The
-    /// list itself lives in a managed slot so the collector keeps it and its
-    /// boxed elements reachable for the whole loop.
-    fn for_in_list(
+    /// `for (x in seq)` over a sequence value. `seq` is a boxed (managed)
+    /// sequence — a `List` produced directly by the sequence expression or by
+    /// `pickle_map_values` for a map. Iterates by index; scalar elements are
+    /// unboxed each trip. The sequence lives in a managed slot so the collector
+    /// keeps it and its boxed elements reachable for the whole loop.
+    fn for_in_values(
         &mut self,
         name: &str,
-        sequence: &Expr,
+        seq_t: Temp,
+        elem: Ty,
         body: &Block,
         span: Span,
     ) -> Result<(), ()> {
-        let elem = match self.ty_of(&sequence.span) {
-            Some(Ty::List(inner)) => inner.as_ref().clone(),
-            _ => return self.bad(span, "`for (x in ...)` sequence is not a `List`"),
-        };
-        let rep = self.elem_rep(&elem, sequence.span)?;
+        let rep = self.elem_rep(&elem, span)?;
         let elem_ir = elem_ir(&elem);
         let seq_slot = self.new_slot(IrTy::Ptr);
         let idx_slot = self.new_slot(IrTy::Int);
         let len_slot = self.new_slot(IrTy::Int);
-        let seq_t = self.expr(sequence)?;
         self.instr(IrInstr::StoreSlot { slot: seq_slot, v: seq_t });
         let zero = self.temp();
         self.instr(IrInstr::Const {
@@ -711,7 +723,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Unsafe(_) => self.bad(e.span, "`unsafe` blocks are not lowered yet"),
             ExprKind::Tuple(_) => self.bad(e.span, "tuple values are not lowered yet"),
             ExprKind::Array(items) => self.array_literal(e, items),
-            ExprKind::Map(_) => self.bad(e.span, "map values are not lowered yet"),
+            ExprKind::Map(pairs) => self.map_literal(e, pairs),
             ExprKind::Range { .. } => self.bad(e.span, "range values are not lowered yet"),
         }
     }
@@ -1027,8 +1039,18 @@ impl<'a> Emitter<'a> {
         value: &Expr,
     ) -> Result<Temp, ()> {
         let ot = self.ty_of(&object.span);
+        if let Some(Ty::Map(k, v)) = &ot {
+            return self.map_index_assign(
+                op,
+                object,
+                index,
+                value,
+                k.as_ref().clone(),
+                v.as_ref().clone(),
+            );
+        }
         if !matches!(ot, Some(Ty::List(_))) {
-            // Maps and strings are typed but unlowered for assignment yet.
+            // Maps are handled above; other types are typed but unlowered.
             return self.bad(e.span, "index assignment over this type is not lowered yet");
         }
         let elem = match &ot {
@@ -1096,8 +1118,18 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// `xs[i]` element read for a `List<T>` (and a clear error for strings).
+    /// `xs[i]` element read for a `List<T>` or `Map<string, V>` (and a clear
+    /// error for strings).
     fn index_read(&mut self, e: &Expr, object: &Expr, index: &Expr) -> Result<Temp, ()> {
+        if let Some(Ty::Map(k, v)) = self.ty_of(&object.span) {
+            return self.map_index_read(
+                e,
+                object,
+                index,
+                k.as_ref().clone(),
+                v.as_ref().clone(),
+            );
+        }
         let ot = self.ty_of(&object.span);
         let elem = match ot {
             Some(Ty::List(inner)) => inner.as_ref().clone(),
@@ -1121,6 +1153,124 @@ impl<'a> Emitter<'a> {
             }
             ElemRep::Ptr => Ok(raw),
         }
+    }
+
+    /// `m[k]` read for a `Map<string, V>`. Absent keys yield the value type's
+    /// default (`0`/`0.0`/`false`, the empty string, or null) via the runtime's
+    /// boxed get, so a scalar is never unboxed from a null pointer.
+    fn map_index_read(
+        &mut self,
+        e: &Expr,
+        object: &Expr,
+        index: &Expr,
+        kty: Ty,
+        vty: Ty,
+    ) -> Result<Temp, ()> {
+        if kty != Ty::String {
+            return self.bad(index.span, "map keys must be `string` values");
+        }
+        let vrep = self.elem_rep(&vty, e.span)?;
+        let obj = self.expr(object)?;
+        let k = self.expr(index)?;
+        if !matches!(self.irty(index.span)?, IrTy::Str) {
+            return self.bad(index.span, "map keys must be `string` values");
+        }
+        let default: Temp = match vrep {
+            ElemRep::Scalar(box_sym, _, ir) => {
+                let zero = self.zero_scalar(ir, index.span)?;
+                self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![zero])?
+            }
+            ElemRep::Ptr => {
+                if vty == Ty::String {
+                    self.string_literal(&[])?
+                } else {
+                    let nul = self.null_temp()?;
+                    self.extern_call_t1(
+                        "pickle_map_get_boxed",
+                        vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+                        IrTy::Ptr,
+                        vec![obj, k, nul],
+                    )?
+                }
+            }
+        };
+        let raw = self.extern_call_t1(
+            "pickle_map_get_boxed",
+            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+            IrTy::Ptr,
+            vec![obj, k, default],
+        )?;
+        match vrep {
+            ElemRep::Scalar(_, unbox_sym, ir) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
+            }
+            ElemRep::Ptr => Ok(raw),
+        }
+    }
+
+    /// `m[k] = v` and `m[k] op= v` for `Map<string, V>` targets.
+    fn map_index_assign(
+        &mut self,
+        op: AssignOp,
+        object: &Expr,
+        index: &Expr,
+        value: &Expr,
+        kty: Ty,
+        vty: Ty,
+    ) -> Result<Temp, ()> {
+        if kty != Ty::String {
+            return self.bad(index.span, "map keys must be `string` values");
+        }
+        let vrep = self.elem_rep(&vty, object.span)?;
+        let obj = self.expr(object)?;
+        let k = self.expr(index)?;
+        if !matches!(self.irty(index.span)?, IrTy::Str) {
+            return self.bad(index.span, "map keys must be `string` values");
+        }
+        if op == AssignOp::Assign {
+            let v = self.expr(value)?;
+            let v_ty = self.irty(value.span)?;
+            let boxed = self.box_for_store(&vrep, v, v_ty)?;
+            self.extern_call_void(
+                "pickle_map_set",
+                vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+                vec![obj, k, boxed],
+            );
+            return Ok(v);
+        }
+        let (box_sym, unbox_sym, ir) = match vrep {
+            ElemRep::Scalar(box_sym, unbox_sym, ir) => (box_sym, unbox_sym, ir),
+            ElemRep::Ptr => {
+                return self.bad(
+                    object.span,
+                    "compound assignment to a non-scalar map value is not lowered yet",
+                )
+            }
+        };
+        let zero = self.zero_scalar(ir, object.span)?;
+        let default = self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![zero])?;
+        let cur_ptr = self.extern_call_t1(
+            "pickle_map_get_boxed",
+            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+            IrTy::Ptr,
+            vec![obj, k, default],
+        )?;
+        let cur = self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![cur_ptr])?;
+        let v = self.expr(value)?;
+        let dst = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: assign_opcode(op),
+            a: cur,
+            b: v,
+        });
+        let boxed = self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![dst])?;
+        self.extern_call_void(
+            "pickle_map_set",
+            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+            vec![obj, k, boxed],
+        );
+        Ok(dst)
     }
 
     /// `[a, b, c]` array literal: build a `List` by pushing each element,
@@ -1155,6 +1305,82 @@ impl<'a> Emitter<'a> {
             self.extern_call_void("pickle_list_push", vec![IrTy::Ptr, IrTy::Ptr], vec![list, push_v]);
         }
         Ok(list)
+    }
+
+    /// `{ "k": v, ... }` map literal: build a `Map` by inserting each entry,
+    /// boxing scalar values along the way. Keys must be strings (v1 runtime).
+    fn map_literal(&mut self, e: &Expr, pairs: &[(Expr, Expr)]) -> Result<Temp, ()> {
+        let (kty, vty) = match self.ty_of(&e.span) {
+            Some(Ty::Map(k, v)) => (k.as_ref().clone(), v.as_ref().clone()),
+            _ => return self.bad(e.span, "map literal does not have a `Map` type"),
+        };
+        let vrep = self.elem_rep(&vty, e.span)?;
+        let cap = self.temp();
+        self.instr(IrInstr::Const {
+            dst: cap,
+            c: IrConst::Int(0),
+        });
+        let map = self.extern_call_t1("pickle_map_new", vec![IrTy::Int], IrTy::Ptr, vec![cap])?;
+        for (k, v) in pairs {
+            let kt = self.expr(k)?;
+            let k_ir = self.irty(k.span)?;
+            if kty != Ty::String || !matches!(k_ir, IrTy::Str) {
+                return self.bad(k.span, "map keys must be `string` values");
+            }
+            let vt = self.expr(v)?;
+            let boxed = match vrep {
+                ElemRep::Scalar(box_sym, _, _) => {
+                    let v_ty = self.irty(v.span)?;
+                    self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![vt])?
+                }
+                ElemRep::Ptr => vt,
+            };
+            self.extern_call_void(
+                "pickle_map_set",
+                vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+                vec![map, kt, boxed],
+            );
+        }
+        Ok(map)
+    }
+
+    /// Box a scalar so it can be stored in a List/Map, or pass a pointer type
+    /// through untouched.
+    fn box_for_store(
+        &mut self,
+        rep: &ElemRep,
+        v: Temp,
+        v_ty: IrTy,
+    ) -> Result<Temp, ()> {
+        match rep {
+            ElemRep::Scalar(box_sym, _, _) => {
+                self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![v])
+            }
+            ElemRep::Ptr => Ok(v),
+        }
+    }
+
+    /// The zero value of a scalar type, as an IR temp.
+    fn zero_scalar(&mut self, ir: IrTy, span: Span) -> Result<Temp, ()> {
+        let dst = self.temp();
+        let c = match ir {
+            IrTy::Int => IrConst::Int(0),
+            IrTy::Float => IrConst::Float(0.0f64.to_bits()),
+            IrTy::Bool => IrConst::Bool(false),
+            other => return self.bad(span, format!("no zero value for `{other:?}`")),
+        };
+        self.instr(IrInstr::Const { dst, c });
+        Ok(dst)
+    }
+
+    /// A null pointer constant (`IrConst::Null`).
+    fn null_temp(&mut self) -> Result<Temp, ()> {
+        let dst = self.temp();
+        self.instr(IrInstr::Const {
+            dst,
+            c: IrConst::Null,
+        });
+        Ok(dst)
     }
 
     fn if_expr(
@@ -1271,6 +1497,7 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Char) => "pickle_print_byte",
                         Some(Ty::String) => "pickle_print_obj",
                         Some(Ty::List(_)) => "pickle_print_obj",
+                        Some(Ty::Map(_, _)) => "pickle_print_obj",
                         _ => {
                             return self.bad(
                                 a.value.span,
@@ -1283,7 +1510,7 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Float) => IrTy::Float,
                         Some(Ty::Bool) => IrTy::Bool,
                         Some(Ty::Char) => IrTy::Char,
-                        Some(Ty::String) | Some(Ty::List(_)) => IrTy::Ptr,
+                        Some(Ty::String) | Some(Ty::List(_)) | Some(Ty::Map(_, _)) => IrTy::Ptr,
                         _ => IrTy::Ptr,
                     };
                     self.extern_call_void(sym, vec![pty], vec![t]);
@@ -1306,6 +1533,9 @@ impl<'a> Emitter<'a> {
                     Some(Ty::List(_)) => {
                         self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![t])
                     }
+                    Some(Ty::Map(_, _)) => {
+                        self.extern_call_t1("pickle_map_len", vec![IrTy::Ptr], IrTy::Int, vec![t])
+                    }
                     _ => self.bad(e.span, "`len` over this type is not lowered yet"),
                 }
             }
@@ -1322,15 +1552,75 @@ impl<'a> Emitter<'a> {
         args: &[CallArg],
     ) -> Result<Temp, ()> {
         let ot = self.ty_of(&object.span);
-        if !matches!(ot, Some(Ty::List(_))) {
-            return self.bad(e.span, "method calls on this type are not lowered yet");
-        }
         if args.iter().any(|a| a.spread) {
             return self.bad(e.span, "spread arguments are not lowered yet");
         }
+        match ot {
+            Some(Ty::Map(k, v)) => {
+                if k.as_ref() != &Ty::String {
+                    return self.bad(object.span, "map keys must be `string` values");
+                }
+                let obj = self.expr(object)?;
+                let vrep = self.elem_rep(&v, e.span)?;
+                match name {
+                    "has" => {
+                        if args.len() != 1 {
+                            return self.bad(e.span, "`has` takes one argument");
+                        }
+                        let kt = self.expr(&args[0].value)?;
+                        if !matches!(self.irty(args[0].value.span)?, IrTy::Str) {
+                            return self.bad(args[0].value.span, "map keys must be `string` values");
+                        }
+                        self.extern_call_t1(
+                            "pickle_map_has",
+                            vec![IrTy::Ptr, IrTy::Str],
+                            IrTy::Bool,
+                            vec![obj, kt],
+                        )
+                    }
+                    "keys" => {
+                        if !args.is_empty() {
+                            return self.bad(e.span, "`keys` takes no arguments");
+                        }
+                        self.extern_call_t1("pickle_map_keys", vec![IrTy::Ptr], IrTy::Ptr, vec![obj])
+                    }
+                    "values" => {
+                        if !args.is_empty() {
+                            return self.bad(e.span, "`values` takes no arguments");
+                        }
+                        self.extern_call_t1(
+                            "pickle_map_values",
+                            vec![IrTy::Ptr],
+                            IrTy::Ptr,
+                            vec![obj],
+                        )
+                    }
+                    other => {
+                        let _ = vrep;
+                        self.bad(
+                            e.span,
+                            format!("`{other}` method on `Map` is not lowered yet"),
+                        )
+                    }
+                }
+            }
+            Some(Ty::List(_)) => self.list_method_call(e, object, name, args),
+            _ => self.bad(e.span, "method calls on this type are not lowered yet"),
+        }
+    }
+
+    /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.
+    fn list_method_call(
+        &mut self,
+        e: &Expr,
+        object: &Expr,
+        name: &str,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let ot = self.ty_of(&object.span);
         let elem = match &ot {
             Some(Ty::List(inner)) => inner.as_ref().clone(),
-            _ => unreachable!(),
+            _ => return self.bad(e.span, "receiver is not a `List`"),
         };
         let obj = self.expr(object)?;
         match name {

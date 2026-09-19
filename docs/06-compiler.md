@@ -130,7 +130,16 @@ link time against the runtime rlib (the JIT resolves the same names through
 its symbol table). That includes the list slice ABI added later: `pickle_box_*` /
 `pickle_unbox_*` for scalar list elements and `pickle_list_new` / `len` /
 `get` / `set` / `push` / `pop` for `List<T>`, which flow through this shared
-extern path with no extra object glue.
+extern path with no extra object glue. The map slice ABI follows the same
+path: `pickle_map_new` / `set` / `get_boxed` / `has` / `len` / `keys` /
+`values`.
+
+One design note on `Map<K, V>`: to keep object reads cheap and GC-safe, an
+index read passes an explicit *default* value down to `pickle_map_get_boxed`
+(the value type's zero — `0`/`0.0`/`false`, an interned empty string, or
+null). The runtime returns it unchanged when the key is absent, so the
+emitter never unboxes a null pointer. v1 accepts `string` keys only; the
+type checker enforces this at literal, index, and method sites.
 
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.

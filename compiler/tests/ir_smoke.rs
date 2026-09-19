@@ -7,7 +7,7 @@
 use pickle_compiler::diag::{DiagnosticSink, SourceMap};
 use pickle_compiler::emit::emit_ir;
 use pickle_compiler::front::frontend;
-use pickle_compiler::ir::{BinOp, Callee, IrInstr, IrModule, IrTerm};
+use pickle_compiler::ir::{BinOp, Callee, IrConst, IrInstr, IrModule, IrTerm};
 
 fn emit_str(src: &str) -> IrModule {
     let mut map = SourceMap::default();
@@ -427,4 +427,104 @@ fn emits_nested_generic_lists() {
             >= 2,
         "a nested read needs two `pickle_list_get` calls, dump:\n{probe}"
     );
+}
+
+#[test]
+fn emits_map_operations() {
+    // Map literals lower to `pickle_map_new` + `pickle_map_set`; reads go
+    // through `pickle_map_get_boxed`; methods/len/iteration use their externs.
+    let m = emit_str(
+        r#"fn lookup(m: Map<string, int>) -> int {
+            let a = m["x"]
+            return a + len(m)
+        }
+
+        fn main() {
+            var m = {"alpha": 10, "beta": 20}
+            m["beta"] = 5
+            m["gamma"] = m["gamma"] + 1
+            let yes = m.has("alpha")
+            let ks = m.keys()
+            let vs = m.values()
+            print(yes, ks, vs, lookup(m))
+            for (x in m) {
+                print(x)
+            }
+        }"#,
+    );
+    let syms = externs(&m);
+    for need in [
+        "pickle_map_new",
+        "pickle_map_set",
+        "pickle_map_get_boxed",
+        "pickle_map_has",
+        "pickle_map_len",
+        "pickle_map_keys",
+        "pickle_map_values",
+    ] {
+        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+    }
+    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    let lookup = m.funcs.iter().find(|f| f.name == "lookup").expect("lookup");
+    assert!(
+        lookup
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_map_get_boxed")))
+            .count()
+            >= 1,
+        "a map read needs `pickle_map_get_boxed`, dump:\n{lookup}"
+    );
+}
+
+#[test]
+fn map_read_defaults_to_zero() {
+    // An absent key must not unbox a null pointer: the emitter boxes the
+    // value type's zero (`0`) and passes it to `pickle_map_get_boxed`.
+    let m = emit_str(
+        r#"fn peek(m: Map<string, int>) -> int {
+            m["missing"]
+        }"#,
+    );
+    let get_boxed = m
+        .externs
+        .iter()
+        .position(|e| e.symbol == "pickle_map_get_boxed")
+        .expect("pickle_map_get_boxed extern");
+    let box_i64 = m
+        .externs
+        .iter()
+        .position(|e| e.symbol == "pickle_box_i64")
+        .expect("pickle_box_i64 extern");
+    let peek = m.funcs.iter().find(|f| f.name == "peek").expect("peek");
+    let calls: Vec<(usize, bool)> = peek
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                Some((id.0, false))
+            } else if let IrInstr::Const { c: IrConst::Int(0), .. } = i {
+                Some((usize::MAX, true))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let box_pos = calls
+        .iter()
+        .position(|(id, _)| *id == box_i64)
+        .expect("boxing the zero before the read");
+    let get_pos = calls
+        .iter()
+        .position(|(id, _)| *id == get_boxed)
+        .expect("the boxed get");
+    assert!(
+        box_pos < get_pos,
+        "the zero default must be boxed before `pickle_map_get_boxed`"
+    );
+    assert!(calls.iter().any(|(id, is_zero)| *is_zero || *id == box_i64));
 }
