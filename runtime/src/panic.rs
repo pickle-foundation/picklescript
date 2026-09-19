@@ -1,26 +1,82 @@
 //! Panic path: language-level `panic(msg)` and a guard for Rust panics
 //! escaping `extern "C"` boundaries.
+//!
+//! In capture mode (the test harness) panics become recorded failures so a
+//! failing `test fn` body can be reported without aborting the process.
 
 use std::io::Write;
 
 /// Fatal message prefix written to stderr.
 const FATAL: &[u8] = b"fatal: ";
 
-/// ABI: `panic("...")` from PickleScript. Prints a banner and exits 1.
+/// Capture mode: turn fatal panics into recoverable, recorded failures.
+static CAPTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    static LAST_PANIC: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether panics are being captured for the test harness.
+pub fn is_capturing() -> bool {
+    CAPTURE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Enter/leave capture mode. Leaving also clears any captured message.
+pub fn set_capture_mode(capture: bool) {
+    CAPTURE.store(capture, std::sync::atomic::Ordering::Relaxed);
+    if !capture {
+        LAST_PANIC.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// The message of the most recent captured panic, if any.
+pub fn take_captured_panic() -> Option<String> {
+    LAST_PANIC.with(|c| c.borrow_mut().take())
+}
+
+fn record_panic(msg: String) {
+    LAST_PANIC.with(|c| *c.borrow_mut() = Some(msg));
+}
+
+fn panic_text(info: &std::panic::PanicHookInfo<'_>) -> String {
+    if let Some(s) = info.payload().downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        format!("{info}")
+    }
+}
+
+/// ABI: `panic("...")` from PickleScript. In capture mode (a running test)
+/// this becomes a recoverable failure; otherwise it prints a banner and
+/// exits 1.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pickle_panic_bytes(ptr: *const u8, len: usize) -> ! {
+    let msg = if ptr.is_null() || len == 0 {
+        String::new()
+    } else {
+        unsafe {
+            String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+        }
+    };
+    if is_capturing() {
+        record_panic(msg);
+        std::panic::panic_any("pickle panic");
+    }
     let stderr = std::io::stderr();
     let mut lock = stderr.lock();
     let _ = lock.write_all(FATAL);
-    if !ptr.is_null() && len > 0 {
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        let _ = lock.write_all(bytes);
-    }
+    let _ = lock.write_all(msg.as_bytes());
     let _ = lock.write_all(b"\n");
     let _ = lock.flush();
     std::process::exit(1);
 }
 
 /// ABI: `panic("...")` from a NUL-terminated C string.
+#[no_mangle]
 pub extern "C" fn pickle_panic_cstr(ptr: *const u8) -> ! {
     let mut len = 0usize;
     unsafe {
@@ -34,21 +90,22 @@ pub extern "C" fn pickle_panic_cstr(ptr: *const u8) -> ! {
 /// Replace the Rust panic hook so an internal panic cannot unwind across the
 /// `extern "C"` ABI. It prints `internal error: <msg>` and exits 1.
 ///
-/// Under `cfg(test)` this is a no-op: the test harness needs panics to unwind
-/// so it can report failures instead of killing the process.
+/// In capture mode a panic is recorded instead (for the test harness), so
+/// `pickle test` can report a failing test without aborting the process.
+/// Under `cfg(test)` this is a no-op: the Rust test harness needs panics to
+/// unwind to report failures itself.
 #[cfg(not(test))]
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        let msg = panic_text(info);
+        if is_capturing() {
+            record_panic(msg);
+            return;
+        }
         let stderr = std::io::stderr();
         let mut lock = stderr.lock();
         let _ = lock.write_all(b"internal error: ");
-        if let Some(s) = info.payload().downcast_ref::<&str>() {
-            let _ = lock.write_all(s.as_bytes());
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            let _ = lock.write_all(s.as_bytes());
-        } else {
-            let _ = write!(lock, "{info}");
-        }
+        let _ = lock.write_all(msg.as_bytes());
         let location = info
             .location()
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
@@ -73,5 +130,19 @@ mod tests {
         // The hook is active; calling the old default would print. Just make
         // sure re-installation doesn't blow up.
         install_panic_hook();
+    }
+
+    #[test]
+    fn capture_records_and_clears_message() {
+        assert!(!is_capturing());
+        set_capture_mode(true);
+        let result = std::panic::catch_unwind(|| {
+            record_panic("boom".to_string());
+        });
+        assert!(result.is_ok());
+        assert_eq!(take_captured_panic().as_deref(), Some("boom"));
+        assert_eq!(take_captured_panic(), None, "message consumed once");
+        set_capture_mode(false);
+        assert!(!is_capturing());
     }
 }

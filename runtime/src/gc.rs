@@ -32,7 +32,13 @@ static ALLOC_SINCE_GC: AtomicU32 = AtomicU32::new(0);
 static BYTES_SINCE_GC: AtomicU32 = AtomicU32::new(0);
 
 /// Default threshold in object-bytes that triggers a collection.
-const AUTO_COLLECT_THRESHOLD: u32 = 8 * 1024 * 1024;
+pub const DEFAULT_AUTO_COLLECT_THRESHOLD: u32 = 8 * 1024 * 1024;
+
+/// Current auto-collect threshold, settable at runtime.
+static AUTO_THRESHOLD: AtomicU32 = AtomicU32::new(DEFAULT_AUTO_COLLECT_THRESHOLD);
+
+/// Total completed collection cycles (observability for tests).
+static COLLECTIONS: AtomicU32 = AtomicU32::new(0);
 
 /// The runtime heap and class registry.
 pub struct Gc {
@@ -63,6 +69,7 @@ impl Gc {
         }
         let _ = ALLOC_SINCE_GC.fetch_add(1, Ordering::Relaxed);
         let _ = BYTES_SINCE_GC.fetch_add(size, Ordering::Relaxed);
+        self.maybe_collect();
         obj
     }
 
@@ -87,6 +94,7 @@ impl Gc {
         if COLLECTING.swap(true, Ordering::AcqRel) {
             return;
         }
+        let _ = COLLECTIONS.fetch_add(1, Ordering::Relaxed);
 
         // Snapshot static roots.
         let roots: Vec<*mut *mut crate::object::PickleObject> = {
@@ -136,7 +144,7 @@ impl Gc {
 
     /// Maybe collect if the allocation threshold has been crossed.
     pub fn maybe_collect(&mut self) {
-        if BYTES_SINCE_GC.load(Ordering::Relaxed) >= AUTO_COLLECT_THRESHOLD {
+        if BYTES_SINCE_GC.load(Ordering::Relaxed) >= AUTO_THRESHOLD.load(Ordering::Relaxed) {
             self.collect();
         }
     }
@@ -226,7 +234,6 @@ pub extern "C" fn pickle_gc_root_drop(handle: *mut RootCell) {
 #[no_mangle]
 pub extern "C" fn pickle_gc_collect(_force: bool) {
     let gc = gc_mut();
-    gc.maybe_collect();
     gc.collect();
 }
 
@@ -236,12 +243,16 @@ pub extern "C" fn pickle_gc_allocations_since_gc() -> u32 {
     ALLOC_SINCE_GC.load(Ordering::Relaxed)
 }
 
+/// Number of completed collection cycles (debug/stats).
+#[no_mangle]
+pub extern "C" fn pickle_gc_collection_count() -> u32 {
+    COLLECTIONS.load(Ordering::Relaxed)
+}
+
 /// Set the auto-collect threshold in object bytes.
 #[no_mangle]
 pub extern "C" fn pickle_gc_set_threshold(bytes: u32) {
-    let gc = gc_mut();
-    gc.collect(); // placeholder; threshold is a module const today
-    let _ = bytes;
+    AUTO_THRESHOLD.store(bytes, Ordering::Relaxed);
 }
 
 /// Serialises tests that touch the shared global `Gc`. Each test fresh-starts
@@ -251,6 +262,10 @@ pub extern "C" fn pickle_gc_set_threshold(bytes: u32) {
 pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     let guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    ALLOC_SINCE_GC.store(0, Ordering::Relaxed);
+    BYTES_SINCE_GC.store(0, Ordering::Relaxed);
+    AUTO_THRESHOLD.store(DEFAULT_AUTO_COLLECT_THRESHOLD, Ordering::Relaxed);
+    COLLECTIONS.store(0, Ordering::Relaxed);
     unsafe {
         if !GLOBAL_GC.is_null() {
             let mut gc = Box::from_raw(GLOBAL_GC);
@@ -310,6 +325,26 @@ mod tests {
             recycled as usize, addr_before,
             "expected the swept block to be reused"
         );
+    }
+
+    #[test]
+    fn auto_collect_runs_at_threshold_and_reclaims() {
+        let _guard = test_begin();
+        let gc = gc_mut();
+        let cls = leaf_class(gc);
+        pickle_gc_set_threshold(256);
+        assert_eq!(pickle_gc_collection_count(), 0);
+        let before = pickle_gc_collection_count();
+        // This allocation crosses the 256-byte threshold, collecting any
+        // unrooted blocks, then returns the block.
+        let orphan = gc.alloc(256, cls);
+        let after = pickle_gc_collection_count();
+        assert!(after > before, "auto-collect must run at the threshold");
+        // The orphan was unrooted, so it was swept; the next same-size
+        // allocation reuses its block.
+        let recycled = gc.alloc(256, cls);
+        assert_eq!(recycled as usize, orphan as usize);
+        pickle_gc_set_threshold(DEFAULT_AUTO_COLLECT_THRESHOLD);
     }
 
     #[test]

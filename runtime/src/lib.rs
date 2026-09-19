@@ -21,6 +21,7 @@ mod object;
 mod panic;
 mod shadow;
 mod strings;
+mod test;
 mod trace;
 
 /// Descriptor for the builtin string (informational; name used by printers).

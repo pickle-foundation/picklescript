@@ -19,7 +19,7 @@ mod testio {
 
 /// Write bytes either to a test capture buffer (when enabled) or stdout.
 /// Errors are ignored on purpose: a closed stdout should not unwind GC paths.
-fn write_to_con(bytes: &[u8]) {
+pub(crate) fn write_to_con(bytes: &[u8]) {
     #[cfg(test)]
     {
         if testio::HAS_CAPTURE.with(|c| c.get()) {

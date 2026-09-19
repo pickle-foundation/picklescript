@@ -73,9 +73,43 @@ the runtime's internals are `extern "C"`.
 ## Testing hooks
 
 `pickle test` links the runtime with a test harness: `test fn` bodies are
-ruad via reflection-less discovery — the compiler emits a registry of test
-functions into the object, the harness runs them, reports pass/fail counts,
-and exits nonzero on failure.
+discovered via a reflection-less registry. The compiler emits a static table
+of descriptors into the object; the runtime registers and runs it.
+
+Descriptor (`#[repr(C)]`), matching the compiler's emitted layout:
+
+```
+struct PickleTest {
+    name: *const u8,     // UTF-8, not NUL-terminated
+    name_len: u32,
+    body: extern "C" fn() -> i32,   // 0 = pass, nonzero = fail
+}
+```
+
+ABI:
+
+- `pickle_test_register_table(table, count) -> u32` — takes a copy of the
+  descriptors; returns the total registered so far.
+- `pickle_runtime_run_tests() -> i32` — runs each body sequentially,
+  reporting `test <name> ... ok` / `test <name> ... FAILED` plus a
+  `test result: <p> passed; <f> failed` summary, and returns `0` when all
+  pass / `1` when any fail.
+
+Bodies run under `catch_unwind`, so a panicking body is reported as a failed
+test rather than aborting the harness. For unwinding to cross a compiled
+body's `extern "C"` frame, codegen must emit the `C-unwind` ABI for compiled
+functions (a codegen-level contract). Language-level `panic()` records its
+message to a thread-local captured slot, which the harness prints as the
+failure detail; outside a test run it prints a `fatal:` banner and exits
+nonzero.
+
+## GC auto-collect
+
+Collections run on demand (at call sites) and automatically once allocations
+since the last collection cross a threshold (default 8 MiB of object bytes).
+The threshold is adjustable at runtime (`pickle_gc_set_threshold(bytes)`,
+default restore in `test_begin`), and `pickle_gc_collection_count` /
+`pickle_gc_allocations_since_gc` expose observability for tests.
 
 ## Portability
 
