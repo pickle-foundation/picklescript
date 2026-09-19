@@ -4,3 +4,6 @@
 .vscode/
 .idea/
 .DS_Store
+
+# Design docs / tasklist are kept out of version control (tracked separately).
+/docs/
