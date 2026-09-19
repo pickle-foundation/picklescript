@@ -7,4 +7,8 @@ license.workspace = true
 [lib]
 crate-type = ["staticlib", "lib"]
 
+[features]
+default = ["entry"]
+entry = []
+
 [dependencies]

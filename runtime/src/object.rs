@@ -45,7 +45,27 @@ pub struct PickleObjectHeader {
 /// Type alias so codegen and the runtime can name header pointers.
 pub type PickleObject = PickleObjectHeader;
 
+// The collector mutates headers through raw pointers from multiple contexts;
+// Send/Sync are our invariants, not the compiler's.
+unsafe impl Send for PickleObjectHeader {}
+unsafe impl Sync for PickleObjectHeader {}
+
 const HEADER_BYTES: usize = 24;
+
+/// Tombstone sentinel used for removed map keys. Never heap-allocated and
+/// never swept; its address is a stable "removed" marker.
+pub static NIL_SENTINEL: PickleObjectHeader = PickleObjectHeader {
+    next: std::ptr::null_mut(),
+    class_id: PICKLE_CLASS_STRING,
+    flags: 0,
+    size: 0,
+    _pad: 0,
+};
+
+/// Address of the tombstone sentinel.
+pub const fn nil_sentinel() -> *const PickleObjectHeader {
+    &NIL_SENTINEL
+}
 
 /// Byte offset of the payload within an object.
 pub const fn pickle_header_size() -> usize {
@@ -109,6 +129,10 @@ pub struct RootCell {
     pub next: *mut RootCell,
 }
 
+// Root cells are traced under the static-root mutex; Sync is our invariant.
+unsafe impl Send for RootCell {}
+unsafe impl Sync for RootCell {}
+
 /// A class descriptor as emitted by the compiler and registered at startup.
 ///
 /// `managed_mask` is an array of 32-bit words: bit `i` in word `i / 32`
@@ -116,6 +140,7 @@ pub struct RootCell {
 /// holding a managed pointer for the collector. Words beyond the payload are
 /// ignored.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ClassDescriptor {
     pub name_ptr: *const u8,
     pub name_len: u32,
@@ -159,6 +184,10 @@ impl DescriptorTable {
             None
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
 }
 
 impl Default for DescriptorTable {
@@ -179,7 +208,7 @@ pub const STRING_DESCRIPTOR: ClassDescriptor = ClassDescriptor {
     finalizer: builtin_nop_finalizer,
 };
 
-extern "C" fn builtin_nop_finalizer(_obj: *mut PickleObject) {}
+pub(crate) extern "C" fn builtin_nop_finalizer(_obj: *mut PickleObject) {}
 
 #[cfg(test)]
 mod tests {
