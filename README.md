@@ -1,11 +1,11 @@
 # PickleScript
 
-**Familiar syntax. Modern design. Powerful capabilities.**
+**Familiar syntax. Garbage collected by default. Compiled ahead of time.**
 
 PickleScript is a standalone, native-compiled, general-purpose programming
-language for games, backend services, desktop apps, CLI tools, developer
-tooling, infrastructure software, and — when you need it — systems
-programming.
+language. It targets the same problems people currently reach for C#, Go, or
+Java with — backend services, desktop apps, CLI tools, games and engines —
+and it keeps a path into systems programming when you need it.
 
 ## Quick tour
 
@@ -94,8 +94,10 @@ tools/             # build & release tooling
 scripts/           # CI / dev scripts
 ```
 
-This project is intentionally not a toy: the compiler is written in Rust,
-emits native machine code, and targets real application workloads.
+This project is a single Rust workspace. `pickle build` runs the whole chain
+from `src/*.pkl` to a native executable: it discovers files, resolves
+`module`/`import` edges, compiles them to machine code, links the runtime,
+and produces a binary — no headers, no makefiles, no semicolons.
 
 ## License
 

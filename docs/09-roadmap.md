@@ -66,9 +66,9 @@
 3. Runtime and compiler evolve together; the ABI (`pickle_*`) is the
    contract, never broken without a versioned bump.
 4. Every milestone ends with a runnable demo under `projects/`.
+## Definition of shippable
 
-## Definition of "not a toy"
-A version is shippable only when the compiler is written in Rust, is
-self-hosting for its own front end, produces native executables with zero
-manual linking/build steps, passes its own conformance suite, and has
-`build test fmt doc package repl` all functional.
+A release is shippable when the compiler is self-hosting for its front end,
+produces native executables with no manual linking steps, passes its own
+conformance suite, and `build`, `test`, `fmt`, `doc`, `package`, and `repl`
+all work.

@@ -5,4 +5,4 @@
 
 Foundational goals and non-goals for PickleScript: garbage-collected by
 default, native-compiled, C-family ergonomics, systems capability via
-explicit `unsafe`, and a batteries-included toolchain.
+explicit `unsafe`, and a full toolchain shipped with the language itself.
