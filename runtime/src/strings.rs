@@ -86,9 +86,9 @@ pub fn int64_to_string(v: i64) -> *mut PickleObject {
         if neg {
             *base = b'-';
         }
-        for i in 0..idx {
+        for &b in buf.iter().take(idx) {
             o -= 1;
-            *base.add(o) = buf[i];
+            *base.add(o) = b;
         }
     }
     obj

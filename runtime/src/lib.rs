@@ -9,6 +9,7 @@
 //! calls the compiler's `pickle_main`.
 
 #![allow(dead_code)]
+#![allow(clippy::manual_c_str_literals)]
 
 mod console;
 mod gc;
@@ -84,6 +85,7 @@ pub extern "C" fn pickle_runtime_init() -> u32 {
 /// Register `count` compiler-emitted class descriptors (a `[ClassDescriptor;
 /// count]` table in the generated object). Returns the next free class id.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pickle_runtime_register_class_table(
     table: *const object::ClassDescriptor,
     count: u32,

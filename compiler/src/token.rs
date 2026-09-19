@@ -270,25 +270,13 @@ impl Token {
 }
 
 /// Value payloads carried on some tokens: number text/radix, char, ident kind.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TokenData {
     pub text: String,
     pub int: Option<i128>,
     pub float: Option<f64>,
     pub is_float: bool,
     pub suffix: Option<String>,
-}
-
-impl Default for TokenData {
-    fn default() -> TokenData {
-        TokenData {
-            text: String::new(),
-            int: None,
-            float: None,
-            is_float: false,
-            suffix: None,
-        }
-    }
 }
 
 /// A token plus the payload needed by the parser.

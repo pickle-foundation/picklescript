@@ -212,8 +212,8 @@ pub extern "C" fn pickle_gc_root_drop(handle: *mut RootCell) {
     }
     let mut list = STATIC_ROOTS.lock().unwrap();
     list.retain(|c| {
-        let ptr: *const RootCell = &**c;
-        ptr as *mut RootCell != handle
+        let ptr = &**c as *const RootCell;
+        !std::ptr::eq(ptr, handle)
     });
     // SAFETY: handle came from `pickle_gc_root_add`.
     unsafe {

@@ -669,7 +669,7 @@ impl<'a> Lexer<'a> {
                 ident.push(self.bump());
             }
             let span = self.span(start, self.pos);
-            if let Some(s) = std::str::from_utf8(ident.as_bytes()).ok() {
+            if let Ok(s) = std::str::from_utf8(ident.as_bytes()) {
                 if let Some((_, kw)) = Tok::keyword().iter().find(|(k, _)| *k == s) {
                     return Token::new(kw.clone(), span);
                 }

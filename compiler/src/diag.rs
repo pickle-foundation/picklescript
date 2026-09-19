@@ -90,7 +90,7 @@ impl SourceFile {
         } else {
             self.text.len()
         };
-        self.text[start..end].trim_end_matches(|c| c == '\n' || c == '\r').trim_end()
+        self.text[start..end].trim_end_matches(['\n', '\r']).trim_end()
     }
 }
 
@@ -236,11 +236,11 @@ fn render_diagnostic(d: &Diagnostic, map: &SourceMap, colored: bool, out: &mut S
                 let _ = write!(out, "{severity}: ");
             }
             let _ = write!(out, "{}:{}:{}: ", file.name, lline, col + 1);
-            let _ = write!(out, "{}\n", d.message);
+            let _ = writeln!(out, "{}", d.message);
 
             let text = file.line_text(line);
-            let _ = write!(out, "  {lline} | {text}\n");
-            let gutter = format!("    | ");
+            let _ = writeln!(out, "  {lline} | {text}");
+            let gutter = "    | ".to_string();
             out.push_str(&gutter);
             for _ in 0..col {
                 out.push(' ');
@@ -248,8 +248,7 @@ fn render_diagnostic(d: &Diagnostic, map: &SourceMap, colored: bool, out: &mut S
             let width = span
                 .end
                 .saturating_sub(span.start)
-                .min(80)
-                .max(1);
+                .clamp(1, 80);
             for _ in 0..width {
                 out.push('^');
             }

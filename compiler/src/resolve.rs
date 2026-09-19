@@ -226,14 +226,13 @@ impl<'a> Resolver<'a> {
 
         self.post_checks();
 
-        let resolved = ResolvedProgram {
+        ResolvedProgram {
             types: std::mem::take(&mut self.types),
             fns: std::mem::take(&mut self.fns),
             consts: std::mem::take(&mut self.consts),
             import_aliases: std::mem::take(&mut self.import_aliases),
             module_path: self.module_path,
-        };
-        resolved
+        }
     }
 }
 
@@ -518,7 +517,7 @@ impl<'a> TypeCtx<'a> {
                         args.len()
                     ),
                 )
-                .note(&format!("declared generic parameters: {}", render_list(&expected))),
+                .note(format!("declared generic parameters: {}", render_list(&expected))),
             );
         }
         match bare {
@@ -792,8 +791,8 @@ impl<'a> Resolver<'a> {
                         is_abstract: md.body.is_none(),
                         operator: md.operator.clone(),
                         generics: mg,
-                        params: self.resolve_params(&md.params, &generics),
-                        ret: self.resolve_ret(&md.return_ty, &generics),
+                        params: self.resolve_params(&md.params, generics),
+                        ret: self.resolve_ret(&md.return_ty, generics),
                     });
                 }
                 ClassMember::Constructor(cd) => {

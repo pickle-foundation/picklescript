@@ -47,8 +47,7 @@ impl<'a> Checker<'a> {
         resolved: &'a ResolvedProgram,
         diags: &'a DiagnosticSink,
     ) -> Checker<'a> {
-        let mut scopes: Vec<HashMap<String, Local>> = Vec::new();
-        scopes.push(HashMap::new());
+        let scopes: Vec<HashMap<String, Local>> = vec![HashMap::new()];
         Checker {
             prog,
             resolved,
@@ -188,7 +187,7 @@ impl<'a> Checker<'a> {
             if **gr == Ty::Unknown || **wr == Ty::Unknown {
                 return true;
             }
-            return self.ok_types(&**gr, wr);
+            return self.ok_types(gr, wr);
         }
         // Empty (void) is never assignable to a value type; but a `return;` in
         // a void fn and statement-position block tails are handled elsewhere.
@@ -431,8 +430,7 @@ impl<'a> Checker<'a> {
                 if let Some(gt) = self.self_ty.as_ref().and_then(|t| self.type_key(t)) {
                     generics.extend(gt.1.keys().cloned());
                 }
-                let ty = self.resolved_fn_ty(t, &generics);
-                ty
+                self.resolved_fn_ty(t, &generics)
             })
             .unwrap_or(Ty::Unknown)
     }
@@ -448,7 +446,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        self.resolved.resolve_ty(te, &self.instantiated_generics(&g), self.diags)
+        self.resolved.resolve_ty(te, self.instantiated_generics(&g), self.diags)
     }
 
     /// Generics with `self_args` substituted for the current class, so method
@@ -715,32 +713,31 @@ impl<'a> Checker<'a> {
 
         for m in &c.members {
             match m {
-                ClassMember::Field { init, ty, span, .. } => {
-                    if let Some(e) = init {
-                        let ft = self.check_expr(e);
-                        let w = ty
-                            .as_ref()
-                            .map(|t| self.resolved_fn_ty(t, &table.generics))
-                            .or_else(|| {
-                                self.resolved
-                                    .types
-                                    .get(&c.name)
-                                    .and_then(|e| match e {
-                                        TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
-                                            .fields
-                                            .iter()
-                                            .find(|f| f.name == m.name())
-                                            .map(|f| {
-                                                self.subst(&f.ty, &self.self_args)
-                                            }),
-                                        _ => None,
-                                    })
-                            });
-                        if let Some(w) = w {
-                            self.check_assignable(&w, &ft, *span, "field initializer");
-                        }
+                ClassMember::Field { init: Some(e), ty, span, .. } => {
+                    let ft = self.check_expr(e);
+                    let w = ty
+                        .as_ref()
+                        .map(|t| self.resolved_fn_ty(t, &table.generics))
+                        .or_else(|| {
+                            self.resolved
+                                .types
+                                .get(&c.name)
+                                .and_then(|e| match e {
+                                    TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
+                                        .fields
+                                        .iter()
+                                        .find(|f| f.name == m.name())
+                                        .map(|f| {
+                                            self.subst(&f.ty, &self.self_args)
+                                        }),
+                                    _ => None,
+                                })
+                        });
+                    if let Some(w) = w {
+                        self.check_assignable(&w, &ft, *span, "field initializer");
                     }
                 }
+                ClassMember::Field { init: None, .. } => {}
                 ClassMember::Const { value, ty, span, .. } => {
                     let vt = self.check_expr(value);
                     if let Some(t) = ty {
@@ -807,30 +804,29 @@ impl<'a> Checker<'a> {
             .collect();
         for m in &s.members {
             match m {
-                ClassMember::Field { init, ty, span, .. } => {
-                    if let Some(e) = init {
-                        let ft = self.check_expr(e);
-                        let w = ty
-                            .as_ref()
-                            .map(|t| self.resolved_fn_ty(t, &table.generics))
-                            .or_else(|| {
-                                self.resolved
-                                    .types
-                                    .get(&s.name)
-                                    .and_then(|e| match e {
-                                        TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
-                                            .fields
-                                            .iter()
-                                            .find(|f| f.name == m.name())
-                                            .map(|f| self.subst(&f.ty, &self.self_args)),
-                                        _ => None,
-                                    })
-                            });
-                        if let Some(w) = w {
-                            self.check_assignable(&w, &ft, *span, "field initializer");
-                        }
+                ClassMember::Field { init: Some(e), ty, span, .. } => {
+                    let ft = self.check_expr(e);
+                    let w = ty
+                        .as_ref()
+                        .map(|t| self.resolved_fn_ty(t, &table.generics))
+                        .or_else(|| {
+                            self.resolved
+                                .types
+                                .get(&s.name)
+                                .and_then(|e| match e {
+                                    TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
+                                        .fields
+                                        .iter()
+                                        .find(|f| f.name == m.name())
+                                        .map(|f| self.subst(&f.ty, &self.self_args)),
+                                    _ => None,
+                                })
+                        });
+                    if let Some(w) = w {
+                        self.check_assignable(&w, &ft, *span, "field initializer");
                     }
                 }
+                ClassMember::Field { init: None, .. } => {}
                 ClassMember::Method(md) => self.check_method_body(md, &table),
                 _ => {}
             }
@@ -1192,9 +1188,9 @@ impl<'a> Checker<'a> {
         match &ct {
             Ty::Fn(params, ret) => {
                 self.check_args(e, params, args);
-                return *ret.clone();
+                *ret.clone()
             }
-            Ty::Unknown => return Ty::Unknown,
+            Ty::Unknown => Ty::Unknown,
             _ => {
                 self.err_note(
                     e.span,
@@ -1472,8 +1468,8 @@ impl<'a> Checker<'a> {
             }
             Eq | Ne | Lt | Le | Gt | Ge => Ty::Bool,
             And | Or => {
-                let _ = self.check_bool_cond(lhs);
-                let _ = self.check_bool_cond(rhs);
+                self.check_bool_cond(lhs);
+                self.check_bool_cond(rhs);
                 Ty::Bool
             }
             Range | RangeIncl => Ty::Range(Box::new(lt)),
@@ -1482,7 +1478,7 @@ impl<'a> Checker<'a> {
                 match inner {
                     Some(inner_t) => {
                         if rt != Ty::Unknown {
-                            let _ = self.check_assignable(&inner_t, &rt, rhs.span, "`??` default");
+                            self.check_assignable(&inner_t, &rt, rhs.span, "`??` default");
                         }
                         lt
                     }
@@ -1711,7 +1707,7 @@ impl<'a> Checker<'a> {
 
     fn check_cast(&mut self, e: &Expr, expr: &Expr, ty: &TypeExpr, kind: CastKind) -> Ty {
         let src = self.check_expr(expr);
-        let target = self.resolved_fn_ty(ty, &self.instantiated_generics(&self.fn_generics));
+        let target = self.resolved_fn_ty(ty, self.instantiated_generics(&self.fn_generics));
         match kind {
             CastKind::Is => {
                 // `is` must check against a type the source can actually be.

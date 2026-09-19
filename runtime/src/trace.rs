@@ -92,7 +92,7 @@ fn trace_one(descriptors: &DescriptorTable, obj: *mut PickleObject, worklist: &m
                     let slots = d.slot_count as usize;
                     let slot_ptr = (*obj).payload_mut() as *mut *mut PickleObject;
                     for w in 0..mask_words {
-                        let mask = (d.managed_mask as *const u32).add(w).read();
+                        let mask = d.managed_mask.add(w).read();
                         if mask == 0 {
                             continue;
                         }

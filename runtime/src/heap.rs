@@ -157,8 +157,7 @@ impl Heap {
         if let Some(block) = self.alloc_from_free(size) {
             return block;
         }
-        let p = self.bump(size) as *mut PickleObject;
-        p
+        self.bump(size) as *mut PickleObject
     }
 
     /// Allocate `n` raw (non-object) bytes, aligned 8. The caller owns the
@@ -236,7 +235,7 @@ impl Heap {
                 while cur < top {
                     let obj = cur as *mut PickleObject;
                     let size = (*obj).size as usize;
-                    debug_assert!(size % 8 == 0, "sweep walk misaligned");
+                    debug_assert!(size.is_multiple_of(8), "sweep walk misaligned");
                     // Blocks already returned to the free list are skipped, not re-freed.
                     if (*obj).class_id == FREE_SENTINEL {
                         flush_dead(self, &mut dead_start, &mut dead_len);

@@ -4,6 +4,7 @@ use crate::token::{LexedToken, Tok};
 
 type PResult<T> = Result<T, ()>;
 
+#[allow(clippy::result_unit_err)]
 pub fn parse(tokens: Vec<LexedToken>, diags: &DiagnosticSink) -> PResult<Program> {
     Parser::new(tokens, diags).parse_program()
 }
@@ -904,9 +905,7 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&Tok::RParen)?;
                 let is_async = false;
-                let ret = if self.eat(&Tok::Arrow) {
-                    Some(Box::new(self.parse_type()?))
-                } else if self.eat(&Tok::Colon) {
+                let ret = if self.eat(&Tok::Arrow) || self.eat(&Tok::Colon) {
                     Some(Box::new(self.parse_type()?))
                 } else {
                     None
@@ -2124,10 +2123,10 @@ impl<'a> Parser<'a> {
                     let span = pstart.to(self.prev_span());
                     members.push(InterfaceMember::Property {
                         name,
-                        ty: ty.unwrap_or_else(|| TypeExpr {
-                            span,
-                            kind: TypeExprKind::Infer,
-                        }),
+ty: ty.unwrap_or(TypeExpr {
+                        span,
+                        kind: TypeExprKind::Infer,
+                    }),
                         span,
                     });
                 }
@@ -2241,13 +2240,13 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 let value = self.parse_expr()?;
                 let span = start.to(self.prev_span());
                 self.expect_stmt_end()?;
-                return Ok(ClassMember::Const {
+                Ok(ClassMember::Const {
                     name,
                     visibility,
                     ty,
                     value,
                     span,
-                });
+                })
             }
             (false, Tok::Constructor) => {
                 self.bump();
@@ -2260,37 +2259,37 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 let params = self.parse_param_list()?;
                 let body = self.parse_block()?;
                 let span = start.to(self.prev_span());
-                return Ok(ClassMember::Constructor(ConstructorDecl {
+                Ok(ClassMember::Constructor(ConstructorDecl {
                     name,
                     span,
                     visibility,
                     params,
                     body,
-                }));
+                }))
             }
             (false, Tok::Property) => {
                 let p = self.parse_property_with(start, visibility, is_static)?;
-                return Ok(ClassMember::Property(p));
+                Ok(ClassMember::Property(p))
             }
             (false, Tok::Fn) => {
                 let mut m = self.parse_method(is_override)?;
                 m.is_static = is_static;
                 m.visibility = visibility;
-                return Ok(ClassMember::Method(m));
+                Ok(ClassMember::Method(m))
             }
             (false, Tok::Operator) => {
                 let m = self.parse_operator_method(start, is_override)?;
-                return Ok(ClassMember::Method(m));
+                Ok(ClassMember::Method(m))
             }
             (false, Tok::Init) => {
                 self.bump();
                 let body = self.parse_block()?;
-                return Ok(ClassMember::Init(body));
+                Ok(ClassMember::Init(body))
             }
             (false, Tok::Deinit) => {
                 self.bump();
                 let body = self.parse_block()?;
-                return Ok(ClassMember::Deinit(body));
+                Ok(ClassMember::Deinit(body))
             }
             (false, Tok::Let) | (false, Tok::Var) => {
                 self.bump();
@@ -2308,7 +2307,7 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 };
                 let span = start.to(self.prev_span());
                 self.expect_stmt_end()?;
-                return Ok(ClassMember::Field {
+                Ok(ClassMember::Field {
                     name,
                     ty,
                     init,
@@ -2316,7 +2315,7 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     is_static,
                     const_: false,
                     span,
-                });
+                })
             }
             (false, Tok::Ident(_)) => {
                 // field: `name: Type` or `name = expr` (`= expr` may infer)
@@ -2334,7 +2333,7 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 };
                 let span = start.to(self.prev_span());
                 self.expect_stmt_end()?;
-                return Ok(ClassMember::Field {
+                Ok(ClassMember::Field {
                     name,
                     ty,
                     init,
@@ -2342,14 +2341,14 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     is_static,
                     const_: false,
                     span,
-                });
+                })
             }
             _ => {
                 self.err_here(format!(
                     "expected a class member, found {}",
                     self.kind().describe()
                 ));
-                return Err(());
+                Err(())
             }
         }
     }

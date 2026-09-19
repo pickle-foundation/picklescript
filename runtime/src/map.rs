@@ -48,7 +48,7 @@ fn find_slot(
                 return (target, false);
             }
             // Tombstone check (key == the unique tombstone sentinel).
-            if k == crate::object::nil_sentinel() as *mut PickleObject {
+            if std::ptr::eq(k, crate::object::nil_sentinel()) {
                 if first_tomb.is_null() {
                     first_tomb = slot;
                 }
@@ -70,7 +70,7 @@ fn entries_count(entries: *mut MapEntry, cap: usize) -> usize {
         let mut n = 0usize;
         for i in 0..cap {
             let k = entries.add(i).read().key;
-            if !k.is_null() && k != crate::object::nil_sentinel() as *mut PickleObject {
+            if !k.is_null() && !std::ptr::eq(k, crate::object::nil_sentinel()) {
                 n += 1;
             }
         }
@@ -81,11 +81,11 @@ fn entries_count(entries: *mut MapEntry, cap: usize) -> usize {
 fn rehash(old_entries: *mut MapEntry, old_cap: usize, new_cap: usize, gc: &mut Gc) -> *mut MapEntry {
     unsafe {
         let fresh = gc.heap.raw_alloc(new_cap * std::mem::size_of::<MapEntry>());
-        std::ptr::write_bytes(fresh as *mut u8, 0, new_cap * std::mem::size_of::<MapEntry>());
+        std::ptr::write_bytes(fresh, 0, new_cap * std::mem::size_of::<MapEntry>());
         let fresh = fresh as *mut MapEntry;
         for i in 0..old_cap {
             let mut e = old_entries.add(i).read();
-            if !e.key.is_null() && e.key != crate::object::nil_sentinel() as *mut PickleObject {
+            if !e.key.is_null() && !std::ptr::eq(e.key, crate::object::nil_sentinel()) {
                 let key_hash = fnv1a(string_bytes_ptr(e.key), string_bytes_len(e.key));
                 let (slot, _) = find_slot(fresh, new_cap, e.key, key_hash);
                 std::ptr::swap(slot, &mut e);
@@ -105,7 +105,7 @@ pub fn map_new(cap: usize, gc: &mut Gc) -> *mut PickleObject {
         map_set_cap(obj, cap);
         let entries = gc.heap.raw_alloc(cap * std::mem::size_of::<MapEntry>());
         std::ptr::write_bytes(
-            entries as *mut u8,
+            entries,
             0,
             cap * std::mem::size_of::<MapEntry>(),
         );
@@ -150,7 +150,7 @@ pub fn map_get(map: *const PickleObject, key: *const PickleObject) -> *mut Pickl
             if k.is_null() {
                 return std::ptr::null_mut();
             }
-            if k != crate::object::nil_sentinel() as *mut PickleObject && string_cmp(k, key) == 0 {
+            if !std::ptr::eq(k, crate::object::nil_sentinel()) && string_cmp(k, key) == 0 {
                 return (*slot).value;
             }
             idx = (idx + 1) & mask;
@@ -172,7 +172,7 @@ pub fn map_remove(map: *mut PickleObject, key: *const PickleObject) -> *mut Pick
             if k.is_null() {
                 return std::ptr::null_mut();
             }
-            if k != crate::object::nil_sentinel() as *mut PickleObject && string_cmp(k, key) == 0 {
+            if !std::ptr::eq(k, crate::object::nil_sentinel()) && string_cmp(k, key) == 0 {
                 let v = (*slot).value;
                 (*slot).key = crate::object::nil_sentinel() as *mut PickleObject;
                 (*slot).value = std::ptr::null_mut();
