@@ -39,6 +39,18 @@ pickle fmt
 pickle repl
 ```
 
+The `build` and `run` subcommands work today on a single source file:
+
+```
+pickle run  examples/hello-world/src/main.pkl    # JIT-compile and run
+pickle build examples/hello-world/src/main.pkl    # -> main.exe next to the source
+```
+
+`pickle build` lowers the module to machine code (Cranelift), emits a
+relocatable COFF/ELF object, links it against the runtime, and writes a
+native executable with no manual linking steps. Use `-o <path>` to choose
+the output.
+
 ## Project layout
 
 ```

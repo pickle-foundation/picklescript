@@ -2,6 +2,12 @@
 /target/
 **/*.rs.bk
 
+# pickle build output
+*.exe
+*.pdb
+*.o
+*.obj
+
 # Editors
 .vscode/
 .idea/

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -8,6 +8,7 @@ use pickle_compiler::diag::SourceMap;
 
 use std::io::IsTerminal;
 
+mod build;
 mod jit;
 
 #[derive(Parser)]
@@ -39,12 +40,35 @@ enum Command {
         /// Source file to run
         file: PathBuf,
     },
+    /// Compile a module to a native executable, linking the runtime
+    Build {
+        /// Source file to compile
+        file: PathBuf,
+        /// Output executable path (defaults to next to the source)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn read_source(path: &PathBuf) -> Result<String> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read {}", path.display()))?;
     Ok(text)
+}
+
+/// Default output path for `pickle build`: the source's stem plus the
+/// platform executable suffix, next to the source file.
+fn default_output(file: &Path) -> PathBuf {
+    let dir = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "pickle_program".to_string());
+    let name = if cfg!(windows) { format!("{stem}.exe") } else { stem };
+    dir.join(name)
 }
 
 fn load(file: &PathBuf) -> Result<(String, SourceMap, DiagnosticSink)> {
@@ -115,6 +139,29 @@ fn run() -> Result<()> {
                 program.run();
             }
             pickle_runtime::abi::pickle_runtime_shutdown();
+        }
+        Command::Build { file, output } => {
+            let (source, mut map, diags) = load(file)?;
+            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
+                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let rendered = diags.render_all(&map, colored);
+            if !rendered.is_empty() {
+                eprint!("{rendered}");
+            }
+            let module = module.context("frontend failed")?;
+            if module.funcs.iter().all(|f| !f.is_main) {
+                anyhow::bail!("no `main` in this module; nothing to build");
+            }
+            let object = build::emit_object(&module).with_context(|| "while compiling to machine code")?;
+            let out = output
+                .clone()
+                .unwrap_or_else(|| default_output(file));
+            let target_dir = std::env::temp_dir().join("pickle-aot");
+            let rlib = build::build_runtime_rlib(&target_dir)
+                .with_context(|| "while building the runtime for AOT")?;
+            build::link_object(&object, &target_dir, &rlib, &out)
+                .with_context(|| format!("while linking {}", out.display()))?;
+            println!("built {}", out.display());
         }
     }
     Ok(())

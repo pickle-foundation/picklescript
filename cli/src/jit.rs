@@ -37,12 +37,12 @@ fn align_up(n: usize, a: usize) -> usize {
 /// Native calling convention of PickleScript values that map onto machine
 /// registers. On x64 Windows this matches the runtime's `extern "C"`.
 #[cfg(windows)]
-fn host_cc() -> CallConv {
+pub(crate) fn host_cc() -> CallConv {
     CallConv::WindowsFastcall
 }
 
 #[cfg(not(windows))]
-fn host_cc() -> CallConv {
+pub(crate) fn host_cc() -> CallConv {
     CallConv::SystemV
 }
 
@@ -83,7 +83,7 @@ fn cell_offset(cell: u32) -> Offset32 {
     Offset32::new((SHADOW_HEADER_BYTES + cell * CELL_BYTES) as i32)
 }
 
-fn signature_for(func: &IrFunc) -> Signature {
+pub(crate) fn signature_for(func: &IrFunc) -> Signature {
     let mut sig = Signature::new(host_cc());
     for p in &func.params {
         sig.params.push(AbiParam::new(clif_ty(p.ty)));
@@ -315,27 +315,30 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
 }
 
 /// Get (or create) the `SigRef` + symbol `GlobalValue` pair for an extern or
-/// user function, keyed by its linkable symbol name.
+/// user function, keyed by its linkable symbol name. The cached CLIF
+/// signature lets AOT object emission declare the import without re-deriving
+/// the parameter types.
 fn extern_pair(
     builder: &mut FunctionBuilder,
-    cache: &mut HashMap<String, (SigRef, GlobalValue)>,
+    cache: &mut HashMap<String, (SigRef, GlobalValue, Signature)>,
     symbol: &str,
     params: &[IrTy],
     ret: IrTy,
 ) -> (SigRef, GlobalValue) {
     if let Some(p) = cache.get(symbol) {
-        return *p;
+        return (p.0, p.1);
     }
-    let sr = builder.import_signature(extern_signature(params, ret));
+    let sig = extern_signature(params, ret);
+    let sr = builder.import_signature(sig.clone());
     let gv = builder.create_global_value(GlobalValueData::Symbol {
         name: ExternalName::testcase(symbol),
         offset: Imm64::new(0),
         colocated: false,
         tls: false,
     });
-    let p = (sr, gv);
+    let p = (sr, gv, sig);
     cache.insert(symbol.to_string(), p);
-    p
+    (sr, gv)
 }
 
 /// Store `v` into the shadow frame cell of managed temp `dst`.
@@ -392,113 +395,9 @@ impl Jit {
     /// Lower and compile one PickleIR function to machine code.
     fn compile_function(&self, module: &IrModule, fid: FuncId) -> Result<CompiledFunc> {
         let func = &module.funcs[fid.0];
-        let plan = analyze(func, module);
-        let needs_frame = plan.ncells > 0;
-
+        let (clif, _externs) = lower_func(module, fid)?;
         let mut ctx = cranelift_codegen::Context::new();
-        ctx.func = Function::with_name_signature(
-            UserFuncName::testcase(func.symbol.as_bytes()),
-            signature_for(func),
-        );
-
-        let mut fctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-        let mut call_cache: HashMap<String, (SigRef, GlobalValue)> = HashMap::new();
-
-        // Shadow frame for all managed values of this function.
-        let frame = if needs_frame {
-            Some(builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                SHADOW_HEADER_BYTES + CELL_BYTES * plan.ncells,
-                3,
-            )))
-        } else {
-            None
-        };
-
-        // Non-managed slots become ordinary stack slots.
-        let mut slot_ss: HashMap<u32, StackSlot> = HashMap::new();
-        for (i, ty) in func.slots.iter().enumerate() {
-            if is_managed(*ty) {
-                continue;
-            }
-            let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                slot_bytes(*ty) as u32,
-                align_shift(*ty),
-            ));
-            slot_ss.insert(i as u32, ss);
-        }
-
-        // Create every IR block up front; branches reference them by id.
-        let mut blocks: HashMap<u32, Block> = HashMap::new();
-        for b in &func.blocks {
-            blocks.insert(b.id.0, builder.create_block());
-        }
-
-        let entry = blocks[&func.entry.0];
-        builder.switch_to_block(entry);
-        builder.append_block_params_for_function_params(entry);
-        let params: Vec<Value> = builder.block_params(entry).to_vec();
-
-        let mut values: HashMap<u32, Value> = HashMap::new();
-        for (i, v) in params.iter().enumerate() {
-            values.insert(i as u32, *v);
-        }
-
-        // ---- prologue ----
-        // Zero every frame cell, then write slot_count.
-        if let Some(fr) = frame {
-            for c in 0..plan.ncells {
-                let zero = builder.ins().iconst(types::I64, 0);
-                builder.ins().stack_store(zero, fr, cell_offset(c));
-            }
-            let n = builder.ins().iconst(types::I32, plan.ncells as i64);
-            builder
-                .ins()
-                .stack_store(n, fr, Offset32::new(8));
-        }
-
-        // Params already live in slots 0..n in the IR; seed those slots.
-        for (i, v) in params.iter().enumerate() {
-            let ty = *func.slots.get(i).context("param slot")?;
-            if is_managed(ty) {
-                let &cell = plan.cell.get(&(i as u32)).context("managed param cell")?;
-                let fr = frame.context("managed param implies frame")?;
-                builder.ins().stack_store(*v, fr, cell_offset(cell));
-            } else if let Some(ss) = slot_ss.get(&(i as u32)) {
-                builder.ins().stack_store(*v, *ss, Offset32::new(0));
-            }
-        }
-
-        // Push the shadow frame before any potential safepoint.
-        if let Some(fr) = frame {
-            let (s, gv) = extern_pair(
-                &mut builder,
-                &mut call_cache,
-                "pickle_shadow_push",
-                &[IrTy::Ptr],
-                IrTy::Unit,
-            );
-            let fp = builder.ins().stack_addr(types::I64, fr, Offset32::new(0));
-            let addr = builder.ins().symbol_value(types::I64, gv);
-            builder.ins().call_indirect(s, addr, &[fp]);
-        }
-
-        // ---- body ----
-        let mut current = Some(entry);
-        for b in &func.blocks {
-            let blk = blocks[&b.id.0];
-            if current != Some(blk) {
-                builder.switch_to_block(blk);
-                current = Some(blk);
-            }
-            for ins in &b.instrs {
-                lower_instr(module, func, &plan, &mut builder, frame, &slot_ss, &mut values, &mut call_cache, ins)?;
-            }
-            lower_term(func, &mut builder, frame, &blocks, &values, &mut call_cache, &b.term)?;
-        }
-        builder.seal_all_blocks();
+        ctx.func = clif;
 
         let compiled = ctx
             .compile(&*self.isa, &mut ControlPlane::default())
@@ -511,6 +410,131 @@ impl Jit {
             relocs,
         })
     }
+}
+
+/// Build the CLIF for one PickleIR function, following the runtime's shadow
+/// frame convention. Returns the function plus the sorted set of extern
+/// symbols it references, so AOT object emission can declare them.
+pub(crate) fn lower_func(
+    module: &IrModule,
+    fid: FuncId,
+) -> Result<(Function, Vec<(String, Signature)>)> {
+    let func = &module.funcs[fid.0];
+    let plan = analyze(func, module);
+    let needs_frame = plan.ncells > 0;
+
+    let mut ctx = cranelift_codegen::Context::new();
+    ctx.func = Function::with_name_signature(
+        UserFuncName::testcase(func.symbol.as_bytes()),
+        signature_for(func),
+    );
+
+    let mut fctx = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+    let mut call_cache: HashMap<String, (SigRef, GlobalValue, Signature)> = HashMap::new();
+
+    // Shadow frame for all managed values of this function.
+    let frame = if needs_frame {
+        Some(builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            SHADOW_HEADER_BYTES + CELL_BYTES * plan.ncells,
+            3,
+        )))
+    } else {
+        None
+    };
+
+    // Non-managed slots become ordinary stack slots.
+    let mut slot_ss: HashMap<u32, StackSlot> = HashMap::new();
+    for (i, ty) in func.slots.iter().enumerate() {
+        if is_managed(*ty) {
+            continue;
+        }
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            slot_bytes(*ty) as u32,
+            align_shift(*ty),
+        ));
+        slot_ss.insert(i as u32, ss);
+    }
+
+    // Create every IR block up front; branches reference them by id.
+    let mut blocks: HashMap<u32, Block> = HashMap::new();
+    for b in &func.blocks {
+        blocks.insert(b.id.0, builder.create_block());
+    }
+
+    let entry = blocks[&func.entry.0];
+    builder.switch_to_block(entry);
+    builder.append_block_params_for_function_params(entry);
+    let params: Vec<Value> = builder.block_params(entry).to_vec();
+
+    let mut values: HashMap<u32, Value> = HashMap::new();
+    for (i, v) in params.iter().enumerate() {
+        values.insert(i as u32, *v);
+    }
+
+    // ---- prologue ----
+    // Zero every frame cell, then write slot_count.
+    if let Some(fr) = frame {
+        for c in 0..plan.ncells {
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().stack_store(zero, fr, cell_offset(c));
+        }
+        let n = builder.ins().iconst(types::I32, plan.ncells as i64);
+        builder
+            .ins()
+            .stack_store(n, fr, Offset32::new(8));
+    }
+
+    // Params already live in slots 0..n in the IR; seed those slots.
+    for (i, v) in params.iter().enumerate() {
+        let ty = *func.slots.get(i).context("param slot")?;
+        if is_managed(ty) {
+            let &cell = plan.cell.get(&(i as u32)).context("managed param cell")?;
+            let fr = frame.context("managed param implies frame")?;
+            builder.ins().stack_store(*v, fr, cell_offset(cell));
+        } else if let Some(ss) = slot_ss.get(&(i as u32)) {
+            builder.ins().stack_store(*v, *ss, Offset32::new(0));
+        }
+    }
+
+    // Push the shadow frame before any potential safepoint.
+    if let Some(fr) = frame {
+        let (s, gv) = extern_pair(
+            &mut builder,
+            &mut call_cache,
+            "pickle_shadow_push",
+            &[IrTy::Ptr],
+            IrTy::Unit,
+        );
+        let fp = builder.ins().stack_addr(types::I64, fr, Offset32::new(0));
+        let addr = builder.ins().symbol_value(types::I64, gv);
+        builder.ins().call_indirect(s, addr, &[fp]);
+    }
+
+    // ---- body ----
+    let mut current = Some(entry);
+    for b in &func.blocks {
+        let blk = blocks[&b.id.0];
+        if current != Some(blk) {
+            builder.switch_to_block(blk);
+            current = Some(blk);
+        }
+        for ins in &b.instrs {
+            lower_instr(module, func, &plan, &mut builder, frame, &slot_ss, &mut values, &mut call_cache, ins)?;
+        }
+        lower_term(func, &mut builder, frame, &blocks, &values, &mut call_cache, &b.term)?;
+    }
+    builder.seal_all_blocks();
+
+    let mut externs: Vec<(String, Signature)> = call_cache
+        .into_iter()
+        .map(|(name, (_sr, _gv, sig))| (name, sig))
+        .collect();
+    externs.sort_by(|a, b| a.0.cmp(&b.0));
+    externs.dedup_by(|a, b| a.0 == b.0);
+    Ok((ctx.func, externs))
 }
 
 fn unit_value(builder: &mut FunctionBuilder) -> Value {
@@ -526,7 +550,7 @@ fn lower_instr(
     frame: Option<StackSlot>,
     slot_ss: &HashMap<u32, StackSlot>,
     values: &mut HashMap<u32, Value>,
-    call_cache: &mut HashMap<String, (SigRef, GlobalValue)>,
+    call_cache: &mut HashMap<String, (SigRef, GlobalValue, Signature)>,
     ins: &IrInstr,
 ) -> Result<()> {
     match ins {
@@ -775,7 +799,7 @@ fn lower_term(
     frame: Option<StackSlot>,
     blocks: &HashMap<u32, Block>,
     values: &HashMap<u32, Value>,
-    call_cache: &mut HashMap<String, (SigRef, GlobalValue)>,
+    call_cache: &mut HashMap<String, (SigRef, GlobalValue, Signature)>,
     term: &IrTerm,
 ) -> Result<()> {
     if let Some(fr) = frame {

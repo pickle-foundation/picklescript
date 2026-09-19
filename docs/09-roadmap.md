@@ -25,7 +25,7 @@
 - [ ] Monomorphization of generics & closures
 - [ ] Cranelift lowering: loads/stores, calls, allocs, safepoints, shadow
       stack spilling, control flow, operators
-- [ ] Object emission (COFF/ELF) + linker driver (cc/rust-lld/MSVC)
+- [x] Object emission (COFF/ELF) + linker driver (cc/rust-lld/MSVC)
 - [ ] `pickle build` and `pickle run` working end-to-end for:
       functions, control flow, classes, fields, methods, inheritance,
       interfaces, strings, lists, maps, pattern matching, closures

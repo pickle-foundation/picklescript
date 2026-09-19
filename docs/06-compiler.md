@@ -44,7 +44,7 @@ Lexer -------------------- tokens ----------> Parser
    |                                    cranelift-object -> COFF/ELF
    |                                             |
    |                                             v
-   |                                    Linker driver (cc / lld)
+   |                                    rustc (native system linker)
    |                                             |
    |                                             v
    |                                    Native executable  (+ lib runtime)
@@ -56,7 +56,7 @@ Lexer -------------------- tokens ----------> Parser
 | Crate              | Role                                                               |
 |--------------------|--------------------------------------------------------------------|
 | `pickle-compiler`  | lexer, parser, AST, resolver, type checker, PickleIR, Cranelift backend, formatter |
-| `pickle-runtime`   | GC, object model, builtins, stdio, entry point, exported C ABI; builds as a staticlib |
+| `pickle-runtime`   | GC, object model, builtins, stdio, entry point, exported C ABI; linked as an rlib by `pickle build` |
 | `pickle-cli`       | the `pickle` tool: project loading, subcommands, build orchestration, REPL driver |
 
 `pickle-cli` depends on `pickle-compiler`; the object file produced by the
@@ -100,14 +100,30 @@ compiler is linked against `pickle-runtime`.
 ## Back end
 
 Cranelift (streaming, fast, register-allocated, no C dependency) > native
-machine code. `cranelift-module` + `cranelift-object` emit COFF/ELF. A
-future `llvm` feature switch will target LLVM for profile-guided and
-aggressive optimization, sharing PickleIR.
+machine code. `cranelift-module` + `cranelift-object` emit a single
+relocatable COFF/ELF object for a whole module. A future `llvm` feature
+switch will target LLVM for profile-guided and aggressive optimization,
+sharing PickleIR.
 
-The runtime is linked as a static library; the generated object exports
-`pickle_main`, the runtime provides `main`, and the linker driver
-(`cc`, or MSVC link / rust-lld fallback) produces the executable. No
-semicolons, no headers, no Makefiles — `pickle build` does all of the above.
+`pickle build` emits the object, compiles `pickle-runtime` as an rlib with
+`cargo`, and links them with `rustc` acting as the linker driver (so the
+install's native system linker handles layout and CRT bootstrap). The object
+exports `pickle_main` and imports the runtime's `pickle_*` helpers; a small
+generated shim provides the process `main`, boots the runtime
+(`pickle_runtime_init`), calls `pickle_main`, flushes output, and shuts the
+collector down.
+
+Two details keep the AOT path self-contained:
+
+- float `%` lowers to a `pickle_fmod` defined *inside* the generated object
+  as `a - floor(a / b) * b` CLIF, so the binary has no dependency on a
+  `libm` `fmod` symbol;
+- symbol references are carried between lowering phases as Cranelift
+  test-case names, which the object backend rejects; emission remaps them to
+  user names (namespace 0 = functions, 1 = data) before writing the object.
+
+No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
+the above.
 
 ## Compiler phases as commands
 
