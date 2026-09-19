@@ -299,3 +299,33 @@ fn parses_while_and_operators() {
         other => panic!("expected class, got {other:?}"),
     }
 }
+
+#[test]
+fn parses_nested_generic_types() {
+    // `>>` lexes as a single shift token, but in type arguments it means two
+    // closings: `List<List<int>>` is `List<int>` inside `List`. The parser
+    // must split the shift so every nesting level gets its own `>`.
+    let p = parse_str(
+        r#"fn probe(grid: List<List<int>>) -> int {
+            let first = grid[0]
+            let second = grid[1]
+            let a = first[0]
+            let b = second[1]
+            return a + b
+        }
+
+        fn empty<T>() -> List<List<List<T>>> {
+            []
+        }
+
+        fn shift(a: int) -> int {
+            a >> 1
+        }"#,
+    );
+    let kinds = p
+        .items
+        .iter()
+        .map(|i| if matches!(&i.kind, ItemKind::Fn(_)) { "fn" } else { "other" })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, vec!["fn", "fn", "fn"]);
+}

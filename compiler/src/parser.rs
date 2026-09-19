@@ -1025,20 +1025,25 @@ impl<'a> Parser<'a> {
         }
         loop {
             args.push(self.parse_type()?);
-            if self.eat(&Tok::Comma) {
+            if self.at(&Tok::Comma) {
+                self.bump();
                 self.continuation_after(&Tok::Comma);
-                if self.at(&Tok::Gt) || self.at(&Tok::Shr) {
-                    self.consume_gt(1)?;
+                if self.at(&Tok::Gt) {
+                    self.bump();
+                    break;
+                }
+                if self.at(&Tok::Shr) {
+                    // `List<Map<K, V>,>` : `>>` lexes as one token.
+                    self.split_shift_as_two_gt();
+                    self.bump();
                     break;
                 }
             } else if self.at(&Tok::Gt) {
                 self.bump();
                 break;
             } else if self.at(&Tok::Shr) {
-                // `List<Map<K, V>>` : Shr covers two closings
+                self.split_shift_as_two_gt();
                 self.bump();
-                // If there are more nested levels we'd need two; one came from
-                // the outer. Recurse expectation handled via single close.
                 break;
             } else {
                 self.err_here(format!(
@@ -1051,6 +1056,21 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 
+    /// In type-argument position a right shift `>>` means *two* closings
+    /// (`List<Map<K, V>>`). Replace the current `Shr` token with a single
+    /// `>` and inject a second `>` right after it, so each `parse_type_args`
+    /// invocation (one nesting level) consumes exactly one closing and the
+    /// leftover `>` is what the outer invocation sees next.
+    fn split_shift_as_two_gt(&mut self) {
+        if !matches!(self.kind(), Tok::Shr) {
+            return;
+        }
+        let span = self.span();
+        let t = &mut self.tokens[self.pos];
+        t.token = crate::token::Token::new(Tok::Gt, span);
+        self.tokens.insert(self.pos + 1, LexedToken::new(Tok::Gt, span));
+    }
+
     fn consume_gt(&mut self, n: u32) -> PResult<()> {
         let mut remaining = n;
         while remaining > 0 {
@@ -1059,18 +1079,11 @@ impl<'a> Parser<'a> {
                     self.bump();
                     remaining -= 1;
                 }
-                Tok::Shr => {
-                    self.bump();
-                    remaining = remaining.saturating_sub(2);
-                    if remaining > 0 {
-                        self.err_here("unbalanced `>>` in nested type arguments".to_string());
-                        return Err(());
-                    }
-                }
-                _ => {
+                Tok::Shr => self.split_shift_as_two_gt(),
+                other => {
                     self.err_here(format!(
-                        "expected `>` to close type arguments, found {}",
-                        self.kind().describe()
+                        "expected `>` or `>>`, found {}",
+                        other.describe()
                     ));
                     return Err(());
                 }
@@ -1080,7 +1093,6 @@ impl<'a> Parser<'a> {
     }
 
     // ---------- patterns ----------
-
     fn parse_pattern(&mut self) -> PResult<Pattern> {
         let p = self.parse_pattern_inner()?;
         if self.at(&Tok::Pipe) {

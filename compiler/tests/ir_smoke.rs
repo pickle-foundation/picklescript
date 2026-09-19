@@ -390,3 +390,41 @@ fn rejects_char_lists_in_codegen() {
         "diags:\n{text}"
     );
 }
+
+#[test]
+fn emits_nested_generic_lists() {
+    // Nesting is spelled with a single `>>` token in the source; the parser
+    // splits it so `List<List<int>>` resolves, and the emitter passes the
+    // outer element (the inner list pointer) through without boxing.
+    let m = emit_str(
+        r#"fn probe(grid: List<List<int>>) -> int {
+            let first = grid[0]
+            let second = grid[1]
+            let a = first[0]
+            let b = second[1]
+            return a + b
+        }
+
+        fn main() {
+            let grid = [[1, 2], [3, 4]]
+            println(probe(grid))
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(syms.iter().any(|s| s == "pickle_list_new"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    let probe = m.funcs.iter().find(|f| f.name == "probe").expect("probe");
+    assert!(
+        probe
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_list_get")))
+            .count()
+            >= 2,
+        "a nested read needs two `pickle_list_get` calls, dump:\n{probe}"
+    );
+}
