@@ -183,8 +183,8 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No `static var` fields, no `deinit`, no `Const` members, no static properties,
-  no named constructors (`constructor.guest()`), no generics/extends/implements
+- No `static var` fields, no `deinit`, no `Const` members, no named
+  constructors (`constructor.guest()`), no generics/extends/implements
   -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
@@ -220,7 +220,14 @@ Lowering rules:
   back to `this.<prop>` through the getter. Getters/setters use `=> expr` or
   `{ ... }` bodies and may reference fields and methods through `this`.
   Compound assignment to a property bails with "compound assignment to a
-  property is not lowered yet". Static properties stay deferred.
+  property is not lowered yet". Static properties compile to receiver-less
+  `pkl_<TypeName>_sm_<p>_get`/`_set` functions dispatched through a separate
+  map keyed by class id and property name (so instance dispatch can never read
+  a static accessor), and the checker requires them to be reached through the
+  type name: `Type.prop` reads call the getter, `Type.prop = v` writes call the
+  setter, a static getter body may reference other statics via `Type.other`,
+  and instance receivers cannot reach static properties (or vice versa).
+  Statics with a getter but no setter are read-only.
 - `char` values are boxed/unboxed exactly like the other scalars: the runtime
   provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
   elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`

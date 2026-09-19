@@ -919,7 +919,9 @@ impl<'a> Checker<'a> {
             self.fn_generics = Vec::new();
             self.ret_ty = pty.clone();
             if let Some(st) = &self.self_ty {
-                self.declare("this", st.clone(), false);
+                if !p.is_static {
+                    self.declare("this", st.clone(), false);
+                }
             }
             let t = match get {
                 PropertyAccessor::Expr(e) => self.check_expr(e),
@@ -937,7 +939,9 @@ impl<'a> Checker<'a> {
             self.fn_generics = Vec::new();
             self.ret_ty = Ty::Empty;
             if let Some(st) = &self.self_ty {
-                self.declare("this", st.clone(), false);
+                if !p.is_static {
+                    self.declare("this", st.clone(), false);
+                }
             }
             self.declare("value", pty.clone(), true);
             let _ = match set {
@@ -1441,6 +1445,15 @@ impl<'a> Checker<'a> {
                     return self.subst(&f.0.ty, &HashMap::new());
                 }
                 if let Some(p) = self.find_property(&gname, name) {
+                    if !p.is_static {
+                        self.err(
+                            e.span,
+                            format!(
+                                "instance property `{name}` must be accessed on an instance of `{gname}`"
+                            ),
+                        );
+                        return Ty::Unknown;
+                    }
                     return p.ty.clone();
                 }
                 if let Some(m) = self.find_method(&gname, name) {
@@ -1520,6 +1533,15 @@ impl<'a> Checker<'a> {
             return self.subst(&f.0.ty, &args_map);
         }
         if let Some(p) = self.find_property(&class, name) {
+            if p.is_static {
+                self.err(
+                    e.span,
+                    format!(
+                        "static property `{name}` must be accessed on the type `{class}`, not on an instance"
+                    ),
+                );
+                return Ty::Unknown;
+            }
             return self.subst(&p.ty, &args_map);
         }
         if let Some(m) = self.find_method(&class, name) {
@@ -1754,7 +1776,35 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Member { object, name } => {
-                let ot = self.check_expr(object);
+    // Type-qualified static property assignment: `Type.prop = v`.
+    if let ExprKind::Ident(tname) = &object.kind {
+        if let Some(entry) = self.resolved.types.get(tname) {
+            let gname = entry.name().to_string();
+            if let Some(p) = self.find_property(&gname, name) {
+                if !p.is_static {
+                    self.err(
+                        target.span,
+                        format!(
+                            "instance property `{name}` must be assigned on an instance of `{gname}`"
+                        ),
+                    );
+                } else if !p.has_set {
+                    self.err(
+                        target.span,
+                        format!("static property `{name}` has no setter"),
+                    );
+                }
+                self.check_assignable(&p.ty, &vt, target.span, "assignment");
+                return Ty::Empty;
+            }
+            self.err(
+                target.span,
+                format!("no assignable member `{name}` on `{tname}`"),
+            );
+            return Ty::Empty;
+        }
+    }
+    let ot = self.check_expr(object);
                 if let Some((class, args_map)) = self.type_key(&ot) {
                     if let Some(f) = self.find_field(&class, name, &args_map) {
                         if !f.0.mutable {

@@ -54,6 +54,7 @@ pub fn emit_ir(
         ctor_ids: HashMap::new(),
         method_ids: HashMap::new(),
         property_ids: HashMap::new(),
+        static_property_ids: HashMap::new(),
         owner: None,
         fname: String::new(),
         symbol: String::new(),
@@ -101,13 +102,15 @@ enum FnSource<'a> {
     },
     /// A class/struct method (instance or static).
     Method { table: ClassTable, md: &'a MethodDecl },
-    /// A property accessor: slot 0 is `this`, and setters take a `value`
-    /// parameter, over the resolved property signature.
+    /// A property accessor: slot 0 is `this` (instance only; static
+    /// properties are receiver-less), and setters take a `value` parameter,
+    /// over the resolved property signature.
     Property {
         table: ClassTable,
         pd: &'a PropertyDecl,
         info: PropertyInfo,
         is_set: bool,
+        is_static: bool,
     },
 }
 
@@ -162,6 +165,8 @@ struct Emitter<'a> {
     method_ids: HashMap<(u32, String), (FuncId, bool)>,
     /// (Class id, property name, is_setter) -> accessor function.
     property_ids: HashMap<(u32, String, bool), FuncId>,
+    /// (Class id, static property name, is_setter) -> accessor function.
+    static_property_ids: HashMap<(u32, String, bool), FuncId>,
     /// Class id of the method/ctor currently being built (implicit receiver).
     owner: Option<i64>,
 
@@ -294,10 +299,6 @@ let bad = |e: &mut Self, what: &str| {
                 return;
             }
         }
-        if table.properties.iter().any(|p| p.is_static) {
-            bad(self, "static properties");
-            return;
-        }
         if !table.consts.is_empty() {
             bad(self, "constants");
             return;
@@ -383,9 +384,8 @@ let bad = |e: &mut Self, what: &str| {
             self.method_ids.insert((cid, md.name.clone()), (mid, info.is_static));
         }
 
-        // Property accessors: `pkl_<Name>_<p>_get` and `pkl_<Name>_<p>_set`.
-        // Getters return the property type; setters take a `value` parameter
-        // and return unit. Static properties were rejected above.
+        // Property accessors: `pkl_<Name>_<p>_get`/`_set` (instance, slot 0 is
+        // `this`) and `pkl_<Name>_sm_<p>_get`/`_set` (static, receiver-less).
         for pd in members.iter().filter_map(|m| match m {
             ClassMember::Property(pd) => Some(pd),
             _ => None,
@@ -393,31 +393,48 @@ let bad = |e: &mut Self, what: &str| {
             let Some(info) = table.properties.iter().find(|i| i.name == pd.name) else {
                 continue;
             };
+            let stem = if pd.is_static {
+                format!("pkl_{name}_sm_{}_", pd.name)
+            } else {
+                format!("pkl_{name}_{}_", pd.name)
+            };
             if info.has_get {
                 let fid = self.push_class_func(
                     &format!("{}.{}.get", name, pd.name),
-                    &format!("pkl_{name}_{}_get", pd.name),
+                    &format!("{stem}get"),
                     FnSource::Property {
                         table: table.clone(),
                         pd,
                         info: info.clone(),
                         is_set: false,
+                        is_static: pd.is_static,
                     },
                 );
-                self.property_ids.insert((cid, pd.name.clone(), false), fid);
+                if pd.is_static {
+                    self.static_property_ids
+                        .insert((cid, pd.name.clone(), false), fid);
+                } else {
+                    self.property_ids.insert((cid, pd.name.clone(), false), fid);
+                }
             }
             if info.has_set {
                 let fid = self.push_class_func(
                     &format!("{}.{}.set", name, pd.name),
-                    &format!("pkl_{name}_{}_set", pd.name),
+                    &format!("{stem}set"),
                     FnSource::Property {
                         table: table.clone(),
                         pd,
                         info: info.clone(),
                         is_set: true,
+                        is_static: pd.is_static,
                     },
                 );
-                self.property_ids.insert((cid, pd.name.clone(), true), fid);
+                if pd.is_static {
+                    self.static_property_ids
+                        .insert((cid, pd.name.clone(), true), fid);
+                } else {
+                    self.property_ids.insert((cid, pd.name.clone(), true), fid);
+                }
             }
         }
 
@@ -518,9 +535,9 @@ let bad = |e: &mut Self, what: &str| {
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
                 let _ = self.build_method_body(&table, md, &info);
             }
-            FnSource::Property { table, pd, info, is_set } => {
+            FnSource::Property { table, pd, info, is_set, is_static } => {
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
-                let _ = self.build_property_body(&table, pd, &info, is_set);
+                let _ = self.build_property_body(&table, pd, &info, is_set, is_static);
             }
         }
         if self.failed {
@@ -719,13 +736,18 @@ let bad = |e: &mut Self, what: &str| {
         pd: &PropertyDecl,
         info: &PropertyInfo,
         is_set: bool,
+        is_static: bool,
     ) -> Result<(), ()> {
-        self.fslots.push(IrTy::Ptr);
-        self.fparams.push(IrParam {
-            name: "this".to_string(),
-            ty: IrTy::Ptr,
-        });
-        self.declare("this", Slot(0));
+        let mut d = 0usize;
+        if !is_static {
+            self.fslots.push(IrTy::Ptr);
+            self.fparams.push(IrParam {
+                name: "this".to_string(),
+                ty: IrTy::Ptr,
+            });
+            self.declare("this", Slot(0));
+            d = 1;
+        }
         if is_set {
             let ir = self.map_ty(&info.ty, pd.span).unwrap_or(IrTy::Ptr);
             self.fslots.push(ir);
@@ -733,7 +755,7 @@ let bad = |e: &mut Self, what: &str| {
                 name: "value".to_string(),
                 ty: ir,
             });
-            self.declare("value", Slot(1));
+            self.declare("value", Slot(d as u32));
             self.fret = IrTy::Unit;
         } else {
             self.fret = self.map_ty(&info.ty, pd.span).unwrap_or(IrTy::Ptr);
@@ -1723,6 +1745,31 @@ let bad = |e: &mut Self, what: &str| {
         name: &str,
         value: &Expr,
     ) -> Result<Temp, ()> {
+        // `Type.staticProperty = v` dispatches the receiver-less setter.
+        if let ExprKind::Ident(tname) = &object.kind {
+            if let Some(&cid) = self.class_by_name.get(tname) {
+                if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), true)) {
+                    if op != AssignOp::Assign {
+                        return self.bad(
+                            e.span,
+                            "compound assignment to a static property is not lowered yet",
+                        );
+                    }
+                    let v = self.expr(value)?;
+                    let dst = self.temp();
+                    self.instr(IrInstr::Call {
+                        dst: Some(dst),
+                        callee: Callee::Func(fid),
+                        args: vec![v],
+                    });
+                    return Ok(v);
+                }
+                return self.bad(
+                    e.span,
+                    format!("`{tname}` has no settable static member `{name}`"),
+                );
+            }
+        }
         let ot = self.ty_of(&object.span);
         let cid = match ot {
             Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
@@ -2712,12 +2759,17 @@ let bad = |e: &mut Self, what: &str| {
                 format!("method `{name}` of `{}` cannot be used as a value", self.class_name_of(cid)),
             );
         }
-        // `Type.member` in value position on a registered class/struct.
+        // `Type.staticProperty` reads a receiver-less accessor.
         if let ExprKind::Ident(tname) = &object.kind {
-            if self.class_by_name.contains_key(tname) {
+            if let Some(&cid) = self.class_by_name.get(tname) {
+                if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), false)) {
+                    return self.call_method(e, fid, &[], None);
+                }
                 return self.bad(
                     e.span,
-                    format!("static member `{name}` on `{tname}` is not lowered yet"),
+                    format!(
+                        "static member `{name}` on `{tname}` is not lowered yet"
+                    ),
                 );
             }
         }

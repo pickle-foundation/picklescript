@@ -814,6 +814,116 @@ fn emits_property_accessors_and_dispatches() {
 }
 
 #[test]
+fn emits_static_property_accessors_receiverless() {
+    // Static property accessors lower as receiver-less functions
+    // (`pkl_<T>_sm_<p>_get`/`_set`), dispatch via `Type.prop`, and can
+    // reference other statics via the type-qualified path.
+    let m = emit_str(
+        r#"class Config {
+            static property limit: int {
+                get => 10
+            }
+
+            static property label: string {
+                get => "cfg"
+            }
+
+            static property guarded: int {
+                get => Config.limit
+                set {}
+            }
+
+            property instanceOnly: int { get => 1 }
+        }
+
+        fn main() {
+            println(Config.limit)
+            Config.guarded = 11
+            println(Config.limit)
+            println(Config.label)
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    for sym in [
+        "pkl_Config_sm_limit_get",
+        "pkl_Config_sm_label_get",
+        "pkl_Config_sm_guarded_get",
+        "pkl_Config_sm_guarded_set",
+    ] {
+        assert!(syms.iter().any(|s| s == sym), "symbols: {syms:?}");
+    }
+    let get = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Config_sm_limit_get")
+        .expect("get");
+    assert!(get.params.is_empty(), "static getter has no receiver");
+    assert_eq!(get.ret, IrTy::Int);
+    let set = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Config_sm_guarded_set")
+        .expect("set");
+    assert_eq!(set.params.len(), 1, "static setter takes only `value`");
+    assert_eq!(set.params[0].name, "value");
+    assert_eq!(set.ret, IrTy::Unit);
+    let inst = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Config_instanceOnly_get")
+        .expect("instance accessor still lowers");
+    assert_eq!(inst.params.first().map(|p| p.ty), Some(IrTy::Ptr));
+    let guarded_get = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Config_sm_guarded_get")
+        .expect("guarded.get");
+    let statics_called: Vec<String> = guarded_get
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Func(fid), .. } = i {
+                Some(m.funcs.get(fid.0).map(|f| f.symbol.clone()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+    assert!(
+        statics_called
+            .iter()
+            .any(|s| s == "pkl_Config_sm_limit_get"),
+        "static getter calls the type-qualified static getter: {statics_called:?}"
+    );
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let used: Vec<(String, usize)> = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Func(fid), args, .. } = i {
+                Some((
+                    m.funcs.get(fid.0).map(|f| f.symbol.clone()).unwrap_or_default(),
+                    args.len(),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        used.iter().any(|(s, n)| s == "pkl_Config_sm_limit_get" && *n == 0),
+        "main calls the getter with no receiver: {used:?}"
+    );
+    assert!(
+        used.iter().any(|(s, n)| s == "pkl_Config_sm_guarded_set" && *n == 1),
+        "main calls the setter with just the value: {used:?}"
+    );
+}
+
+#[test]
 fn property_getter_reads_bare_field_and_this() {
     // Bare field names and bare property names inside accessors resolve
     // through `this`; the getter/setter bodies must lower without unset `this`.

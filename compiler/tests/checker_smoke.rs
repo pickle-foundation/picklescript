@@ -441,6 +441,69 @@ fn rejects_non_string_map_index() {
 }
 
 #[test]
+fn accepts_static_property_accessors() {
+    // Static properties type-qualify through the class name; getters may
+    // reference other statics by `Type.prop`; instance properties must not
+    // be reached through the type name (or statics through instances).
+    let d = check_str(
+        r#"class Config {
+            static property limit: int {
+                get => 10
+            }
+
+            static property label: string {
+                get => "cfg"
+            }
+
+            static property guarded: int {
+                get => Config.limit
+                set {}
+            }
+
+            property instanceOnly: int { get => 1 }
+        }
+
+        fn main() {
+            println(Config.limit)
+            println(Config.label)
+            Config.guarded = 11
+            println(Config.limit)
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_static_instance_misuse() {
+    // Static properties cannot be reached through an instance, and instance
+    // properties cannot be reached through the type name.
+    let d = check_str(
+        r#"class Config {
+            static property limit: int {
+                get => 10
+            }
+
+            property doubled: int { get => limit * 2 }
+        }
+
+        fn main() {
+            let c = Config()
+            println(c.limit)
+            println(Config.doubled)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("static property `limit` must be accessed on the type `Config`"),
+        "missing instance-to-static diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("instance property `doubled` must be accessed on an instance of `Config`"),
+        "missing type-to-instance diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
 fn rejects_too_few_constructor_args() {
     // A missing synthesized-ctor parameter used to reach codegen and turn into
     // a JIT verifier crash; the checker must flag the arity mismatch instead.
