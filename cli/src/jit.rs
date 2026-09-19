@@ -802,18 +802,6 @@ fn lower_term(
     call_cache: &mut HashMap<String, (SigRef, GlobalValue, Signature)>,
     term: &IrTerm,
 ) -> Result<()> {
-    if let Some(fr) = frame {
-        let (s, gv) = extern_pair(
-            builder,
-            call_cache,
-            "pickle_shadow_pop",
-            &[IrTy::Ptr],
-            IrTy::Unit,
-        );
-        let fp = builder.ins().stack_addr(types::I64, fr, Offset32::new(0));
-        let addr = builder.ins().symbol_value(types::I64, gv);
-        builder.ins().call_indirect(s, addr, &[fp]);
-    }
     match term {
         IrTerm::Branch { target } => {
             builder
@@ -830,15 +818,33 @@ fn lower_term(
                 &[] as &[BlockArg],
             );
         }
-        IrTerm::Return { v } => match v {
-            Some(t) if !func.ret.is_unit() => {
-                let x = *values.get(&t.0).context("return value")?;
-                builder.ins().return_(&[x]);
+        IrTerm::Return { v } => {
+            // The shadow frame is pushed once in the prologue, so it is popped
+            // exactly once, at each exit (branches between blocks must not
+            // pop, or a multi-block function would pop more often than it
+            // pushed and trip the runtime's LIFO assert).
+            if let Some(fr) = frame {
+                let (s, gv) = extern_pair(
+                    builder,
+                    call_cache,
+                    "pickle_shadow_pop",
+                    &[IrTy::Ptr],
+                    IrTy::Unit,
+                );
+                let fp = builder.ins().stack_addr(types::I64, fr, Offset32::new(0));
+                let addr = builder.ins().symbol_value(types::I64, gv);
+                builder.ins().call_indirect(s, addr, &[fp]);
             }
-            _ => {
-                builder.ins().return_(&[] as &[Value]);
+            match v {
+                Some(t) if !func.ret.is_unit() => {
+                    let x = *values.get(&t.0).context("return value")?;
+                    builder.ins().return_(&[x]);
+                }
+                _ => {
+                    builder.ins().return_(&[] as &[Value]);
+                }
             }
-        },
+        }
         IrTerm::Unreachable => {
             let code = TrapCode::user(1).expect("user trap code 1 is valid");
             builder.ins().trap(code);

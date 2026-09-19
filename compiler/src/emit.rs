@@ -281,17 +281,29 @@ impl<'a> Emitter<'a> {
                 let _ = self.expr(e);
                 self.term(IrTerm::Return { v: None });
             }
-            None => {
+            None if self.fret.is_unit() => {
                 self.term(IrTerm::Return { v: None });
+            }
+            None => {
+                // A value-returning function reaches here only when the last
+                // statement already terminated this block (`return`), so the
+                // current block is dead. Closing it with an empty `return`
+                // would not type-check against the value signature, so leave
+                // it `Unreachable`; a live block with no tail value is a
+                // missing-return program and is rejected upstream by the
+                // checker.
             }
         }
     }
 
     /// Ensure the final block is closed. Returns false iff the function's last
-    /// block is dead (shorter than a missing return).
+    /// block is dead (shorter than a missing return). Only unit-returning
+    /// functions get the trailing empty `return`; a value-returning function
+    /// whose last statement already returned leaves its dead block
+    /// `Unreachable` (an empty `return` would fail Cranelift's verifier).
     fn tail_cleanup(&mut self) -> bool {
         let block = &mut self.blocks[self.cur.0 as usize];
-        if matches!(block.term, IrTerm::Unreachable) {
+        if matches!(block.term, IrTerm::Unreachable) && self.fret.is_unit() {
             block.term = IrTerm::Return { v: None };
         }
         true
