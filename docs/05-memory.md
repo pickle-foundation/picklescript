@@ -5,15 +5,15 @@
 Normal PickleScript code never mentions memory.
 
 ```
-class Player {
+class Account {
     name: string
-    items: List<string>
+    transactions: List<int>
 }
 
 fn main() {
-    let p = Player("Hero")
-    let q = p                 // shared reference
-    let copy = Object.clone(p) // only if you ask
+    let a = Account("Ada")
+    let b = a                // shared reference
+    let copy = Object.clone(a) // only if you ask
 }
 ```
 
@@ -48,12 +48,12 @@ with the following properties:
 ## Safe vs unsafe
 
 ```
-let player = Player("Hero")        // safe: GC
+let account = Account("Ada")          // safe: GC
 
 unsafe {
-    let ptr: *Player = &player     // raw address
-    ptr->health = 200
-    let selfPtr: *selfObject = ... // whatever you need
+    let ptr: *Account = &account      // raw address
+    ptr->branch = "NYC"
+    let selfPtr: *selfObject = ...    // whatever you need
 }
 ```
 

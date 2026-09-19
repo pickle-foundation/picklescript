@@ -12,12 +12,12 @@ re-derived to fit PickleScript's own grammar and mental model.
 ## What PickleScript wants to be
 
 PickleScript serves the same broad set of users that would reach for C#, Go,
-or Java today — game and engine developers, backend service authors, desktop
-app writers, CLI tool creators, infrastructure engineers — and it provides a
-real path into systems programming for those who want it.
+or Java today — backend service authors, desktop app writers, CLI tool
+creators, infrastructure engineers — and it provides a real path into systems
+programming for those who want it.
 
-The language is expected to build real software: servers, editors, games,
-build tools, and libraries.
+The language is expected to build real software: servers, editors, build
+tools, libraries, and other application workloads.
 
 ## Core values (ranked)
 

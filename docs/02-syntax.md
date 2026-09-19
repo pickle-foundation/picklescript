@@ -16,7 +16,7 @@ Version 1. Files use the `.pkl` extension.
     `float`)
 - String literals:
   - `"hello"` — interpolated; `{expr}` embeds `expr.toString()`.
-    `"Score: {score}"`. Escapes: `\n \t \\ \" \{ \u{1F600}`.
+    `"Total: {total}"`. Escapes: `\n \t \\ \" \{ \u{1F600}`.
   - `r"raw text {not inserted}"` — no interpolation.
   - `"""multi\nline\nstring"""` — interpolation allowed.
 - Character literal: `'a'` — a Unicode scalar, type `char`.
@@ -73,7 +73,7 @@ return [expr] | return          // bare return == return none, if option
 ### Expression statements
 
 ```
-player.damage(20)
+account.deposit(20)
 print("done")
 ```
 
@@ -136,12 +136,12 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
 ## Modules
 
 ```
-module game.player          // path. Identifies the file.
+module app.util              // path. Identifies the file.
 
-import graphics             // qualified: graphics.render(...)
-import graphics as g        // aliased: g.render(...)
-use graphics.render         // unqualified: render(...)
-use graphics.*              // unqualified: everything public
+import text                  // qualified: text.render(...)
+import text as t             // aliased: t.render(...)
+use text.render             // unqualified: render(...)
+use text.*                   // unqualified: everything public
 ```
 
 Import paths resolve against `src/` and package dependencies. A file's module
@@ -167,41 +167,41 @@ this super
 ## Example walking
 
 ```
-module game
+module app
 
-import graphics
+import text
 
-class Player {
+class Account {
 
     name: string
-    health: int = 100
-    private secret: int = 0
+    balance: int = 0
+    private pin: int = 8962
 
     constructor(name: string) {
         this.name = name
     }
 
-    fn damage(amount: int) {
-        health -= amount
+    fn deposit(amount: int) {
+        balance += amount
     }
 
-    fn alive() -> bool => health > 0
+    fn enough(amount: int) -> bool => balance >= amount
 
-    property level: int {
-        get => health / 10
+    property label: string {
+        get => "{name}: {balance}"
     }
 }
 
-enum State { Idle Moving Dead }
+enum Kind { Checking Savings }
 
 fn main() {
-    let p = Player("Hero")
-    p.damage(20)
-    print("Health: {p.health}")
-    var state = State.Idle
-    match (state) {
-        case State.Dead -> print("dead")
-        case -> print("alive")
+    let a = Account("Ada")
+    a.deposit(20)
+    print("Balance: {a.balance}")
+    var kind = Kind.Checking
+    match (kind) {
+        case Kind.Savings -> print("savings")
+        case -> print("checking")
     }
 }
 ```

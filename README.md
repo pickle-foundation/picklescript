@@ -4,8 +4,8 @@
 
 PickleScript is a standalone, native-compiled, general-purpose programming
 language. It targets the same problems people currently reach for C#, Go, or
-Java with — backend services, desktop apps, CLI tools, games and engines —
-and it keeps a path into systems programming when you need it.
+Java with — backend services, desktop apps, CLI tools, and libraries — and it
+keeps a path into systems programming when you need it.
 
 ## Quick tour
 
@@ -13,8 +13,8 @@ and it keeps a path into systems programming when you need it.
 module hello
 
 fn main() {
-    let name = "Hero"
-    print("Hello, {name}!")
+    let recipient = "world"
+    print("Hello, {recipient}!")
 }
 ```
 
@@ -46,7 +46,7 @@ project/
     pickle.toml        # project manifest
     src/
         main.pkl       # entry point (fn main)
-        player.pkl
+        util.pkl       # helper module
 ```
 
 `pickle build` discovers `src/*.pkl`, resolves `module`/`import` edges,

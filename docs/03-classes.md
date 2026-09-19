@@ -8,11 +8,11 @@ provide abstraction, and inheritance is single.
 ## Class shape
 
 ```
-class Player {
+class Employee {
 
     name: string                 // field, public by default
-    health: int = 100            // field with initializer
-    private secret: int          // private field
+    salary: int = 40_000         // field with initializer
+    private id: int              // private field
 
     constructor(name: string) {  // explicit constructor
         this.name = name
@@ -22,20 +22,20 @@ class Player {
         this("Guest")
     }
 
-    fn damage(amount: int) {     // method
-        health -= amount
+    fn raise(amount: int) {      // method
+        salary += amount
     }
 
-    fn alive() -> bool => health > 0
+    fn senior() -> bool => salary >= 100_000
 
     static var count = 0         // static field
-    static fn create() -> Player => Player("Anonymous")
+    static fn create() -> Employee => Employee("Anonymous")
 
     property label: string {     // property
-        get => "Player {name} ({health} hp)"
+        get => "Employee {name} ({salary})"
     }
 
-    operator == (other: Player) -> bool => name == other.name
+    operator == (other: Employee) -> bool => name == other.name
 }
 ```
 
@@ -66,9 +66,9 @@ class Player {
 ## Inheritance
 
 ```
-class Enemy extends Entity {
+class Manager extends Employee {
 
-    override fn update(delta: float) { ... }
+    override fn review() { ... }
 
 }
 ```
@@ -78,18 +78,18 @@ Rules:
 - A class implicitly implements all interfaces implemented by its parent.
 - `super.m()` calls the parent implementation.
 - Abstraction: an abstract method is declared by omitting the body
-  (`fn update(delta: float)`) in a class; often via an `interface` instead.
+  (`fn review()`) in a class; often via an `interface` instead.
 
 ## Interfaces
 
 ```
-interface Drawable {
-    fn draw()
-    fn width() -> int => 0     // default implementation
+interface Serializable {
+    fn export(path: string)
+    fn version() -> int => 0     // default implementation
 }
 
-class Sprite implements Drawable {
-    fn draw() { }
+class Config implements Serializable {
+    fn export(path: string) { }
 }
 ```
 
@@ -110,7 +110,7 @@ declaring is rejected to keep contracts explicit.)
 
 - `static var/let/const` fields: one per class, initialized lazily on first
   touch (thread-safe once).
-- `static fn`: callable as `Player.create()`; has no receiver, cannot see
+- `static fn`: callable as `Employee.create()`; has no receiver, cannot see
   instance state.
 - Statics are inherited through the type name.
 
@@ -123,13 +123,13 @@ declaring is rejected to keep contracts explicit.)
 
 ## Construction without ceremony
 
-`Player("Hero")` requires a matching constructor. When no constructor is
+`Point(1.5, 2.0)` requires a matching constructor. When no constructor is
 declared, the compiler synthesizes:
 
-- Default constructor `Player()` if all fields have defaults, plus
-  `Player(name: string, ...)` — no: synthesized constructor is `Player()`
+- Default constructor `Point()` if all fields have defaults, plus
+  `Point(x: float, ...)` — no: synthesized constructor is `Point()`
   using field initializers, and named-argument construction
-  `Player(name: "Hero", health: 200)` is accepted for any class with no
+  `Point(x: 1.5, y: 2.0)` is accepted for any class with no
   explicit constructor. This keeps little data classes terse:
 
 ```
