@@ -2,10 +2,10 @@
 //! simple builtins. The compiler emits calls to these primitives; richer
 //! formatting is left to `std.text` later.
 
-use crate::layout::{list_len, map_len, str_bytes, str_len};
+use crate::layout::{enum_tag, list_len, map_len, str_bytes, str_len};
 use crate::object::{
-    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT, PICKLE_CLASS_LIST,
-    PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
+    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT,
+    PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
 };
 #[cfg(not(test))]
 use std::io::Write;
@@ -132,6 +132,11 @@ fn print_obj_raw(obj: *mut PickleObject) {
         PICKLE_CLASS_MAP => {
             pickle_print_cstr(b"Map(len=\0".as_ptr());
             pickle_print_i64(map_len(obj) as i64);
+            pickle_print_byte(b')');
+        }
+        PICKLE_CLASS_ENUM => {
+            pickle_print_cstr(b"Enum(tag=\0".as_ptr());
+            pickle_print_i64(enum_tag(obj));
             pickle_print_byte(b')');
         }
         PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),

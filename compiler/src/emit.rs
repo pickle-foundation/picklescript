@@ -14,7 +14,7 @@ use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
-use crate::resolve::{CallableInfo, ResolvedProgram};
+use crate::resolve::{CallableInfo, EnumTable, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
@@ -711,12 +711,15 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::This => self.bad(e.span, "`this` is not lowered yet"),
             ExprKind::Super => self.bad(e.span, "`super` is not lowered yet"),
-            ExprKind::Member { .. } => self.bad(e.span, "member access is not lowered yet"),
+            ExprKind::Member { object, name } => self.member_value(e, object, name),
             ExprKind::Index { object, index } => self.index_read(e, object, index),
             ExprKind::OptAccess { .. } => self.bad(e.span, "optional access is not lowered yet"),
             ExprKind::OptUnwrap(_) => self.bad(e.span, "`!` unwrap is not lowered yet"),
             ExprKind::Lambda { .. } => self.bad(e.span, "lambda values are not lowered yet"),
-            ExprKind::Match { .. } => self.bad(e.span, "`match` is not lowered yet"),
+            ExprKind::Match {
+                scrutinee,
+                arms,
+            } => self.match_expr(e, scrutinee, arms),
             ExprKind::Await(_) => self.bad(e.span, "`await` is not lowered yet"),
             ExprKind::GenericCall { .. } => self.bad(e.span, "generic calls are not lowered yet"),
             ExprKind::Cast { .. } => self.bad(e.span, "casts are not lowered yet"),
@@ -1383,6 +1386,203 @@ impl<'a> Emitter<'a> {
         Ok(dst)
     }
 
+    /// Lower `match (scrutinee) { case p -> body ... }` into a chain of
+    /// `tag == variant` checks. The scrutinee is kept in a managed slot across
+    /// the chain; payload bindings extract and unbox each field like list
+    /// elements. A chain that reaches its end without a catch-all arm calls
+    /// `pickle_panic_no_match`.
+    fn match_expr(
+        &mut self,
+        e: &Expr,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+    ) -> Result<Temp, ()> {
+        let st = self.ty_of(&scrutinee.span);
+        let Some(st) = st else {
+            return self.bad(e.span, "matching over non-enum values is not lowered yet");
+        };
+        let Ty::Enum(en_name, _) = &st else {
+            return self.bad(e.span, "matching over non-enum values is not lowered yet");
+        };
+        let enum_name = en_name.clone();
+        let table = match self.resolved.types.get(&enum_name) {
+            Some(TypeTableEntry::Enum(t)) => t.clone(),
+            _ => return self.bad(e.span, format!("unknown enum type `{enum_name}`")),
+        };
+        if arms.iter().any(|a| a.guard.is_some()) {
+            return self.bad(e.span, "match guards are not lowered yet");
+        }
+
+        // The scrutinee is a managed pointer; keep it in a slot so the
+        // collector retains it across any allocation the arms perform.
+        let s = self.expr(scrutinee)?;
+        let s_slot = self.new_slot(IrTy::Ptr);
+        self.instr(IrInstr::StoreSlot { slot: s_slot, v: s });
+
+        let res_ty = self.irty(e.span).ok();
+        let res_slot = if !matches!(res_ty, Some(IrTy::Unit) | None) {
+            Some(self.new_slot(res_ty.unwrap()))
+        } else {
+            None
+        };
+
+        let sv = self.load(s_slot);
+        let tag = self.extern_call_t1(
+            "pickle_enum_tag",
+            vec![IrTy::Ptr],
+            IrTy::Int,
+            vec![sv],
+        )?;
+        let join = self.new_block();
+
+        let mut cur = self.cur;
+        let mut chain_live = true;
+        for arm in arms {
+            let body = self.new_block();
+            match &arm.pattern {
+                Pattern::Variant { path, payloads } => {
+                    let vname = match path.len() {
+                        2 => &path[1],
+                        1 => &path[0],
+                        _ => return self.bad(arm.span, "invalid enum variant pattern"),
+                    };
+                    let Some(vi) = table.variants.iter().position(|(n, ..)| n == vname) else {
+                        return self.bad(
+                            arm.span,
+                            format!("enum `{enum_name}` has no variant `{vname}`"),
+                        );
+                    };
+                    if chain_live {
+                        self.cur = cur;
+                        let vi_t = self.temp();
+                        self.instr(IrInstr::Const {
+                            dst: vi_t,
+                            c: IrConst::Int(vi as i64),
+                        });
+                        let c = self.temp();
+                        self.instr(IrInstr::BinOp {
+                            dst: c,
+                            op: IrBinOp::Eq,
+                            a: tag,
+                            b: vi_t,
+                        });
+                        let next = self.new_block();
+                        self.term(IrTerm::BranchIf {
+                            cond: c,
+                            then: body,
+                            else_: next,
+                        });
+                        cur = next;
+                    }
+                    self.cur = body;
+                    self.push_scope();
+                    self.bind_enum_payloads(arm.span, &table, vi, payloads, s_slot)?;
+                    self.match_arm_body(&arm.body, res_slot)?;
+                    self.pop_scope();
+                    self.term(IrTerm::Branch { target: join });
+                }
+                Pattern::Wildcard | Pattern::Binding { .. } => {
+                    if chain_live {
+                        self.cur = cur;
+                        self.term(IrTerm::Branch { target: body });
+                        chain_live = false;
+                    }
+                    self.cur = body;
+                    self.push_scope();
+                    if let Pattern::Binding { name, .. } = &arm.pattern {
+                        let slot = self.new_slot(IrTy::Ptr);
+                        let sv = self.load(s_slot);
+                        self.instr(IrInstr::StoreSlot { slot, v: sv });
+                        self.declare(name, slot);
+                    }
+                    self.match_arm_body(&arm.body, res_slot)?;
+                    self.pop_scope();
+                    self.term(IrTerm::Branch { target: join });
+                }
+                Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Or(_) => {
+                    return self.bad(arm.span, "this match pattern is not lowered yet");
+                }
+            }
+        }
+        // An enum match whose chain checked every arm and still fell through
+        // is non-exhaustive: the checker does not require exhaustiveness, so
+        // this must fail loudly at runtime rather than read garbage.
+        if chain_live {
+            self.cur = cur;
+            self.extern_call_void("pickle_panic_no_match", vec![], vec![]);
+            self.term(IrTerm::Branch { target: join });
+        }
+        self.cur = join;
+        match res_slot {
+            Some(slot) => Ok(self.load(slot)),
+            None => Ok(self.unit_temp()),
+        }
+    }
+
+    /// Emit the body expression of a match arm, storing its value into
+    /// `res_slot` when the match produces a value.
+    fn match_arm_body(&mut self, body: &Expr, res_slot: Option<Slot>) -> Result<(), ()> {
+        let bt = self.expr(body)?;
+        if let Some(slot) = res_slot {
+            self.instr(IrInstr::StoreSlot { slot, v: bt });
+        }
+        Ok(())
+    }
+
+    /// Bind the payload fields of variant `vi` of `table` into fresh slots for
+    /// `Color.Rgb(r, g, b)` patterns. Fields are boxed in the object, so each
+    /// is unboxed to its element IR type; `_` payloads bind nothing.
+    fn bind_enum_payloads(
+        &mut self,
+        span: Span,
+        table: &EnumTable,
+        vi: usize,
+        payloads: &[Pattern],
+        s_slot: Slot,
+    ) -> Result<(), ()> {
+        let ftypes = table.variants[vi].1.clone();
+        for (pi, p) in payloads.iter().enumerate() {
+            match p {
+                Pattern::Wildcard => {}
+                Pattern::Binding { name, .. } => {
+                    let ft = ftypes.get(pi).cloned().unwrap_or(Ty::Unknown);
+                    let rep = self.elem_rep(&ft, span)?;
+                    let idx = self.temp();
+                    self.instr(IrInstr::Const {
+                        dst: idx,
+                        c: IrConst::Int(pi as i64),
+                    });
+                    let raw = {
+                        let sv = self.load(s_slot);
+                        self.extern_call_t1(
+                            "pickle_enum_field",
+                            vec![IrTy::Ptr, IrTy::Int],
+                            IrTy::Ptr,
+                            vec![sv, idx],
+                        )?
+                    };
+                    let (v, ir) = match &rep {
+                        ElemRep::Ptr => (raw, IrTy::Ptr),
+                        ElemRep::Scalar(_, unbox_sym, unbox_ir) => (
+                            self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], *unbox_ir, vec![raw])?,
+                            *unbox_ir,
+                        ),
+                    };
+                    let slot = self.new_slot(ir);
+                    self.instr(IrInstr::StoreSlot { slot, v });
+                    self.declare(name, slot);
+                }
+                _ => {
+                    return self.bad(
+                        span,
+                        "enum payload patterns bind only names or `_`; nested patterns are not lowered yet",
+                    )
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn if_expr(
         &mut self,
         e: &Expr,
@@ -1457,6 +1657,12 @@ impl<'a> Emitter<'a> {
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
         if let ExprKind::Member { object, name } = &callee.kind {
+            // `Enum.Variant(...)` constructor call.
+            if let ExprKind::Ident(enum_name) = &object.kind {
+                if let Some(TypeTableEntry::Enum(t)) = self.resolved.types.get(enum_name) {
+                    return self.enum_ctor(e, t, name, args);
+                }
+            }
             return self.method_call(e, object, name, args);
         }
         let ExprKind::Ident(name) = &callee.kind else {
@@ -1496,8 +1702,9 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Bool) => "pickle_print_bool",
                         Some(Ty::Char) => "pickle_print_byte",
                         Some(Ty::String) => "pickle_print_obj",
-                        Some(Ty::List(_)) => "pickle_print_obj",
-                        Some(Ty::Map(_, _)) => "pickle_print_obj",
+                        Some(Ty::List(_)) | Some(Ty::Map(_, _)) | Some(Ty::Enum(..)) => {
+                            "pickle_print_obj"
+                        }
                         _ => {
                             return self.bad(
                                 a.value.span,
@@ -1510,7 +1717,10 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Float) => IrTy::Float,
                         Some(Ty::Bool) => IrTy::Bool,
                         Some(Ty::Char) => IrTy::Char,
-                        Some(Ty::String) | Some(Ty::List(_)) | Some(Ty::Map(_, _)) => IrTy::Ptr,
+                        Some(Ty::String)
+                        | Some(Ty::List(_))
+                        | Some(Ty::Map(_, _))
+                        | Some(Ty::Enum(..)) => IrTy::Ptr,
                         _ => IrTy::Ptr,
                     };
                     self.extern_call_void(sym, vec![pty], vec![t]);
@@ -1541,6 +1751,128 @@ impl<'a> Emitter<'a> {
             }
             _ => self.bad(e.span, format!("`{name}` is not lowered yet")),
         }
+    }
+
+    /// Build an enum value via `Enum.Variant(arg...)`. Payload scalars are
+    /// boxed exactly like list elements; the value is a managed object whose
+    /// tag is the variant index and whose fields are the boxed args.
+    fn enum_ctor(
+        &mut self,
+        e: &Expr,
+        table: &EnumTable,
+        variant_name: &str,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        if args.iter().any(|a| a.spread) {
+            return self.bad(e.span, "spread arguments are not lowered yet");
+        }
+        let Some((vi, ftypes)) = table
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, (n, ..))| n == variant_name)
+            .map(|(i, (_, ft, _))| (i as i64, ft.clone()))
+        else {
+            return self.bad(
+                e.span,
+                format!("enum `{}` has no variant `{variant_name}`", table.name),
+            );
+        };
+        let n = ftypes.len();
+        if args.len() != n {
+            return self.bad(
+                e.span,
+                format!(
+                    "`{variant_name}` takes {n} argument(s), got {}",
+                    args.len()
+                ),
+            );
+        }
+        let tag = self.temp();
+        self.instr(IrInstr::Const {
+            dst: tag,
+            c: IrConst::Int(vi),
+        });
+        let count = self.temp();
+        self.instr(IrInstr::Const {
+            dst: count,
+            c: IrConst::Int(n as i64),
+        });
+        let obj = self.extern_call_t1(
+            "pickle_enum_new",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![tag, count],
+        )?;
+        for (i, a) in args.iter().enumerate() {
+            let ft = &ftypes[i];
+            let rep = self.elem_rep(ft, e.span)?;
+            let v = self.expr(&a.value)?;
+            let boxed = match &rep {
+                ElemRep::Ptr => v,
+                ElemRep::Scalar(box_sym, _, ir) => {
+                    self.extern_call_t1(box_sym, vec![*ir], IrTy::Ptr, vec![v])?
+                }
+            };
+            let idx = self.temp();
+            self.instr(IrInstr::Const {
+                dst: idx,
+                c: IrConst::Int(i as i64),
+            });
+            self.extern_call_void(
+                "pickle_enum_set_field",
+                vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+                vec![obj, idx, boxed],
+            );
+        }
+        Ok(obj)
+    }
+
+    /// A bare `Enum.Variant(...)` access with no parentheses. Unit variants
+    /// (no payload) lower to a tag-only enum via `pickle_enum_new`.
+    fn member_value(&mut self, e: &Expr, object: &Expr, name: &str) -> Result<Temp, ()> {
+        if let ExprKind::Ident(enum_name) = &object.kind {
+            if let Some(TypeTableEntry::Enum(t)) = self.resolved.types.get(enum_name) {
+                let Some((vi, fields)) = t
+                    .variants
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (n, _, _))| n == name)
+                    .map(|(i, (_, ft, _))| (i as i64, ft))
+                else {
+                    return self.bad(
+                        e.span,
+                        format!("enum `{}` has no variant `{name}`", t.name),
+                    );
+                };
+                if !fields.is_empty() {
+                    return self.bad(
+                        e.span,
+                        format!(
+                            "variant `{name}` carries {} payload field(s) and needs `{name}(...)`",
+                            fields.len()
+                        ),
+                    );
+                }
+                let tag = self.temp();
+                self.instr(IrInstr::Const {
+                    dst: tag,
+                    c: IrConst::Int(vi),
+                });
+                let zero = self.temp();
+                self.instr(IrInstr::Const {
+                    dst: zero,
+                    c: IrConst::Int(0),
+                });
+                return self.extern_call_t1(
+                    "pickle_enum_new",
+                    vec![IrTy::Int, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![tag, zero],
+                );
+            }
+        }
+        self.bad(e.span, "member access is not lowered yet")
     }
 
     /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.

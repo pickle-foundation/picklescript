@@ -177,6 +177,51 @@ fn accepts_enum_match() {
 }
 
 #[test]
+fn accepts_enum_match_as_value() {
+    let d = check_str(
+        r#"enum Shape {
+            Circle(r: float)
+            Rect(w: float, h: float)
+        }
+
+        fn area(s: Shape) -> float {
+            match (s) {
+                case Shape.Circle(r) -> 3.14 * r * r
+                case Shape.Rect(w, h) -> w * h
+            }
+        }
+
+        fn main() {
+            let s = Shape.Circle(1.0)
+            println(area(s))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_inconsistent_match_arms() {
+    let d = check_str(
+        r#"enum E { A(x: int) B }
+        fn pick(v: int) -> E {
+            if (v > 0) { E.A(1) } else { E.B }
+        }
+        fn main() {
+            let e = pick(1)
+            match (e) {
+                case E.A(x) -> x
+                case E.B -> "text"
+            }
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected inconsistent match arm type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn accepts_lambda_higher_order() {
     let d = check_str(
         r#"fn apply(f: fn (int) -> int, x: int) -> int {

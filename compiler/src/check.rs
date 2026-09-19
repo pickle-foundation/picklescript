@@ -1368,6 +1368,23 @@ impl<'a> Checker<'a> {
                         Box::new(m.ret.clone()),
                     );
                 }
+                // Bare enum variant access: `Color.Red` when the variant has
+                // no payload fields.
+                if let TypeTableEntry::Enum(t) = entry {
+                    if let Some((_, fields, _)) = t.variants.iter().find(|(n, _, _)| n == name) {
+                        if fields.is_empty() {
+                            return Ty::Enum(t.name.clone(), Vec::new());
+                        }
+                        self.err(
+                            e.span,
+                            format!(
+                                "variant `{name}` carries {} payload field(s); use `{name}(...)`",
+                                fields.len()
+                            ),
+                        );
+                        return Ty::Unknown;
+                    }
+                }
                 self.err(
                     e.span,
                     format!("no member `{name}` on type `{tname}`"),

@@ -898,6 +898,11 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_map_len" => abi::pickle_map_len as *const () as usize,
         "pickle_map_keys" => abi::pickle_map_keys as *const () as usize,
         "pickle_map_values" => abi::pickle_map_values as *const () as usize,
+        "pickle_enum_new" => abi::pickle_enum_new as *const () as usize,
+        "pickle_enum_set_field" => abi::pickle_enum_set_field as *const () as usize,
+        "pickle_enum_tag" => abi::pickle_enum_tag as *const () as usize,
+        "pickle_enum_field" => abi::pickle_enum_field as *const () as usize,
+        "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,
         "pickle_fmod" => pickle_fmod as *const () as usize,
         _ => return None,
     };

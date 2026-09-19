@@ -5,8 +5,11 @@
 //! use their known layouts; user objects use their registered class
 //! descriptor's managed-field bitmask.
 
-use crate::layout::{list_data, list_len, map_entries, map_len};
-use crate::object::{DescriptorTable, PickleObject, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING};
+use crate::layout::{enum_field_count, list_data, list_len, map_entries, map_len};
+use crate::object::{
+    DescriptorTable, PickleObject, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
+    PICKLE_CLASS_STRING,
+};
 use crate::shadow::all_threads;
 
 /// Mark `obj` (and transitively everything it references) from the given
@@ -88,6 +91,17 @@ fn trace_one(descriptors: &DescriptorTable, obj: *mut PickleObject, worklist: &m
                         if !(*e).value.is_null() {
                             enqueue(worklist, (*e).value);
                         }
+                    }
+                }
+            }
+            PICKLE_CLASS_ENUM => {
+                // Payload slot 0 is the (unmanaged) tag; fields follow.
+                let n = enum_field_count(obj);
+                let base = (*obj).payload() as *const *mut PickleObject;
+                for i in 0..n {
+                    let e = base.add(1 + i).read();
+                    if !e.is_null() {
+                        enqueue(worklist, e);
                     }
                 }
             }

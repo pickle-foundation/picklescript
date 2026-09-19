@@ -87,6 +87,13 @@ pub extern "C" fn pickle_panic_cstr(ptr: *const u8) -> ! {
     pickle_panic_bytes(ptr, len)
 }
 
+/// ABI: a `match` whose scrutinee matched no arm. Reuses the panic path so
+/// compiled programs fail loudly instead of reading uninitialised state.
+#[no_mangle]
+pub extern "C" fn pickle_panic_no_match() -> ! {
+    pickle_panic_cstr(b"pickle: match is not exhaustive\0".as_ptr())
+}
+
 /// Replace the Rust panic hook so an internal panic cannot unwind across the
 /// `extern "C"` ABI. It prints `internal error: <msg>` and exits 1.
 ///

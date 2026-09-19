@@ -430,6 +430,91 @@ fn emits_nested_generic_lists() {
 }
 
 #[test]
+fn emits_enum_construct_and_match() {
+    // `Enum.Variant(...)` lowers to `pickle_enum_new` + `pickle_enum_set_field`
+    // (boxing scalar payloads); `match` lowers to `pickle_enum_tag` checks with
+    // `pickle_enum_field` payload extraction. A chain that ends without a
+    // catch-all arm calls `pickle_panic_no_match`.
+    let m = emit_str(
+        r#"enum Color {
+            Red
+            Blue
+            Rgb(r: int, g: int, b: int)
+        }
+
+        fn describe(c: Color) -> int {
+            match (c) {
+                case Color.Red -> 0
+                case Color.Blue -> 1
+                case Color.Rgb(r, g, b) -> r + g + b
+            }
+        }
+
+        fn other(c: Color) -> int {
+            match (c) {
+                case Color.Red -> 10
+                case c2 -> 20
+            }
+        }
+
+        fn main() {
+            let c = Color.Rgb(1, 2, 3)
+            println(describe(c), other(c))
+        }"#,
+    );
+    let syms = externs(&m);
+    for need in [
+        "pickle_enum_new",
+        "pickle_enum_set_field",
+        "pickle_enum_tag",
+        "pickle_enum_field",
+        "pickle_panic_no_match",
+    ] {
+        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+    }
+    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+
+    let describe = m.funcs.iter().find(|f| f.name == "describe").expect("describe");
+    let checks = describe
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.term, IrTerm::BranchIf { .. }))
+        .count();
+    assert!(checks >= 3, "three variant arms need three tag checks, dump:\n{describe}");
+    let field_reads = describe
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_enum_field")))
+        .count();
+    assert!(
+        field_reads >= 3,
+        "binding r, g, b needs three payload reads, dump:\n{describe}"
+    );
+
+    let other = m.funcs.iter().find(|f| f.name == "other").expect("other");
+    let other_checks = other
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.term, IrTerm::BranchIf { .. }))
+        .count();
+    assert_eq!(
+        other_checks, 1,
+        "only the variant arm is tested; the binding arm is a catch-all, dump:\n{other}"
+    );
+    assert!(
+        other
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, IrInstr::StoreSlot { .. })),
+        "the binding arm stores the scrutinee into a slot, dump:\n{other}"
+    );
+}
+
+#[test]
 fn emits_map_operations() {
     // Map literals lower to `pickle_map_new` + `pickle_map_set`; reads go
     // through `pickle_map_get_boxed`; methods/len/iteration use their externs.

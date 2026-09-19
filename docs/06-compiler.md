@@ -141,6 +141,34 @@ null). The runtime returns it unchanged when the key is absent, so the
 emitter never unboxes a null pointer. v1 accepts `string` keys only; the
 type checker enforces this at literal, index, and method sites.
 
+Enums follow the same extern path. An enum value is a managed object
+(`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (6; user classes start at 7).
+Its payload slot 0 holds the variant tag as a *raw* `i64` (unmanaged, skipped
+by the tracer); payload slots 1.. hold the variant's fields, boxed with the
+same element rules as `List<T>` elements. Field count is derived at runtime
+from the object size (`(size - header)/8 - 1`), so all variants of an enum
+get an object sized for their widest variant. The ABI is
+`pickle_enum_new(tag, count)` / `pickle_enum_set_field(obj, i, value)` /
+`pickle_enum_tag(obj)` / `pickle_enum_field(obj, i)`.
+
+Lowering rules:
+
+- `Enum.Variant(args...)` compiles to `pickle_enum_new` plus one
+  `pickle_enum_set_field` per argument, boxing scalar payloads.
+- A bare zero-field variant (`Color.Red`) compiles to
+  `pickle_enum_new(tag, 0)`.
+- `match (s) { case V(p..) -> body ... }` keeps the scrutinee in a managed
+  shadow slot (so the GC retains it across arm allocations), reads the tag
+  once, and lowers to a `BranchIf` chain comparing `tag == variant_index`.
+  Payload bindings unbox each field into fresh slots; `case _` / `case name`
+  catch-all arms are a plain branch.
+- A chain that reaches its end without a catch-all arm calls
+  `pickle_panic_no_match`, which faults with "pickle: match is not
+  exhaustive" — the checker does not require exhaustiveness, so misses fail
+  loudly at runtime instead of reading garbage.
+- Patterns beyond `Variant`/`Wildcard`/`Binding` payload names, and guards,
+  bail with "not lowered yet".
+
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.
 

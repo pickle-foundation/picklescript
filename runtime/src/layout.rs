@@ -28,10 +28,19 @@ pub const BOX_PAYLOAD_OFF: usize = HEADER; // i64
 pub const BOX_PAYLOAD: usize = 8;
 pub const BOX_OBJECT_SIZE: usize = HEADER + BOX_PAYLOAD;
 
+/// `PEnum { header, tag: i64, fields: [*mut PickleObject] }` — a variant tag
+/// (unmanaged) followed by `field_count` 8-byte managed pointer slots holding
+/// the boxed payloads. `field_count` is derived at runtime from the object
+/// size: `(size - HEADER) / 8 - 1`.
+pub const ENUM_TAG_OFF: usize = HEADER; // i64
+pub const ENUM_FIELDS_OFF: usize = HEADER + 8; // [*mut PickleObject]
+pub const ENUM_HEADER_SLOTS: usize = 1; // the tag occupies payload slot 0
+
 /// Fixed payload sizes of the builtin objects.
 pub const STRING_PAYLOAD: usize = 8;
 pub const LIST_PAYLOAD: usize = 24;
 pub const MAP_PAYLOAD: usize = 24;
+pub const ENUM_BASE_PAYLOAD: usize = 16; // tag slot + one gap slot for the tag
 
 /// Fixed *object* sizes (header + payload) for the builtin object types.
 /// Lists and maps need more than the 32-byte minimum allocator object, since
@@ -112,6 +121,31 @@ pub fn map_set_cap(m: *mut PickleObject, cap: usize) {
 #[inline]
 pub fn map_set_entries(m: *mut PickleObject, entries: *mut MapEntry) {
     unsafe { ((m as *mut u8).add(MAP_ENTRIES_OFF) as *mut *mut MapEntry).write(entries) }
+}
+
+/// Total *object* size (header + payload) of an enum with `field_count`
+/// payload fields.
+#[inline]
+pub const fn enum_object_size(field_count: usize) -> usize {
+    HEADER + 8 + field_count * 8
+}
+
+/// Number of payload fields of an enum object, derived from its stored size.
+#[inline]
+pub fn enum_field_count(e: *const PickleObject) -> usize {
+    unsafe { (*e).size as usize }
+        .saturating_sub(HEADER + 8)
+        / 8
+}
+
+#[inline]
+pub fn enum_tag(e: *const PickleObject) -> i64 {
+    unsafe { ((e as *const u8).add(ENUM_TAG_OFF) as *const i64).read() }
+}
+
+#[inline]
+pub fn enum_set_tag(e: *mut PickleObject, tag: i64) {
+    unsafe { ((e as *mut u8).add(ENUM_TAG_OFF) as *mut i64).write(tag) }
 }
 
 /// An open-addressing hash-map entry.

@@ -13,6 +13,7 @@
 
 pub(crate) mod console;
 mod boxscalar;
+mod r#enum;
 mod gc;
 mod heap;
 mod layout;
@@ -211,6 +212,13 @@ pub mod abi {
     pub use crate::map::pickle_map_new;
     pub use crate::map::pickle_map_set;
     pub use crate::map::pickle_map_values;
+
+    pub use crate::r#enum::pickle_enum_field;
+    pub use crate::r#enum::pickle_enum_new;
+    pub use crate::r#enum::pickle_enum_set_field;
+    pub use crate::r#enum::pickle_enum_tag;
+
+    pub use crate::panic::pickle_panic_no_match;
 
     pub use crate::shadow::pickle_shadow_get;
     pub use crate::shadow::pickle_shadow_pop;
