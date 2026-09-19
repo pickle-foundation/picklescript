@@ -243,6 +243,9 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                         IrConst::Char(_) => IrTy::Char,
                         IrConst::Null => IrTy::Ptr,
                         IrConst::Str(_) => IrTy::Str,
+                        // Tag `Int` on purpose: raw data addresses must never
+                        // be put into the shadow frame as managed pointers.
+                        IrConst::StrAddr(_) => IrTy::Int,
                     };
                     tt.insert(dst.0, ty);
                 }
@@ -591,6 +594,16 @@ fn lower_instr(
                         .copied()
                         .unwrap_or_else(|| unit_value(builder))
                 }
+            IrConst::StrAddr(sid) => {
+                    let (_s, gv) = extern_pair(
+                        builder,
+                        call_cache,
+                        &format!("pkl_strdata_{}", sid.0),
+                        &[IrTy::Ptr, IrTy::Int],
+                        IrTy::Ptr,
+                    );
+                    builder.ins().symbol_value(types::I64, gv)
+                }
             };
             values.insert(dst.0, v);
             write_through(builder, plan, frame, dst.0, v);
@@ -902,6 +915,10 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_enum_set_field" => abi::pickle_enum_set_field as *const () as usize,
         "pickle_enum_tag" => abi::pickle_enum_tag as *const () as usize,
         "pickle_enum_field" => abi::pickle_enum_field as *const () as usize,
+        "pickle_class_register" => abi::pickle_class_register as *const () as usize,
+        "pickle_class_new" => abi::pickle_class_new as *const () as usize,
+        "pickle_obj_slot_get" => abi::pickle_obj_slot_get as *const () as usize,
+        "pickle_obj_slot_set" => abi::pickle_obj_slot_set as *const () as usize,
         "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,
         "pickle_fmod" => pickle_fmod as *const () as usize,
         _ => return None,

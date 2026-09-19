@@ -7,7 +7,7 @@
 use pickle_compiler::diag::{DiagnosticSink, SourceMap};
 use pickle_compiler::emit::emit_ir;
 use pickle_compiler::front::frontend;
-use pickle_compiler::ir::{BinOp, Callee, IrConst, IrInstr, IrModule, IrTerm};
+use pickle_compiler::ir::{BinOp, Callee, IrConst, IrInstr, IrModule, IrTerm, IrTy};
 
 fn emit_str(src: &str) -> IrModule {
     let mut map = SourceMap::default();
@@ -612,4 +612,74 @@ fn map_read_defaults_to_zero() {
         "the zero default must be boxed before `pickle_map_get_boxed`"
     );
     assert!(calls.iter().any(|(id, is_zero)| *is_zero || *id == box_i64));
+}
+
+#[test]
+fn emits_class_ctor_registration_and_fields() {
+    let m = emit_str(
+        r#"class Point {
+            x: int
+            y: int
+        }
+
+        fn main() {
+            let p = Point(1, 2)
+            println(p.y)
+            p.x = 7
+        }"#,
+    );
+    let syms = externs(&m);
+    for s in ["pickle_class_register", "pickle_class_new", "pickle_obj_slot_get", "pickle_obj_slot_set"] {
+        assert!(syms.iter().any(|x| x == s), "externs: {syms:?}");
+    }
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let reg_calls = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_register")
+            } else {
+                false
+            }
+        })
+        .count();
+    assert!(reg_calls >= 1, "main must register every class up front");
+}
+
+#[test]
+fn emits_class_methods_statics_and_this() {
+    let m = emit_str(
+        r#"class Counter {
+            value: int
+
+            fn add(by: int) {
+                this.value = this.value + by
+            }
+
+            fn total() -> int {
+                return this.value
+            }
+
+            static fn zero() -> string {
+                return "z"
+            }
+        }
+
+        fn main() {
+            let c = Counter(1)
+            c.add(2)
+            println(c.total())
+            println(Counter.zero())
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    for sym in ["pkl_Counter_new", "pkl_Counter_add", "pkl_Counter_total", "pkl_Counter_sm_zero"] {
+        assert!(syms.iter().any(|s| s == sym), "symbols: {syms:?}");
+    }
+    let add = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_add").expect("add");
+    assert_eq!(add.params.first().map(|p| p.ty), Some(IrTy::Ptr), "receiver first");
+    let zero = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_sm_zero").expect("zero");
+    assert!(zero.params.is_empty(), "static method has no receiver");
 }

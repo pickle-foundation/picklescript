@@ -169,6 +169,45 @@ Lowering rules:
 - Patterns beyond `Variant`/`Wildcard`/`Binding` payload names, and guards,
   bail with "not lowered yet".
 
+Classes use the same object-model extern path. A class instance is a plain
+managed object (`PickleObject`) whose runtime `ClassDescriptor` carries the
+name (for printing) and a field-validity mask. Descriptors are allocated *at
+runtime* rather than baked into the generated binary: `main`'s entry block
+opens with one `pickle_class_register(name_ptr, name_len, slot_count, mask)`
+void call per class, in registration order, so descriptor id == call site id.
+Call sites inside constructors hardcode that id (`7 + emitted index`), so no
+id is threaded through the lowering; `pickle_class_register` returns the id
+but emitters discard it. `StrAddr` lowerings pull the name bytes from the data
+section (`pkl_strdata_N`) — AOT marks those externs as data, JIT lowers them
+to symbol addresses; the pointer is never treated as a GC object.
+
+Lowering rules:
+
+- No explicit constructor, no properties, no `static var` fields, no field
+  initializers, no `init`/`deinit`, no `Const` members, no generics/extends/
+  implements -> the class is *registered*. Anything else bails with
+  "… in `{name}` are not lowered yet" so nothing miscompiles silently.
+- `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: parameters
+  are the instance fields in declaration order, slot 0 of the object is
+  `pickle_class_new(id, field_count)`, each field value is boxed per the
+  scalar list rules and stored with `pickle_obj_slot_set`. Only non-static
+  fields occupy slots; a class with 64+ fields empties the mask.
+- Instance methods compile to `pkl_<TypeName>_<m>`, with the receiver passed
+  first as a managed pointer (IR param slot 0, declared as `this`); static
+  methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/
+  override/body-less/generic methods and methods with default/rest params are
+  skipped like their top-level counterparts.
+- `this` loads the receiver slot. An undefined identifier inside an instance
+  method falls back to `this.<name>`; `obj.field` read/write and compound
+  assigns (`+=`) lower through `pickle_obj_slot_get`/`pickle_obj_slot_set`
+  with scalar unbox/box on the boundary, and a member chain like
+  `p.home.x` reads the nested object first via the normal member path.
+- `Type.staticMethod(...)` and `instance.method(...)` dispatch through
+  `method_ids` (parameterized by class id and method name); `this` is the
+  first call argument for instance methods.
+- `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
+  which prints the class name plus `Class` fields when available.
+
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.
 

@@ -14,8 +14,14 @@ use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
-use crate::resolve::{CallableInfo, EnumTable, ResolvedProgram, TypeTableEntry};
+use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
+
+/// Runtime class ids for user classes start at this id: the runtime reserves
+/// 0..=5 for the builtin boxed types, 6 for `PEnum`, so the first user class
+/// registered at runtime gets id 7. The compiler assigns `7 + index` in
+/// declaration order, matching the runtime's allocation order.
+const PICKLE_CLASS_USER_BASE: i64 = 7;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
 ///
@@ -40,8 +46,13 @@ pub fn emit_ir(
         consts_inits: HashMap::new(),
         const_inlining: Vec::new(),
         fid_list: Vec::new(),
-        fdecl: HashMap::new(),
+        fsource: HashMap::new(),
         finfo: HashMap::new(),
+        classes: Vec::new(),
+        class_by_name: HashMap::new(),
+        ctor_ids: HashMap::new(),
+        method_ids: HashMap::new(),
+        owner: None,
         fname: String::new(),
         symbol: String::new(),
         fparams: Vec::new(),
@@ -67,6 +78,24 @@ pub fn emit_ir(
 struct LoopCtx {
     continue_target: BlockId,
     break_target: BlockId,
+}
+
+/// Where a registered function's body and signature come from.
+#[derive(Clone)]
+enum FnSource<'a> {
+    /// Top-level `fn` (or `test`) declaration.
+    TopLevel(&'a FnDecl),
+    /// The implicit constructor of a class/struct.
+    Ctor { table: ClassTable },
+    /// A class/struct method (instance or static).
+    Method { table: ClassTable, md: &'a MethodDecl },
+}
+
+/// A registered, lowerable user class/struct.
+struct ClassPlan {
+    name: String,
+    class_id: u32,
+    table: ClassTable,
 }
 
 /// Runtime representation of a `List<T>` element.
@@ -101,8 +130,18 @@ struct Emitter<'a> {
     const_inlining: Vec<String>,
     /// Registered functions in emission order (mirrors `module.funcs`).
     fid_list: Vec<FuncId>,
-    fdecl: HashMap<FuncId, &'a FnDecl>,
-    finfo: HashMap<FuncId, &'a CallableInfo>,
+    fsource: HashMap<FuncId, FnSource<'a>>,
+    finfo: HashMap<FuncId, CallableInfo>,
+    /// Registered user classes in id order.
+    classes: Vec<ClassPlan>,
+    /// Class/struct name -> assigned runtime class id (registered only).
+    class_by_name: HashMap<String, u32>,
+    /// Class id -> implicit-constructor function.
+    ctor_ids: HashMap<u32, FuncId>,
+    /// (Class id, method name) -> (function, is_static).
+    method_ids: HashMap<(u32, String), (FuncId, bool)>,
+    /// Class id of the method/ctor currently being built (implicit receiver).
+    owner: Option<i64>,
 
     // ---- per-function state ----
     fname: String,
@@ -132,6 +171,8 @@ impl<'a> Emitter<'a> {
             match &item.kind {
                 ItemKind::Fn(f) => self.register_fn(f, false),
                 ItemKind::Test(f) => self.register_fn(f, true),
+                ItemKind::Class(c) => self.register_class_item(c),
+                ItemKind::Struct(s) => self.register_struct_item(s),
                 _ => {}
             }
         }
@@ -178,8 +219,156 @@ impl<'a> Emitter<'a> {
             is_test,
         });
         self.fid_list.push(fid);
-        self.fdecl.insert(fid, f);
-        self.finfo.insert(fid, info);
+        self.fsource.insert(fid, FnSource::TopLevel(f));
+        self.finfo.insert(fid, info.clone());
+    }
+
+    // ---- class/struct registration ---------------------------------------
+
+    fn register_class_item(&mut self, c: &'a ClassDecl) {
+        let table = match self.resolved.types.get(&c.name) {
+            Some(TypeTableEntry::Class(t)) => t.clone(),
+            _ => return,
+        };
+        self.maybe_register_class(&c.name, &c.members, table, c.span);
+    }
+
+    fn register_struct_item(&mut self, s: &'a StructDecl) {
+        let table = match self.resolved.types.get(&s.name) {
+            Some(TypeTableEntry::Struct(t)) => t.clone(),
+            _ => return,
+        };
+        self.maybe_register_class(&s.name, &s.members, table, s.span);
+    }
+
+    fn bad_class<T>(&mut self, span: Span, name: &str, what: &str) -> Result<T, ()> {
+        self.bad(span, format!("{what} in `{name}` are not lowered yet"))
+    }
+
+    /// Register one class/struct: reserve its class id, its implicit-constructor
+    /// function, and its method functions. Members outside the slice are
+    /// rejected loudly rather than miscompiled; generic / inheriting /
+    /// interface-implementing classes are skipped entirely (unused types).
+    fn maybe_register_class(
+        &mut self,
+        name: &str,
+        members: &'a [ClassMember],
+        table: ClassTable,
+        span: Span,
+    ) {
+        let bad = |e: &mut Self, what: &str| {
+            let _ = e.bad_class::<()>(span, name, what);
+        };
+        if !table.generics.is_empty() || table.extends.is_some() || !table.implements.is_empty() {
+            return;
+        }
+        if table.ctor.is_some() {
+            bad(self, "explicit constructors");
+            return;
+        }
+        if !table.properties.is_empty() {
+            bad(self, "properties");
+            return;
+        }
+        if !table.consts.is_empty() {
+            bad(self, "constants");
+            return;
+        }
+        if table.fields.iter().any(|f| f.is_static) {
+            bad(self, "static fields");
+            return;
+        }
+        if table.fields.iter().any(|f| matches!(f.ty, Ty::Char)) {
+            bad(self, "`char` fields");
+            return;
+        }
+        for m in members {
+            match m {
+                ClassMember::Field { init: Some(_), .. } => {
+                    bad(self, "field initializers");
+                    return;
+                }
+                ClassMember::Init(_) => {
+                    bad(self, "`init` blocks");
+                    return;
+                }
+                ClassMember::Deinit(_) => {
+                    bad(self, "`deinit` blocks");
+                    return;
+                }
+                ClassMember::Const { .. } => {
+                    bad(self, "constants");
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
+
+        // Implicit constructor: `pkl_<Name>_new(field0, field1, ...) -> Ptr`.
+        let ctor_fid = self.push_class_func(
+            &format!("{name}.new"),
+            &format!("pkl_{name}_new"),
+            FnSource::Ctor { table: table.clone() },
+        );
+        self.ctor_ids.insert(cid, ctor_fid);
+
+        // Methods: `pkl_<Name>_<m>` (instance) and `pkl_<Name>_sm_<m>` (static).
+        for md in members.iter().filter_map(|m| match m {
+            ClassMember::Method(md) => Some(md),
+            _ => None,
+        }) {
+            if md.is_async || md.is_override || md.body.is_none() || !md.generics.is_empty() {
+                continue;
+            }
+            let Some(info) = table.methods.iter().find(|m| m.name == md.name) else {
+                continue;
+            };
+            if info.params.iter().any(|p| p.has_default || p.rest) {
+                continue;
+            }
+            let symbol = if info.is_static {
+                format!("pkl_{name}_sm_{}", md.name)
+            } else {
+                format!("pkl_{name}_{}", md.name)
+            };
+            let mid = self.push_class_func(
+                &format!("{name}.{}", md.name),
+                &symbol,
+                FnSource::Method {
+                    table: table.clone(),
+                    md,
+                },
+            );
+            self.finfo.insert(mid, info.clone());
+            self.method_ids.insert((cid, md.name.clone()), (mid, info.is_static));
+        }
+
+        self.classes.push(ClassPlan {
+            name: name.to_string(),
+            class_id: cid,
+            table,
+        });
+        self.class_by_name.insert(name.to_string(), cid);
+    }
+
+    fn push_class_func(&mut self, name: &str, symbol: &str, src: FnSource<'a>) -> FuncId {
+        let fid = FuncId(self.module.funcs.len());
+        self.module.funcs.push(IrFunc {
+            name: name.to_string(),
+            symbol: symbol.to_string(),
+            params: Vec::new(),
+            ret: IrTy::Unit,
+            slots: Vec::new(),
+            entry: BlockId(0),
+            blocks: Vec::new(),
+            is_main: false,
+            is_test: false,
+        });
+        self.fid_list.push(fid);
+        self.fsource.insert(fid, src);
+        fid
     }
 
     fn symbol_for(&self, name: &str, is_test: bool) -> String {
@@ -222,28 +411,41 @@ impl<'a> Emitter<'a> {
         self.next_temp = 0;
         self.loops = Vec::new();
         self.cur = BlockId(0);
+        self.owner = None;
 
-        let Some(info) = self.finfo.get(&fid).copied() else {
+        let Some(src) = self.fsource.get(&fid).cloned() else {
             return;
         };
-        let f = self.fdecl[&fid];
-
-        // Params occupy slots 0..n.
-        for (i, p) in info.params.iter().enumerate() {
-            let ir = self.map_ty(&p.ty, f.span).unwrap_or(IrTy::Ptr);
-            let slot = Slot(i as u32);
-            self.fslots.push(ir);
-            self.fparams.push(IrParam {
-                name: p.name.clone(),
-                ty: ir,
-            });
-            self.declare(&p.name, slot);
+        let is_main = self.module.funcs[fid.0].is_main;
+        match src {
+            FnSource::TopLevel(f) => {
+                let Some(info) = self.finfo.get(&fid).cloned() else {
+                    return;
+                };
+                self.declare_params(&info.params);
+                self.fret = self.map_ty(&info.ret, f.span).unwrap_or(IrTy::Unit);
+                self.emit_body(&f.body);
+            }
+            FnSource::Ctor { table } => {
+                let _ = self.build_ctor_body(&table);
+            }
+            FnSource::Method { table, md } => {
+                let Some(info) = self.finfo.get(&fid).cloned() else {
+                    return;
+                };
+                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                let _ = self.build_method_body(&table, md, &info);
+            }
         }
-        self.fret = self.map_ty(&info.ret, f.span).unwrap_or(IrTy::Unit);
-
-        self.emit_body(f);
         if self.failed {
             return;
+        }
+
+        // Class/struct registration calls run first inside `main`, before any
+        // user statement, so every descriptor exists when the class functions
+        // are called (the id each call site hardcodes is the runtime's too).
+        if is_main {
+            self.inject_class_registrations();
         }
 
         self.module.funcs[fid.0] = IrFunc {
@@ -259,9 +461,171 @@ impl<'a> Emitter<'a> {
         };
     }
 
+    /// Declare function parameters as slots 0..n (used by top-level fns).
+    fn declare_params(&mut self, params: &[ParamInfo]) {
+        for (i, p) in params.iter().enumerate() {
+            let ir = self.map_ty(&p.ty, p.span).unwrap_or(IrTy::Ptr);
+            let slot = Slot(i as u32);
+            self.fslots.push(ir);
+            self.fparams.push(IrParam {
+                name: p.name.clone(),
+                ty: ir,
+            });
+            self.declare(&p.name, slot);
+        }
+    }
+
+    /// Lower the implicit constructor: params are the instance fields in
+    /// declaration order; the body allocates the object, boxes each param into
+    /// its field slot, and returns the new object.
+    fn build_ctor_body(&mut self, table: &ClassTable) -> Result<(), ()> {
+        let ifields: Vec<&FieldInfo> = table.fields.iter().filter(|f| !f.is_static).collect();
+        for (i, f) in ifields.iter().enumerate() {
+            let ir = self.map_ty(&f.ty, table.span).unwrap_or(IrTy::Ptr);
+            let slot = Slot(i as u32);
+            self.fslots.push(ir);
+            self.fparams.push(IrParam {
+                name: f.name.clone(),
+                ty: ir,
+            });
+            self.declare(&f.name, slot);
+        }
+        self.fret = IrTy::Ptr;
+
+        let cid = self
+            .class_by_name
+            .get(&table.name)
+            .copied()
+            .unwrap_or(PICKLE_CLASS_USER_BASE as u32);
+        let this_slot = self.new_slot(IrTy::Ptr);
+        self.declare("this", this_slot);
+
+        let cid_t = self.int_const(cid as i64);
+        let n_t = self.int_const(ifields.len() as i64);
+        let this = self.extern_call_t1(
+            "pickle_class_new",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![cid_t, n_t],
+        )?;
+        self.instr(IrInstr::StoreSlot { slot: this_slot, v: this });
+
+        let this = self.load(this_slot);
+        for (i, f) in ifields.iter().enumerate() {
+            let v = self.load(Slot(i as u32));
+            let rep = self.elem_rep(&f.ty, table.span)?;
+            let boxed = self.box_for_store(&rep, v, elem_ir(&f.ty))?;
+            self.field_store(this, i as i64, &f.ty, boxed);
+        }
+        let done = self.load(this_slot);
+        self.term(IrTerm::Return { v: Some(done) });
+        let _ = self.tail_cleanup();
+        Ok(())
+    }
+
+    /// Lower a method: slot 0 is `this` (instance methods), followed by the
+    /// declared parameters.
+    fn build_method_body(
+        &mut self,
+        _table: &ClassTable,
+        md: &'a MethodDecl,
+        info: &CallableInfo,
+    ) -> Result<(), ()> {
+        let mut d = 0usize;
+        if !info.is_static {
+            let this_slot = Slot(0);
+            self.fslots.push(IrTy::Ptr);
+            self.fparams.push(IrParam {
+                name: "this".to_string(),
+                ty: IrTy::Ptr,
+            });
+            self.declare("this", this_slot);
+            d = 1;
+        }
+        for (i, p) in info.params.iter().enumerate() {
+            let ir = self.map_ty(&p.ty, p.span).unwrap_or(IrTy::Ptr);
+            let slot = Slot((d + i) as u32);
+            self.fslots.push(ir);
+            self.fparams.push(IrParam {
+                name: p.name.clone(),
+                ty: ir,
+            });
+            self.declare(&p.name, slot);
+        }
+        self.fret = self.map_ty(&info.ret, md.span).unwrap_or(IrTy::Unit);
+        self.emit_body(&md.body);
+        let _ = self.tail_cleanup();
+        Ok(())
+    }
+
+    /// Register every user class descriptor at the top of `main`'s entry block.
+    /// Each is a `pickle_class_register(name_ptr, name_len, slot_count, mask)`
+    /// void call; the returned id is discarded (call sites hardcode it).
+    fn inject_class_registrations(&mut self) {
+        if self.classes.is_empty() {
+            return;
+        }
+        let plans: Vec<(String, usize)> = self
+            .classes
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.table.fields.iter().filter(|f| !f.is_static).count(),
+                )
+            })
+            .collect();
+        let mut instrs: Vec<IrInstr> = Vec::new();
+        for (name, field_count) in plans {
+            let sid = StrId(self.intern_string(&name));
+            let addr = self.temp();
+            instrs.push(IrInstr::Const {
+                dst: addr,
+                c: IrConst::StrAddr(sid),
+            });
+            let len = self.temp();
+            instrs.push(IrInstr::Const {
+                dst: len,
+                c: IrConst::Int(name.len() as i64),
+            });
+            let n = self.temp();
+            instrs.push(IrInstr::Const {
+                dst: n,
+                c: IrConst::Int(field_count as i64),
+            });
+            let mask = self.temp();
+            let m = if field_count >= 64 { u64::MAX } else { (1u64 << field_count) - 1 };
+            instrs.push(IrInstr::Const {
+                dst: mask,
+                c: IrConst::Int(m as i64),
+            });
+            let ex = self.module.extern_id(IrExtern {
+                symbol: "pickle_class_register".to_string(),
+                params: vec![IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int],
+                ret: IrTy::Unit,
+            });
+            instrs.push(IrInstr::Call {
+                dst: None,
+                callee: Callee::Extern(ex),
+                args: vec![addr, len, n, mask],
+            });
+        }
+        let blk = &mut self.blocks[0];
+        blk.instrs.splice(0..0, instrs);
+    }
+
+    fn int_const(&mut self, v: i64) -> Temp {
+        let t = self.temp();
+        self.instr(IrInstr::Const {
+            dst: t,
+            c: IrConst::Int(v),
+        });
+        t
+    }
+
     /// Emit the function body; the current block is left terminator-clean.
-    fn emit_body(&mut self, f: &'a FnDecl) -> bool {
-        let body = match &f.body {
+    fn emit_body(&mut self, body: &Option<FnBody>) -> bool {
+        let body = match body {
             Some(b) => b,
             None => return true,
         };
@@ -709,7 +1073,7 @@ impl<'a> Emitter<'a> {
                 self.pop_scope();
                 r
             }
-            ExprKind::This => self.bad(e.span, "`this` is not lowered yet"),
+            ExprKind::This => self.this_value(e),
             ExprKind::Super => self.bad(e.span, "`super` is not lowered yet"),
             ExprKind::Member { object, name } => self.member_value(e, object, name),
             ExprKind::Index { object, index } => self.index_read(e, object, index),
@@ -871,7 +1235,22 @@ impl<'a> Emitter<'a> {
             self.const_inlining.pop();
             return t;
         }
+        // Inside an instance method a bare field name reads `this.field`.
+        if let Some(cid) = self.owner {
+            if let Some(slot) = self.instance_field_index(cid, name) {
+                let field_ty = self.field_at(cid, slot).ty.clone();
+                let this = self.this_value(e)?;
+                return self.field_read(e.span, this, &field_ty, slot);
+            }
+        }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
+    }
+
+    fn this_value(&mut self, e: &Expr) -> Result<Temp, ()> {
+        match self.lookup("this") {
+            Some(slot) => Ok(self.load(slot)),
+            None => self.bad(e.span, "`this` is not available here"),
+        }
     }
 
     fn unary(&mut self, e: &Expr, op: AstUnOp, operand: &Expr) -> Result<Temp, ()> {
@@ -997,39 +1376,139 @@ impl<'a> Emitter<'a> {
         if let ExprKind::Index { object, index } = &target.kind {
             return self.index_assign(e, op, object, index, value);
         }
+        if let ExprKind::Member { object, name } = &target.kind {
+            return self.member_assign(e, op, object, name, value);
+        }
         let ExprKind::Ident(name) = &target.kind else {
             return self.bad(span, "assignment targets other than names are not lowered yet");
         };
-        let Some(slot) = self.lookup(name) else {
-            return self.bad(span, format!("cannot assign to `{name}`"));
-        };
         let v = self.expr(value)?;
+        if let Some(slot) = self.lookup(name) {
+            if op == AssignOp::Assign {
+                self.instr(IrInstr::StoreSlot { slot, v });
+                return Ok(v);
+            }
+            let cur = self.load(slot);
+            let dst = match self.fslots.get(slot.0 as usize).copied() {
+                Some(IrTy::Str) => self.extern_call_t1(
+                    "pickle_str_concat",
+                    vec![IrTy::Str, IrTy::Str],
+                    IrTy::Str,
+                    vec![cur, v],
+                )?,
+                _ => {
+                    let t = self.temp();
+                    self.instr(IrInstr::BinOp {
+                        dst: t,
+                        op: assign_opcode(op),
+                        a: cur,
+                        b: v,
+                    });
+                    t
+                }
+            };
+            self.instr(IrInstr::StoreSlot { slot, v: dst });
+            return Ok(dst);
+        }
+        // Inside an instance method a bare field name assigns `this.field`.
+        if let Some(cid) = self.owner {
+            if let Some(idx) = self.instance_field_index(cid, name) {
+                let field_ty = self.field_at(cid, idx).ty.clone();
+                let this = self.this_value(e)?;
+                return self.field_assign(e.span, op, this, &field_ty, idx, v);
+            }
+        }
+        self.bad(span, format!("cannot assign to `{name}`"))
+    }
+
+    /// `obj.field` and `obj.field op= value` on class/struct instances.
+    fn member_assign(
+        &mut self,
+        e: &Expr,
+        op: AssignOp,
+        object: &Expr,
+        name: &str,
+        value: &Expr,
+    ) -> Result<Temp, ()> {
+        let ot = self.ty_of(&object.span);
+        let cid = match ot {
+            Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
+                self.class_by_name.get(&cn).copied()
+            }
+            _ => None,
+        };
+        let Some(cid) = cid else {
+            return self.bad(e.span, "assignment over this member type is not lowered yet");
+        };
+        let Some(idx) = self.instance_field_index(cid as i64, name) else {
+            return self.bad(
+                e.span,
+                format!(
+                    "`{name}` is not a field of this `{}`",
+                    self.class_name_of(cid)
+                ),
+            );
+        };
+        let field_ty = self.field_at(cid as i64, idx).ty.clone();
+        let v = self.expr(value)?;
+        let obj = self.expr(object)?;
+        self.field_assign(e.span, op, obj, &field_ty, idx, v)
+    }
+
+    /// Read-modify-write/plain store of one field slot.
+    fn field_assign(
+        &mut self,
+        span: Span,
+        op: AssignOp,
+        obj: Temp,
+        field_ty: &Ty,
+        slot: usize,
+        v: Temp,
+    ) -> Result<Temp, ()> {
+        let rep = self.elem_rep(field_ty, span)?;
         if op == AssignOp::Assign {
-            self.instr(IrInstr::StoreSlot { slot, v });
+            let boxed = self.box_for_store(&rep, v, elem_ir(field_ty))?;
+            self.field_store(obj, slot as i64, field_ty, boxed);
             return Ok(v);
         }
-        let cur = self.load(slot);
-        let dst = match self.fslots.get(slot.0 as usize).copied() {
-            Some(IrTy::Str) => self.extern_call_t1(
-                "pickle_str_concat",
-                vec![IrTy::Str, IrTy::Str],
-                IrTy::Str,
-                vec![cur, v],
-            )?,
-            _ => {
-                let t = self.temp();
-                self.instr(IrInstr::BinOp {
-                    dst: t,
-                    op: assign_opcode(op),
-                    a: cur,
-                    b: v,
-                });
-                t
+        if matches!(rep, ElemRep::Ptr) {
+            return self.bad(span, "compound assignment to a non-scalar field is not lowered yet");
+        }
+        let obj_c = obj;
+        // Read the current value (unboxed), combine, write back.
+        let idx = self.int_const(slot as i64);
+        let raw = self.extern_call_t1(
+            "pickle_obj_slot_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![obj_c, idx],
+        )?;
+        let cur = match rep {
+            ElemRep::Scalar(_, unbox, ir) => {
+                self.extern_call_t1(unbox, vec![IrTy::Ptr], ir, vec![raw])?
             }
+            ElemRep::Ptr => raw,
         };
-        self.instr(IrInstr::StoreSlot { slot, v: dst });
-        let _ = e;
+        let dst = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: assign_opcode(op),
+            a: cur,
+            b: v,
+        });
+        let boxed = self.box_for_store(&rep, dst, elem_ir(field_ty))?;
+        self.field_store(obj_c, slot as i64, field_ty, boxed);
         Ok(dst)
+    }
+
+    /// Emit `pickle_obj_slot_set(obj, slot, boxed_value)`.
+    fn field_store(&mut self, obj: Temp, slot: i64, _field_ty: &Ty, boxed: Temp) {
+        let idx = self.int_const(slot);
+        self.extern_call_void(
+            "pickle_obj_slot_set",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+            vec![obj, idx, boxed],
+        );
     }
 
     /// `xs[i] = v` and `xs[i] op= v` for `List<T>` targets.
@@ -1685,9 +2164,25 @@ impl<'a> Emitter<'a> {
             });
             return Ok(dst);
         }
-        // Constructor call?
-        if self.resolved.types.contains_key(name) {
-            return self.bad(e.span, format!("constructor calls to `{name}` are not lowered yet"));
+        // Class/struct constructor call: `TypeName(arg...)`.
+        if let Some(&cid) = self.class_by_name.get(name) {
+            let Some(&fid) = self.ctor_ids.get(&cid) else {
+                return self.bad(e.span, format!("`{name}` has no constructor"));
+            };
+            let mut arg_temps = Vec::new();
+            for a in args {
+                if a.spread {
+                    return self.bad(a.span, "spread arguments are not lowered yet");
+                }
+                arg_temps.push(self.expr(&a.value)?);
+            }
+            let dst = self.temp();
+            self.instr(IrInstr::Call {
+                dst: Some(dst),
+                callee: Callee::Func(fid),
+                args: arg_temps,
+            });
+            return Ok(dst);
         }
         // Builtins.
         match name.as_str() {
@@ -1702,7 +2197,11 @@ impl<'a> Emitter<'a> {
                         Some(Ty::Bool) => "pickle_print_bool",
                         Some(Ty::Char) => "pickle_print_byte",
                         Some(Ty::String) => "pickle_print_obj",
-                        Some(Ty::List(_)) | Some(Ty::Map(_, _)) | Some(Ty::Enum(..)) => {
+                        Some(Ty::List(_))
+                        | Some(Ty::Map(_, _))
+                        | Some(Ty::Enum(..))
+                        | Some(Ty::Class(..))
+                        | Some(Ty::Struct(..)) => {
                             "pickle_print_obj"
                         }
                         _ => {
@@ -1720,7 +2219,9 @@ impl<'a> Emitter<'a> {
                         Some(Ty::String)
                         | Some(Ty::List(_))
                         | Some(Ty::Map(_, _))
-                        | Some(Ty::Enum(..)) => IrTy::Ptr,
+                        | Some(Ty::Enum(..))
+                        | Some(Ty::Class(..))
+                        | Some(Ty::Struct(..)) => IrTy::Ptr,
                         _ => IrTy::Ptr,
                     };
                     self.extern_call_void(sym, vec![pty], vec![t]);
@@ -1872,7 +2373,76 @@ impl<'a> Emitter<'a> {
                 );
             }
         }
+        // `object.field` on a class/struct instance.
+        let ot = self.ty_of(&object.span);
+        let cid = match ot {
+            Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
+                self.class_by_name.get(&cn).copied()
+            }
+            _ => None,
+        };
+        if let Some(cid) = cid {
+            if let Some(slot) = self.instance_field_index(cid as i64, name) {
+                let field_ty = self.field_at(cid as i64, slot).ty.clone();
+                let obj = self.expr(object)?;
+                return self.field_read(e.span, obj, &field_ty, slot);
+            }
+            return self.bad(
+                e.span,
+                format!("method `{name}` of `{}` cannot be used as a value", self.class_name_of(cid)),
+            );
+        }
+        // `Type.member` in value position on a registered class/struct.
+        if let ExprKind::Ident(tname) = &object.kind {
+            if self.class_by_name.contains_key(tname) {
+                return self.bad(
+                    e.span,
+                    format!("static member `{name}` on `{tname}` is not lowered yet"),
+                );
+            }
+        }
         self.bad(e.span, "member access is not lowered yet")
+    }
+
+    /// The index of instance field `name` of class `cid` (among instance-only
+    /// fields, i.e. the runtime slot number), when registered.
+    fn instance_field_index(&self, cid: i64, name: &str) -> Option<usize> {
+        let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
+        plan.table.fields.iter().filter(|f| !f.is_static).position(|f| f.name == name)
+    }
+
+    fn field_at(&self, cid: i64, idx: usize) -> &FieldInfo {
+        self.classes
+            .iter()
+            .find(|p| p.class_id as i64 == cid)
+            .and_then(|p| p.table.fields.iter().filter(|f| !f.is_static).nth(idx))
+            .unwrap_or_else(|| unreachable!("field index out of range"))
+    }
+
+    fn class_name_of(&self, cid: u32) -> String {
+        self.classes
+            .iter()
+            .find(|p| p.class_id == cid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| format!("class#{cid}"))
+    }
+
+    /// `obj.slot` field read: `pickle_obj_slot_get` then unbox scalars.
+    fn field_read(&mut self, span: Span, obj: Temp, field_ty: &Ty, slot: usize) -> Result<Temp, ()> {
+        let rep = self.elem_rep(field_ty, span)?;
+        let idx = self.int_const(slot as i64);
+        let raw = self.extern_call_t1(
+            "pickle_obj_slot_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![obj, idx],
+        )?;
+        match rep {
+            ElemRep::Scalar(_, unbox, ir) => {
+                self.extern_call_t1(unbox, vec![IrTy::Ptr], ir, vec![raw])
+            }
+            ElemRep::Ptr => Ok(raw),
+        }
     }
 
     /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.
@@ -1883,10 +2453,53 @@ impl<'a> Emitter<'a> {
         name: &str,
         args: &[CallArg],
     ) -> Result<Temp, ()> {
-        let ot = self.ty_of(&object.span);
         if args.iter().any(|a| a.spread) {
             return self.bad(e.span, "spread arguments are not lowered yet");
         }
+        let ot = self.ty_of(&object.span);
+
+        // `Type.staticMethod(...)`.
+        if let ExprKind::Ident(tname) = &object.kind {
+            if let Some(&cid) = self.class_by_name.get(tname) {
+                if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
+                    if !is_static {
+                        return self.bad(
+                            e.span,
+                            format!("instance method `{name}` must be called on an instance of `{tname}`"),
+                        );
+                    }
+                    return self.call_method(e, fid, args, None);
+                }
+                return self.bad(
+                    e.span,
+                    format!("`{tname}` has no static method `{name}`"),
+                );
+            }
+        }
+
+        // `instance.method(...)` on a class/struct instance.
+        if let Some(cid) = match ot {
+            Some(Ty::Class(ref cn, _)) | Some(Ty::Struct(ref cn, _)) => {
+                self.class_by_name.get(cn).copied()
+            }
+            _ => None,
+        } {
+            if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
+                if is_static {
+                    return self.bad(
+                        e.span,
+                        format!("static method `{name}` must be called on the type, not an instance"),
+                    );
+                }
+                let receiver = self.expr(object)?;
+                return self.call_method(e, fid, args, Some(receiver));
+            }
+            return self.bad(
+                e.span,
+                format!("`{}` has no method `{name}`", self.class_name_of(cid)),
+            );
+        }
+
         match ot {
             Some(Ty::Map(k, v)) => {
                 if k.as_ref() != &Ty::String {
@@ -1939,6 +2552,31 @@ impl<'a> Emitter<'a> {
             Some(Ty::List(_)) => self.list_method_call(e, object, name, args),
             _ => self.bad(e.span, "method calls on this type are not lowered yet"),
         }
+    }
+
+    /// Emit a call to a class method function, passing the receiver first for
+    /// instance methods.
+    fn call_method(
+        &mut self,
+        _e: &Expr,
+        fid: FuncId,
+        args: &[CallArg],
+        receiver: Option<Temp>,
+    ) -> Result<Temp, ()> {
+        let mut call_args = match receiver {
+            Some(r) => vec![r],
+            None => Vec::new(),
+        };
+        for a in args {
+            call_args.push(self.expr(&a.value)?);
+        }
+        let dst = self.temp();
+        self.instr(IrInstr::Call {
+            dst: Some(dst),
+            callee: Callee::Func(fid),
+            args: call_args,
+        });
+        Ok(dst)
     }
 
     /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.

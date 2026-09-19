@@ -85,7 +85,7 @@ pub extern "C" fn pickle_unbox_bool(obj: *const PickleObject) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT};
+    use crate::object::{PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM};
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {
         crate::gc::test_begin()
@@ -112,10 +112,12 @@ mod tests {
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_INT), Some(&b"int"[..]));
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_FLOAT), Some(&b"float"[..]));
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_BOOL), Some(&b"bool"[..]));
-        // Class ids must match the descriptor registration order.
+        // Class ids must match the descriptor registration order: the enum
+        // holds a placeholder descriptor, so the user-class range begins at
+        // `PICKLE_CLASS_ENUM + 1` (`PICKLE_CLASS_USER_BASE`).
         assert_eq!(
             crate::gc::gc_mut().descriptors.len(),
-            PICKLE_CLASS_BOX_BOOL as usize + 1
+            PICKLE_CLASS_ENUM as usize + 1
         );
         // Payload sits directly after the header.
         assert_eq!(i as usize + 24, unsafe { payload(i) } as usize);

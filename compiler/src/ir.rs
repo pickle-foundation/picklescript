@@ -74,6 +74,11 @@ pub enum IrConst {
     Char(u32),
     Null,
     Str(StrId),
+    /// Tag `Int`: raw address of a `pkl_strdata_` block (module string data).
+    /// Never used as a managed pointer; used to hand string bytes to the
+    /// runtime (e.g. `pickle_class_register`). Typed `Int` so the value never
+    /// enters the GC trace frame.
+    StrAddr(StrId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,5 +349,6 @@ pub fn irconst_repr(c: IrConst) -> String {
         IrConst::Char(v) => format!("'{}'", char::from_u32(v).unwrap_or('\u{FFFD}')),
         IrConst::Null => "null".to_string(),
         IrConst::Str(id) => format!("str#{}", id.0),
+        IrConst::StrAddr(id) => format!("addrof str#{}", id.0),
     }
 }
