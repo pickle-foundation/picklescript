@@ -1,0 +1,6 @@
+module hello
+
+fn main() {
+    let name = "Pickle"
+    print("Hello, {name}!")
+}

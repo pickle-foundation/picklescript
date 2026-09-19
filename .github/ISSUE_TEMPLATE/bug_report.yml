@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible defect.
+title: "[bug]: "
+labels: [bug]
+
+body:
+  - type: input
+    id: version
+    attributes:
+      label: PickleScript version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: described
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Source snippet(s) and the exact command(s) that fail.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options: [Windows, Linux, macOS, Other]
+    validations:
+      required: true

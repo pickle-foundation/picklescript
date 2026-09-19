@@ -1,9 +1,16 @@
-/target
+# Build artifacts
+/target/
 **/*.rs.bk
-*.user
+
+# Editors
 .vscode/
 .idea/
-.DS_Store
+*.user
 
-# Design docs / tasklist are kept out of version control (tracked separately).
-/docs/
+# OS
+.DS_Store
+Thumbs.db
+
+# Toolchain / misc
+*.tmp
+~$*

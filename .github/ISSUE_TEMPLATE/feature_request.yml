@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a new capability or improvement.
+title: "[feature]: "
+labels: [feature]
+
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Which milestone does it belong to?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed design
+      description: Syntax, behavior, and how it interacts with existing features.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

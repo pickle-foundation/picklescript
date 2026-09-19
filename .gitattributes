@@ -1,0 +1,24 @@
+# Repository-wide line-ending policy.
+* text=auto eol=lf
+
+# Source and docs stay LF everywhere.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.pkl   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+
+# Windows-oriented files keep CRLF.
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binaries / images.
+*.png   binary
+*.ico   binary
+*.exe   binary
+*.a     binary
+*.lib   binary
+*.o     binary

@@ -81,11 +81,17 @@ See `docs/`:
 ## Repository layout
 
 ```
-crates/
-    pickle-compiler/   # lexer, parser, type checker, IR, Cranelift backend, formatter
-    pickle-runtime/    # GC, object model, builtins, entry point
-    pickle-cli/        # the `pickle` tool
-    projects/          # example projects
+compiler/          # pickle-compiler: lexer, parser, type checker, IR, codegen, formatter
+runtime/           # pickle-runtime: GC, object model, builtins, entry point
+cli/               # pickle-cli: the `pickle` tool
+stdlib/            # std.* source libraries (PickleScript)
+docs/              # language & compiler design
+rfcs/              # language design proposals
+examples/          # example projects
+tests/             # cross-crate test suites
+benchmarks/        # compiler/runtime benchmarks
+tools/             # build & release tooling
+scripts/           # CI / dev scripts
 ```
 
 This project is intentionally not a toy: the compiler is written in Rust,
@@ -93,4 +99,4 @@ emits native machine code, and targets real application workloads.
 
 ## License
 
-MIT.
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

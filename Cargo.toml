@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/pickle-compiler",
-    "crates/pickle-runtime",
-    "crates/pickle-cli",
+    "compiler",
+    "runtime",
+    "cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
-repository = "https://github.com/picklescript/picklescript"
+license = "Apache-2.0"
+repository = "https://github.com/pickle-foundation/picklescript"
 
 [profile.release]
 opt-level = 3
