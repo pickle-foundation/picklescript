@@ -231,11 +231,11 @@ fn render_diagnostic(d: &Diagnostic, map: &SourceMap, colored: bool, out: &mut S
             let lline = line + 1;
             let col = span.start - file.line_start(line);
             if colored {
-                let _ = write!(out, "{sg}{severity}{eg}");
+                let _ = write!(out, "{sg}{severity}{eg}: ");
             } else {
-                out.push_str(severity);
+                let _ = write!(out, "{severity}: ");
             }
-            let _ = write!(out, "{}{}:{}:{}: ", file.name, lline, col + 1, " ");
+            let _ = write!(out, "{}:{}:{}: ", file.name, lline, col + 1);
             let _ = write!(out, "{}\n", d.message);
 
             let text = file.line_text(line);
