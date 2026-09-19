@@ -163,6 +163,32 @@ impl<'a> Checker<'a> {
                     return true;
                 }
             }
+            // A subclass/descendant `got` is assignable to an ancestor `want`.
+            if matches!(want, Ty::Class(..) | Ty::Struct(..))
+                && self.is_ancestor(wantn, gotn)
+            {
+                return true;
+            }
+        }
+        // Function types: parameters are contravariant, result covariant, and
+        // unknown (`?`) types on either side widen to accept.
+        if let (Ty::Fn(gp, gr), Ty::Fn(wp, wr)) = (got, want) {
+            if gp.len() != wp.len() {
+                return false;
+            }
+            for (g, w) in gp.iter().zip(wp.iter()) {
+                if *g == Ty::Unknown || *w == Ty::Unknown {
+                    continue;
+                }
+                // contravariance: callee params may accept a wider type
+                if !self.ok_types(g, w) {
+                    return false;
+                }
+            }
+            if **gr == Ty::Unknown || **wr == Ty::Unknown {
+                return true;
+            }
+            return self.ok_types(&**gr, wr);
         }
         // Empty (void) is never assignable to a value type; but a `return;` in
         // a void fn and statement-position block tails are handled elsewhere.
@@ -255,6 +281,30 @@ impl<'a> Checker<'a> {
             if table.implements.iter().any(|t| t.named() == Some(iface)) {
                 return true;
             }
+            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+                pending.push(p);
+            }
+        }
+        false
+    }
+
+    /// True if `desc` extends/structurally inherits `anc` through the class
+    /// chain (used for upcast/downcast checks in casts).
+    fn is_ancestor(&self, anc: &str, desc: &str) -> bool {
+        let mut pending: Vec<String> = vec![desc.to_string()];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(name) = pending.pop() {
+            if name == anc {
+                return true;
+            }
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            let table = match self.resolved.types.get(&name) {
+                Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => t.clone(),
+                _ => continue,
+            };
             if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
                 pending.push(p);
             }
@@ -569,8 +619,21 @@ impl<'a> Checker<'a> {
     fn bind_pattern(&mut self, p: &Pattern, ty: &Ty, mutable: bool) {
         match p {
             Pattern::Wildcard => {}
-            Pattern::Binding { name, ty: _ty, .. } => {
-                self.declare(name, ty.clone(), mutable);
+            Pattern::Binding { name, ty: ann, .. } => {
+                // A pattern annotation like `let m: int?` is parsed into the
+                // pattern; it wins over the inferred value type and is checked
+                // against it.
+                let final_ty = match ann {
+                    Some(te) => {
+                        let at = self.resolved_fn_ty(te, &self.fn_generics);
+                        if *ty != Ty::Unknown {
+                            self.check_assignable(&at, ty, p.span(), "binding");
+                        }
+                        at
+                    }
+                    None => ty.clone(),
+                };
+                self.declare(name, final_ty, mutable);
             }
             Pattern::Literal(_) => {}
             Pattern::Tuple(parts) => {
@@ -1387,17 +1450,11 @@ impl<'a> Checker<'a> {
                     let numeric_ok = lt.is_numeric() && rt.is_numeric();
                     let string_ok = matches!(op, Add) && lt == Ty::String && rt == Ty::String;
                     if !numeric_ok && !string_ok {
-                        // Allow cross int/float and string+; report only clear errors.
-                        if !(lt == Ty::String && matches!(op, Add)) {
-                            let _ = e;
-                        }
-                        if lt != Ty::String && rt != Ty::String && !numeric_ok {
-                            self.err_note(
-                                e.span,
-                                format!("operator `{op:?}` requires numeric or string operands, found `{lt}` and `{rt}`"),
-                                "int and float van be composed, and `+` concatenates strings",
-                            );
-                        }
+                        self.err_note(
+                            e.span,
+                            format!("operator `{op:?}` requires numeric or string operands, found `{lt}` and `{rt}`"),
+                            "`+` concatenates strings; arithmetic operators need numbers",
+                        );
                     }
                 }
                 if lt == Ty::Float || rt == Ty::Float {
@@ -1653,12 +1710,86 @@ impl<'a> Checker<'a> {
     }
 
     fn check_cast(&mut self, e: &Expr, expr: &Expr, ty: &TypeExpr, kind: CastKind) -> Ty {
-        let _ = e;
-        let _ = self.check_expr(expr);
-        let target = self.resolved_fn_ty(ty, &self.fn_generics);
+        let src = self.check_expr(expr);
+        let target = self.resolved_fn_ty(ty, &self.instantiated_generics(&self.fn_generics));
         match kind {
-            CastKind::Is => Ty::Bool,
-            CastKind::As | CastKind::TryAs => target,
+            CastKind::Is => {
+                // `is` must check against a type the source can actually be.
+                // Unknown types are not yet resolved; allow them through.
+                if src != Ty::Unknown && target != Ty::Unknown && !self.cast_related(&src, &target)
+                {
+                    self.err_note(
+                        e.span,
+                        format!("`{src} is {target}` can never succeed"),
+                        "cast target must be assignable from, or an ancestor/descendant of, the source",
+                    );
+                }
+                Ty::Bool
+            }
+            CastKind::As | CastKind::TryAs => {
+                if src != Ty::Unknown && target != Ty::Unknown && !self.cast_related(&src, &target)
+                {
+                    self.err_note(
+                        e.span,
+                        format!("cannot cast `{src}` to `{target}`"),
+                        "cast target must be assignable from, or an ancestor/descendant of, the source",
+                    );
+                }
+                target
+            }
+        }
+    }
+
+    /// Whether `from` can be safely cast to `to`: numeric conversions,
+    /// option<->inner, class inheritance (either direction), and
+    /// conforming interfaces.
+    fn cast_related(&self, from: &Ty, to: &Ty) -> bool {
+        if from == to {
+            return true;
+        }
+        if from.is_numeric() && to.is_numeric() {
+            return true;
+        }
+        // Unwrap option layers on either side.
+        if let Some(inner) = from.inner_option() {
+            if self.cast_related(&inner, to) {
+                return true;
+            }
+        }
+        if let Some(inner) = to.inner_option() {
+            if self.cast_related(from, &inner) {
+                return true;
+            }
+        }
+        // Same-kind structural/type relations.
+        match (from, to) {
+            (Ty::Class(a, _), Ty::Class(b, _)) | (Ty::Struct(a, _), Ty::Struct(b, _)) => {
+                a == b
+                    || self.is_ancestor(a, b)
+                    || self.is_ancestor(b, a)
+                    || self.conforms_to(from, to)
+                    || self.conforms_to(to, from)
+            }
+            (Ty::Interface(a, _), Ty::Interface(b, _)) => {
+                a == b || self.conforms_to(from, to) || self.conforms_to(to, from)
+            }
+            (Ty::Enum(a, _), Ty::Enum(b, _)) => a == b,
+            (Ty::List(a), Ty::List(b)) | (Ty::Range(a), Ty::Range(b)) => self.cast_related(a, b),
+            (Ty::Map(ka, va), Ty::Map(kb, vb)) => {
+                self.cast_related(ka, kb) && self.cast_related(va, vb)
+            }
+            (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) => {
+                pa.len() == pb.len() && {
+                    let mut ok = true;
+                    for (x, y) in pa.iter().zip(pb.iter()) {
+                        if !self.cast_related(x, y) {
+                            ok = false;
+                        }
+                    }
+                    ok && self.cast_related(ra, rb)
+                }
+            }
+            _ => false,
         }
     }
 }
