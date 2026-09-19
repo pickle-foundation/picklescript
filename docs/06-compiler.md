@@ -166,8 +166,18 @@ Lowering rules:
   `pickle_panic_no_match`, which faults with "pickle: match is not
   exhaustive" — the checker does not require exhaustiveness, so misses fail
   loudly at runtime instead of reading garbage.
-- Patterns beyond `Variant`/`Wildcard`/`Binding` payload names, and guards,
-  bail with "not lowered yet".
+- Patterns beyond `Variant`/`Wildcard`/`Binding` payload names bail with
+  "not lowered yet". A guarded arm lowers into a `guard_in` block between the
+  tag-check target and the body: payload bindings (or the binding-name for a
+  guarded catch-all) are live there, the guard evaluates to a bool, and a
+  `BranchIf` on the guard sends the value to the body or falls through to the
+  next arm chain. Guard-false is not a match failure: the search continues (a
+  guarded catch-all keeps the chain live, and a chain that exhausts every arm
+  falls into the `pickle_panic_no_match` trap). Guards may use `&&`/`||`,
+  which lower through the ordinary short-circuit `logic()` path.
+- Numeric promotion at mixed float/int operands (`r > 0`, `f * i`) inserts an
+  `itof` (i64 -> f64) conversion instruction on the int side before the binop,
+  so the JIT and AOT always see same-width operands.
 
 Classes use the same object-model extern path. A class instance is a plain
 managed object (`PickleObject`) whose runtime `ClassDescriptor` carries the

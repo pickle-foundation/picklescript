@@ -161,6 +161,8 @@ pub enum IrInstr {
     /// Arith/shift/bitwise/comparison. Comparison results are `bool`.
     BinOp { dst: Temp, op: BinOp, a: Temp, b: Temp },
     Copy { dst: Temp, v: Temp },
+    /// Signed int -> float conversion (numeric promotion at mixed operands).
+    Itof { dst: Temp, v: Temp },
     LoadSlot { dst: Temp, slot: Slot },
     StoreSlot { slot: Slot, v: Temp },
     /// Call a user function or runtime symbol. `dst` absent for void calls.
@@ -279,6 +281,7 @@ impl fmt::Display for IrInstr {
                 temp_name(*b)
             ),
             IrInstr::Copy { dst, v } => write!(f, "{} = copy {}", temp_name(*dst), temp_name(*v)),
+            IrInstr::Itof { dst, v } => write!(f, "{} = itof {}", temp_name(*dst), temp_name(*v)),
             IrInstr::LoadSlot { dst, slot } => {
                 write!(f, "{} = load slot s{}", temp_name(*dst), slot.0)
             }

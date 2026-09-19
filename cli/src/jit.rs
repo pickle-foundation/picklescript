@@ -272,6 +272,9 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                     let t = tt.get(&v.0).copied().unwrap_or(IrTy::Ptr);
                     tt.insert(dst.0, t);
                 }
+                IrInstr::Itof { dst, .. } => {
+                    tt.insert(dst.0, IrTy::Float);
+                }
                 IrInstr::LoadSlot { dst, slot } => {
                     let t = func
                         .slots
@@ -718,6 +721,11 @@ fn lower_instr(
             values.insert(dst.0, x);
             // A copied managed value must also root the destination cell.
             write_through(builder, plan, frame, dst.0, x);
+        }
+        IrInstr::Itof { dst, v } => {
+            let x = *values.get(&v.0).context("itof operand")?;
+            let vv = builder.ins().fcvt_from_sint(types::F64, x);
+            values.insert(dst.0, vv);
         }
         IrInstr::LoadSlot { dst, slot } => {
             let v = load_slot(builder, func, plan, frame, slot_ss, *slot)?;

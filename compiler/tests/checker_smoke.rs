@@ -504,6 +504,52 @@ fn rejects_static_instance_misuse() {
 }
 
 #[test]
+fn rejects_non_bool_match_guard() {
+    // A guard must be a bool expression; an `int` guard types through.
+    let d = check_str(
+        r#"enum Color {
+            Red
+            Blue
+            Rgb(r: int, g: int, b: int)
+        }
+
+        fn pick(c: Color) -> int {
+            match (c) {
+                case Color.Blue if 3 -> 1
+                case other -> 0
+            }
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a guard typing error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn accepts_guarded_match_arms() {
+    // Payload bindings are live in guards, so `if r > 0` sees each binder.
+    let d = check_str(
+        r#"enum Color {
+            Red
+            Blue
+            Rgb(r: int, g: int, b: int)
+        }
+
+        fn pick(c: Color) -> int {
+            match (c) {
+                case Color.Rgb(r, g, b) if r > 0 && g > 0 && b > 0 -> r + g + b
+                case Color.Rgb(_, _, _) -> -1
+                case Color.Blue if c != Color.Red -> 2
+                case other if true -> 3
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn rejects_too_few_constructor_args() {
     // A missing synthesized-ctor parameter used to reach codegen and turn into
     // a JIT verifier crash; the checker must flag the arity mismatch instead.

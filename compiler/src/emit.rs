@@ -1645,8 +1645,19 @@ let bad = |e: &mut Self, what: &str| {
             }
             _ => {}
         }
-        let a = self.expr(lhs)?;
-        let b = self.expr(rhs)?;
+        let mut a = self.expr(lhs)?;
+        let mut b = self.expr(rhs)?;
+        let aty = self.irty(lhs.span).ok();
+        let bty = self.irty(rhs.span).ok();
+        if matches!(aty, Some(IrTy::Float)) && matches!(bty, Some(IrTy::Int)) {
+            let t = self.temp();
+            self.instr(IrInstr::Itof { dst: t, v: b });
+            b = t;
+        } else if matches!(aty, Some(IrTy::Int)) && matches!(bty, Some(IrTy::Float)) {
+            let t = self.temp();
+            self.instr(IrInstr::Itof { dst: t, v: a });
+            a = t;
+        }
         let dst = self.temp();
         self.instr(IrInstr::BinOp {
             dst,
@@ -2251,9 +2262,6 @@ let bad = |e: &mut Self, what: &str| {
             Some(TypeTableEntry::Enum(t)) => t.clone(),
             _ => return self.bad(e.span, format!("unknown enum type `{enum_name}`")),
         };
-        if arms.iter().any(|a| a.guard.is_some()) {
-            return self.bad(e.span, "match guards are not lowered yet");
-        }
 
         // The scrutinee is a managed pointer; keep it in a slot so the
         // collector retains it across any allocation the arms perform.
@@ -2281,6 +2289,16 @@ let bad = |e: &mut Self, what: &str| {
         let mut chain_live = true;
         for arm in arms {
             let body = self.new_block();
+            let guard = arm.guard.as_ref();
+            // With a guard, bindings and the guard condition are evaluated in
+            // a `guard_in` block that the tag check branches into; on a false
+            // guard the chain falls through to the next arm (or the
+            // non-exhaustive panic when nothing else remains).
+            let guard_in = if guard.is_some() {
+                self.new_block()
+            } else {
+                body
+            };
             match &arm.pattern {
                 Pattern::Variant { path, payloads } => {
                     let vname = match path.len() {
@@ -2311,19 +2329,80 @@ let bad = |e: &mut Self, what: &str| {
                         let next = self.new_block();
                         self.term(IrTerm::BranchIf {
                             cond: c,
-                            then: body,
+                            then: guard_in,
                             else_: next,
                         });
                         cur = next;
                     }
-                    self.cur = body;
+                    self.cur = guard_in;
                     self.push_scope();
                     self.bind_enum_payloads(arm.span, &table, vi, payloads, s_slot)?;
+                    if let Some(g) = guard {
+                        let cond = self.expr(g)?;
+                        let fall = if chain_live { cur } else { join };
+                        self.term(IrTerm::BranchIf {
+                            cond,
+                            then: body,
+                            else_: fall,
+                        });
+                        self.cur = body;
+                    }
                     self.match_arm_body(&arm.body, res_slot)?;
                     self.pop_scope();
                     self.term(IrTerm::Branch { target: join });
                 }
                 Pattern::Wildcard | Pattern::Binding { .. } => {
+                    if let Some(g) = guard {
+                        if chain_live {
+                            // A failing guard must keep checking the remaining
+                            // arms, so the chain stays live through a fresh
+                            // fall-through block.
+                            self.cur = cur;
+                            self.term(IrTerm::Branch { target: guard_in });
+                            let fall = self.new_block();
+                            cur = fall;
+                            self.cur = guard_in;
+                            self.push_scope();
+                            if let Pattern::Binding { name, .. } = &arm.pattern {
+                                let slot = self.new_slot(IrTy::Ptr);
+                                let sv = self.load(s_slot);
+                                self.instr(IrInstr::StoreSlot { slot, v: sv });
+                                self.declare(name, slot);
+                            }
+                            let cond = self.expr(g)?;
+                            self.term(IrTerm::BranchIf {
+                                cond,
+                                then: body,
+                                else_: fall,
+                            });
+                            self.cur = body;
+                            self.match_arm_body(&arm.body, res_slot)?;
+                            self.pop_scope();
+                            self.term(IrTerm::Branch { target: join });
+                        } else {
+                            // Dead guarded catch-all after an unguarded one;
+                            // still emit a terminated guard+body for the graph.
+                            self.cur = guard_in;
+                            self.push_scope();
+                            if let Pattern::Binding { name, .. } = &arm.pattern {
+                                let slot = self.new_slot(IrTy::Ptr);
+                                let sv = self.load(s_slot);
+                                self.instr(IrInstr::StoreSlot { slot, v: sv });
+                                self.declare(name, slot);
+                            }
+                            let cond = self.expr(g)?;
+                            self.term(IrTerm::BranchIf {
+                                cond,
+                                then: body,
+                                else_: join,
+                            });
+                            self.cur = body;
+                            self.match_arm_body(&arm.body, res_slot)?;
+                            self.pop_scope();
+                            self.term(IrTerm::Branch { target: join });
+                        }
+                        continue;
+                    }
                     if chain_live {
                         self.cur = cur;
                         self.term(IrTerm::Branch { target: body });

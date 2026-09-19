@@ -924,6 +924,80 @@ fn emits_static_property_accessors_receiverless() {
 }
 
 #[test]
+fn emits_guarded_match_arms() {
+    // Guards evaluate between the tag check and the arm body, with payload
+    // bindings live; a false guard falls through to the next arm. A guarded
+    // catch-all that can still reject keeps the non-exhaustive panic path.
+    let m = emit_str(
+        r#"enum Shape {
+            Circle(r: float)
+            Rect(w: float, h: float)
+            Point
+        }
+
+        fn area(s: Shape) -> float {
+            match (s) {
+                case Shape.Circle(r) if r > 0 -> r * r
+                case Shape.Circle(r) -> -1.0
+                case Shape.Rect(w, h) if w > 0 && h > 0 -> w * h
+                case Shape.Rect(_, _) -> -3.0
+                case Shape.Point -> 0.0
+            }
+        }
+
+        fn risky(s: Shape) -> float {
+            match (s) {
+                case Shape.Circle(r) if r > 0 -> r * r
+                case other if false -> -9.0
+            }
+        }
+
+        fn main() {
+            println(area(Shape.Circle(3.0)), risky(Shape.Point))
+        }"#,
+    );
+    let syms = externs(&m);
+    for need in [
+        "pickle_enum_new",
+        "pickle_enum_tag",
+        "pickle_enum_field",
+        "pickle_box_f64",
+        "pickle_unbox_f64",
+        "pickle_panic_no_match",
+    ] {
+        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+    }
+    let area = m.funcs.iter().find(|f| f.name == "area").expect("area");
+    let branches: Vec<String> = area
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.term {
+            IrTerm::BranchIf { .. } => Some(format!("{:?}", b.term)),
+            _ => None,
+        })
+        .collect();
+    let checks = branches.len();
+    assert!(
+        checks >= 5,
+        "3 tag checks + 2 guard branches (plus `&&` short-circuit) expected, \
+         found {checks}, dump:\n{area}"
+    );
+    let pest = m.funcs.iter().find(|f| f.name == "risky").expect("risky");
+    let panic_instrs = pest
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_panic_no_match")))
+        .count();
+    assert_eq!(
+        panic_instrs, 1,
+        "a guarded catch-all that can reject keeps the nonexhaustive panic, \
+         dump:\n{pest}"
+    );
+}
+
+#[test]
 fn property_getter_reads_bare_field_and_this() {
     // Bare field names and bare property names inside accessors resolve
     // through `this`; the getter/setter bodies must lower without unset `this`.
