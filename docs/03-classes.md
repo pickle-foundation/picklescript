@@ -108,8 +108,10 @@ declaring is rejected to keep contracts explicit.)
 
 ## Static members
 
-- `static var/let/const` fields: one per class, initialized lazily on first
-  touch (thread-safe once).
+- `static var` fields: one per class, initialized once at program start (in
+  class-registration order) to their declared value or the field type's
+  default. Reads and writes use the type name (`Employee.count`); a static
+  method may use the bare name. `static const` members are still deferred.
 - `static fn`: callable as `Employee.create()`; has no receiver, cannot see
   instance state.
 - Statics are inherited through the type name.

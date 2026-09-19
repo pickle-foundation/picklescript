@@ -1442,6 +1442,15 @@ impl<'a> Checker<'a> {
             if let Some(entry) = self.resolved.types.get(tname) {
                 let gname = entry.name().to_string();
                 if let Some(f) = self.find_field(&gname, name, &HashMap::new()) {
+                    if !f.0.is_static {
+                        self.err(
+                            e.span,
+                            format!(
+                                "instance field `{name}` must be accessed on an instance of `{gname}`"
+                            ),
+                        );
+                        return Ty::Unknown;
+                    }
                     return self.subst(&f.0.ty, &HashMap::new());
                 }
                 if let Some(p) = self.find_property(&gname, name) {
@@ -1530,6 +1539,15 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         };
         if let Some(f) = self.find_field(&class, name, &args_map) {
+            if f.0.is_static {
+                self.err(
+                    e.span,
+                    format!(
+                        "static field `{name}` must be accessed on the type `{class}`, not on an instance"
+                    ),
+                );
+                return Ty::Unknown;
+            }
             return self.subst(&f.0.ty, &args_map);
         }
         if let Some(p) = self.find_property(&class, name) {
@@ -1780,6 +1798,23 @@ impl<'a> Checker<'a> {
     if let ExprKind::Ident(tname) = &object.kind {
         if let Some(entry) = self.resolved.types.get(tname) {
             let gname = entry.name().to_string();
+            if let Some(f) = self.find_field(&gname, name, &HashMap::new()) {
+                if !f.0.is_static {
+                    self.err(
+                        target.span,
+                        format!(
+                            "instance field `{name}` must be assigned on an instance of `{gname}`"
+                        ),
+                    );
+                } else if !f.0.mutable {
+                    self.err(
+                        target.span,
+                        format!("cannot assign to immutable static field `{name}`"),
+                    );
+                }
+                self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
+                return Ty::Empty;
+            }
             if let Some(p) = self.find_property(&gname, name) {
                 if !p.is_static {
                     self.err(
@@ -1807,7 +1842,14 @@ impl<'a> Checker<'a> {
     let ot = self.check_expr(object);
                 if let Some((class, args_map)) = self.type_key(&ot) {
                     if let Some(f) = self.find_field(&class, name, &args_map) {
-                        if !f.0.mutable {
+                        if f.0.is_static {
+                            self.err(
+                                target.span,
+                                format!(
+                                    "static field `{name}` must be assigned on the type `{class}`, not on an instance"
+                                ),
+                            );
+                        } else if !f.0.mutable {
                             self.err(
                                 target.span,
                                 format!("cannot assign to immutable field `{name}`"),

@@ -20,3 +20,6 @@ Thumbs.db
 # Toolchain / misc
 *.tmp
 ~$*
+
+# Personal scratch example
+/examples/tour/

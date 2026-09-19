@@ -1254,3 +1254,90 @@ fn emits_numeric_and_option_casts() {
         assert!(externs.contains(&want), "`as? float` boxes/unboxes floats: {externs:?}");
     }
 }
+
+#[test]
+fn emits_static_field_cells_and_init() {
+    // Static fields lower to runtime cells: every field is default-initialized
+    // once by the synthesized `pkl_static_init` (declared value or zero/null),
+    // `main` calls it after registration, and bare names inside static methods
+    // read/write the same cell.
+    let m = emit_str(
+        r#"class Counter {
+            static var total: int = 10
+            static var name: string = "ctr"
+            static var flag: bool
+
+            static fn bump(by: int) {
+                total = total + by
+            }
+        }
+
+        fn main() {
+            println(Counter.total)
+            Counter.total = Counter.total + 5
+            Counter.total += 7
+            println(Counter.name)
+            println(Counter.flag)
+            Counter.bump(3)
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    assert!(syms.iter().any(|s| s == "pkl_static_init"), "symbols: {syms:?}");
+
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_static_get", "pickle_static_set"] {
+        assert!(externs.contains(&want), "static cell extern missing: {externs:?}");
+    }
+
+    let init = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_static_init")
+        .expect("static init fn");
+    let init_sets = init
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| {
+            matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_static_set"))
+        })
+        .count();
+    assert!(
+        init_sets >= 3,
+        "init stores every static field (initialized + defaulted): {init_sets}"
+    );
+
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let calls_init = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+        matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. }
+            if m.funcs.get(fid.0).map(|f| f.symbol.as_str()) == Some("pkl_static_init"))
+    });
+    assert!(calls_init, "main calls pkl_static_init after registration");
+
+    let bump = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_sm_bump")
+        .expect("static method");
+    let bump_externs: Vec<&str> = bump
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(ex), .. } = i {
+                m.externs.get(ex.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        bump_externs.contains(&"pickle_static_get"),
+        "bare-name static read: {bump_externs:?}"
+    );
+    assert!(
+        bump_externs.contains(&"pickle_static_set"),
+        "bare-name static write: {bump_externs:?}"
+    );
+}

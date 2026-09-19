@@ -24,6 +24,7 @@ mod object;
 mod panic;
 pub(crate) mod shadow;
 pub(crate) mod strings;
+mod statics;
 mod test;
 mod trace;
 
@@ -217,6 +218,9 @@ pub mod abi {
     pub use crate::class::pickle_class_register;
     pub use crate::class::pickle_obj_slot_get;
     pub use crate::class::pickle_obj_slot_set;
+
+    pub use crate::statics::pickle_static_get;
+    pub use crate::statics::pickle_static_set;
 
     pub use crate::console::pickle_print_byte;
     pub use crate::console::pickle_print_bytes;

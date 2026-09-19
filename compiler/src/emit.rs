@@ -55,6 +55,8 @@ pub fn emit_ir(
         method_ids: HashMap::new(),
         property_ids: HashMap::new(),
         static_property_ids: HashMap::new(),
+        static_inits: Vec::new(),
+        static_init_id: None,
         owner: None,
         fname: String::new(),
         symbol: String::new(),
@@ -112,6 +114,12 @@ enum FnSource<'a> {
         is_set: bool,
         is_static: bool,
     },
+    /// The synthesized static-field initializer: one assignment per static
+    /// field, evaluated once at program start. `None` means the field had no
+    /// initializer and is stored as its default (zero/null) value.
+    StaticInit {
+        inits: Vec<(u32, usize, Option<&'a Expr>)>,
+    },
 }
 
 /// A registered, lowerable user class/struct.
@@ -119,6 +127,23 @@ struct ClassPlan {
     name: String,
     class_id: u32,
     table: ClassTable,
+}
+
+/// Slot number of instance field `name` (its position among non-static fields,
+/// i.e. the runtime slot index).
+fn instance_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
+    table.fields.iter().filter(|f| !f.is_static).position(|f| f.name == name)
+}
+
+/// Static slot number of static field `name` (its position among static
+/// fields).
+fn static_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
+    table.fields.iter().filter(|f| f.is_static).position(|f| f.name == name)
+}
+
+/// The declared info of static field `name`, when present.
+fn static_field_info(table: &ClassTable, name: &str) -> Option<FieldInfo> {
+    table.fields.iter().find(|f| f.is_static && f.name == name).cloned()
 }
 
 /// Runtime representation of a `List<T>` element.
@@ -167,6 +192,13 @@ struct Emitter<'a> {
     property_ids: HashMap<(u32, String, bool), FuncId>,
     /// (Class id, static property name, is_setter) -> accessor function.
     static_property_ids: HashMap<(u32, String, bool), FuncId>,
+    /// Static-field initializers in declaration order: `(class id, static slot,
+    /// value expr)`. `None` means "no initializer" (store the default value).
+    /// Emitted into the synthesized `pkl_static_init` function.
+    static_inits: Vec<(u32, usize, Option<&'a Expr>)>,
+    /// The synthesized static-initializer function, called once at the top of
+    /// `main` after class registration.
+    static_init_id: Option<FuncId>,
     /// Class id of the method/ctor currently being built (implicit receiver).
     owner: Option<i64>,
 
@@ -202,6 +234,18 @@ impl<'a> Emitter<'a> {
                 ItemKind::Struct(s) => self.register_struct_item(s),
                 _ => {}
             }
+        }
+        // Static fields are initialized once at program start. Register the
+        // initializer only after every class id is assigned, and before the
+        // build loop so `main`'s preamble can call it.
+        if !self.static_inits.is_empty() {
+            let inits = std::mem::take(&mut self.static_inits);
+            let fid = self.push_class_func(
+                "static.init",
+                "pkl_static_init",
+                FnSource::StaticInit { inits },
+            );
+            self.static_init_id = Some(fid);
         }
         let fids = self.fid_list.clone();
         for fid in fids {
@@ -303,10 +347,6 @@ let bad = |e: &mut Self, what: &str| {
             bad(self, "constants");
             return;
         }
-        if table.fields.iter().any(|f| f.is_static) {
-            bad(self, "static fields");
-            return;
-        }
         let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
         let mut init_blocks: Vec<&'a Block> = Vec::new();
         for m in members {
@@ -317,7 +357,7 @@ let bad = |e: &mut Self, what: &str| {
                     is_static: false,
                     ..
                 } => {
-                    if let Some(slot) = table.fields.iter().position(|f| f.name == *name) {
+                    if let Some(slot) = instance_field_slot(&table, name) {
                         inits.push((slot, x));
                     }
                 }
@@ -334,7 +374,33 @@ let bad = |e: &mut Self, what: &str| {
             }
         }
 
+        // Every static field gets an initializer entry: the declared value, or
+        // `None` for the default (zero/null) so a read never dereferences the
+        // unset cell.
+        let mut static_inits: Vec<(usize, Option<&'a Expr>)> = Vec::new();
+        for f in table.fields.iter().filter(|f| f.is_static) {
+            let Some(slot) = static_field_slot(&table, &f.name) else {
+                continue;
+            };
+            let init = members
+                .iter()
+                .find_map(|m| match m {
+                    ClassMember::Field {
+                        name,
+                        init,
+                        is_static: true,
+                        ..
+                    } if name == &f.name => Some(init.as_ref()),
+                    _ => None,
+                })
+                .flatten();
+            static_inits.push((slot, init));
+        }
+
         let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
+        for (slot, x) in static_inits {
+            self.static_inits.push((cid, slot, x));
+        }
 
         // Constructor: `pkl_<Name>_new(...) -> Ptr`. Its parameters are the
         // explicit constructor's params when one is declared, otherwise the
@@ -538,6 +604,30 @@ let bad = |e: &mut Self, what: &str| {
             FnSource::Property { table, pd, info, is_set, is_static } => {
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
                 let _ = self.build_property_body(&table, pd, &info, is_set, is_static);
+            }
+            FnSource::StaticInit { inits } => {
+                self.fret = IrTy::Unit;
+                // Default-initialize every cell first, so an initializer that
+                // reads another static (including a later one) sees the field
+                // type's zero/null rather than an unset cell. This mirrors
+                // `class_new` zeroing instance slots before field inits run.
+                for (cid, slot, _) in &inits {
+                    if self.build_static_default(*cid, *slot).is_err() {
+                        return;
+                    }
+                }
+                for (cid, slot, x) in &inits {
+                    let Some(x) = x else {
+                        continue;
+                    };
+                    // Static-field initializers resolve bare names against the
+                    // declaring class (there is no `this`).
+                    self.owner = Some(*cid as i64);
+                    if self.build_static_init_one(*cid, *slot, x).is_err() {
+                        return;
+                    }
+                }
+                self.term(IrTerm::Return { v: None });
             }
         }
         if self.failed {
@@ -833,6 +923,13 @@ let bad = |e: &mut Self, what: &str| {
                 dst: None,
                 callee: Callee::Extern(ex),
                 args: vec![addr, len, n, mask],
+            });
+        }
+        if let Some(fid) = self.static_init_id {
+            instrs.push(IrInstr::Call {
+                dst: None,
+                callee: Callee::Func(fid),
+                args: Vec::new(),
             });
         }
         let blk = &mut self.blocks[0];
@@ -1596,6 +1693,10 @@ let bad = |e: &mut Self, what: &str| {
                 let this = self.this_value(e)?;
                 return self.call_method(e, fid, &[], Some(this));
             }
+            // A bare name may also be a static field of the enclosing class.
+            if let Some((slot, info)) = self.static_field(cid, name) {
+                return self.static_read(e.span, cid as u32, slot, &info.ty);
+            }
         }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
     }
@@ -2115,6 +2216,16 @@ let bad = |e: &mut Self, what: &str| {
                 let this = self.this_value(e)?;
                 return self.field_assign(e.span, op, this, &field_ty, idx, v, &vt);
             }
+            // A bare name may also be a static field of the enclosing class.
+            if let Some((slot, info)) = self.static_field(cid, name) {
+                if !info.mutable {
+                    return self.bad(
+                        span,
+                        format!("cannot assign to immutable static field `{name}`"),
+                    );
+                }
+                return self.static_assign(span, op, cid as u32, slot, &info.ty, v, &vt);
+            }
         }
         self.bad(span, format!("cannot assign to `{name}`"))
     }
@@ -2155,6 +2266,17 @@ let bad = |e: &mut Self, what: &str| {
                         args: vec![packed],
                     });
                     return Ok(v);
+                }
+                if let Some((slot, info)) = self.static_field(cid as i64, name) {
+                    if !info.mutable {
+                        return self.bad(
+                            e.span,
+                            format!("cannot assign to immutable static field `{name}`"),
+                        );
+                    }
+                    let v = self.expr(value)?;
+                    let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+                    return self.static_assign(e.span, op, cid, slot, &info.ty, v, &vt);
                 }
                 return self.bad(
                     e.span,
@@ -2269,6 +2391,127 @@ let bad = |e: &mut Self, what: &str| {
             vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
             vec![obj, idx, boxed],
         );
+    }
+
+    /// Declared info of the static field at static slot `idx` of class `cid`.
+    fn static_field_at(&self, cid: i64, idx: usize) -> Option<FieldInfo> {
+        let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
+        plan.table.fields.iter().filter(|f| f.is_static).nth(idx).cloned()
+    }
+
+    /// Static-field read: `pickle_static_get` then unbox scalars.
+    fn static_read(
+        &mut self,
+        span: Span,
+        cid: u32,
+        slot: usize,
+        field_ty: &Ty,
+    ) -> Result<Temp, ()> {
+        let rep = self.elem_rep(field_ty, span)?;
+        let c = self.int_const(cid as i64);
+        let s = self.int_const(slot as i64);
+        let raw = self.extern_call_t1(
+            "pickle_static_get",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![c, s],
+        )?;
+        match rep {
+            ElemRep::Scalar(_, unbox, ir) => {
+                self.extern_call_t1(unbox, vec![IrTy::Ptr], ir, vec![raw])
+            }
+            ElemRep::Ptr => Ok(raw),
+        }
+    }
+
+    /// Static-field store: box scalars, then `pickle_static_set(cid, slot, v)`.
+    fn static_store(&mut self, cid: u32, slot: usize, boxed: Temp) {
+        let c = self.int_const(cid as i64);
+        let s = self.int_const(slot as i64);
+        self.extern_call_void(
+            "pickle_static_set",
+            vec![IrTy::Int, IrTy::Int, IrTy::Ptr],
+            vec![c, s, boxed],
+        );
+    }
+
+    /// Plain or compound (`op=`) store of one static field cell.
+    #[allow(clippy::too_many_arguments)]
+    fn static_assign(
+        &mut self,
+        span: Span,
+        op: AssignOp,
+        cid: u32,
+        slot: usize,
+        field_ty: &Ty,
+        v: Temp,
+        vt: &Ty,
+    ) -> Result<Temp, ()> {
+        let rep = self.elem_rep(field_ty, span)?;
+        if op == AssignOp::Assign {
+            let packed = self.pack_for_pointer_boundary(&rep, v, vt, span)?;
+            let boxed = self.box_for_store(&rep, packed, elem_ir(field_ty))?;
+            self.static_store(cid, slot, boxed);
+            return Ok(v);
+        }
+        if matches!(rep, ElemRep::Ptr) {
+            return self.bad(
+                span,
+                "compound assignment to a non-scalar static field is not lowered yet",
+            );
+        }
+        let c = self.int_const(cid as i64);
+        let s = self.int_const(slot as i64);
+        let raw = self.extern_call_t1(
+            "pickle_static_get",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![c, s],
+        )?;
+        let cur = match rep {
+            ElemRep::Scalar(_, unbox, ir) => {
+                self.extern_call_t1(unbox, vec![IrTy::Ptr], ir, vec![raw])?
+            }
+            ElemRep::Ptr => raw,
+        };
+        let dst = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: assign_opcode(op),
+            a: cur,
+            b: v,
+        });
+        let boxed = self.box_for_store(&rep, dst, elem_ir(field_ty))?;
+        self.static_store(cid, slot, boxed);
+        Ok(dst)
+    }
+
+    /// Store the default (zero scalar / null pointer) into one static cell.
+    fn build_static_default(&mut self, cid: u32, slot: usize) -> Result<(), ()> {
+        let Some(info) = self.static_field_at(cid as i64, slot) else {
+            return Ok(());
+        };
+        let field_ty = info.ty.clone();
+        let rep = self.elem_rep(&field_ty, info.span)?;
+        let default = match rep {
+            ElemRep::Scalar(..) => self.zero_scalar(elem_ir(&field_ty), info.span)?,
+            ElemRep::Ptr => self.null_temp()?,
+        };
+        let boxed = self.box_for_store(&rep, default, elem_ir(&field_ty))?;
+        self.static_store(cid, slot, boxed);
+        Ok(())
+    }
+
+    /// Evaluate one static-field initializer and store it.
+    fn build_static_init_one(&mut self, cid: u32, slot: usize, x: &Expr) -> Result<(), ()> {
+        let Some(info) = self.static_field_at(cid as i64, slot) else {
+            return Ok(());
+        };
+        let field_ty = info.ty.clone();
+        let v = self.expr(x)?;
+        let vt = self.ty_of(&x.span).unwrap_or(Ty::Unknown);
+        self.static_assign(x.span, AssignOp::Assign, cid, slot, &field_ty, v, &vt)?;
+        Ok(())
     }
 
     /// `xs[i] = v` and `xs[i] op= v` for `List<T>` targets.
@@ -3284,11 +3527,15 @@ let bad = |e: &mut Self, what: &str| {
                 format!("method `{name}` of `{}` cannot be used as a value", self.class_name_of(cid)),
             );
         }
-        // `Type.staticProperty` reads a receiver-less accessor.
+        // `Type.staticProperty` reads a receiver-less accessor; `Type.field`
+        // reads a static field cell.
         if let ExprKind::Ident(tname) = &object.kind {
             if let Some(&cid) = self.class_by_name.get(tname) {
                 if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), false)) {
                     return self.call_method(e, fid, &[], None);
+                }
+                if let Some((slot, info)) = self.static_field(cid as i64, name) {
+                    return self.static_read(e.span, cid, slot, &info.ty);
                 }
                 return self.bad(
                     e.span,
@@ -3305,7 +3552,16 @@ let bad = |e: &mut Self, what: &str| {
     /// fields, i.e. the runtime slot number), when registered.
     fn instance_field_index(&self, cid: i64, name: &str) -> Option<usize> {
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
-        plan.table.fields.iter().filter(|f| !f.is_static).position(|f| f.name == name)
+        instance_field_slot(&plan.table, name)
+    }
+
+    /// The static slot of static field `name` on class `cid`, with its declared
+    /// type, when the class is registered and the field exists.
+    fn static_field(&self, cid: i64, name: &str) -> Option<(usize, FieldInfo)> {
+        let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
+        let slot = static_field_slot(&plan.table, name)?;
+        let info = static_field_info(&plan.table, name)?;
+        Some((slot, info))
     }
 
     fn field_at(&self, cid: i64, idx: usize) -> &FieldInfo {

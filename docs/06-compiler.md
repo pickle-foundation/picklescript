@@ -193,8 +193,8 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No `static var` fields, no `deinit`, no `Const` members, no named
-  constructors (`constructor.guest()`), no generics/extends/implements
+- No `deinit`, no `Const` members, no named constructors
+  (`constructor.guest()`), no generics/extends/implements
   -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
@@ -238,6 +238,17 @@ Lowering rules:
   setter, a static getter body may reference other statics via `Type.other`,
   and instance receivers cannot reach static properties (or vice versa).
   Statics with a getter but no setter are read-only.
+- Static fields (`static var`) compile to runtime cells keyed by
+  `(class id, static slot)`: `pickle_static_get`/`pickle_static_set` hold one
+  managed pointer per field, and each cell is registered as a GC root so its
+  pointee survives collection. Every static field is initialized once at
+  program start by the synthesized `pkl_static_init` function — the declared
+  value, or the field type's default zero/null — which `main`'s entry block
+  calls right after class registration. `Type.field` reads/writes and compound
+  `op=` go through the cell (scalars box/unbox on the boundary), and a bare
+  static-field name inside the class's own static method resolves to the same
+  cell. The checker enforces direction: a static field is reached through the
+  type name, an instance field only through an instance.
 - `char` values are boxed/unboxed exactly like the other scalars: the runtime
   provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
   elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`

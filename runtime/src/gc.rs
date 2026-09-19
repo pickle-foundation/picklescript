@@ -266,6 +266,9 @@ pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
     BYTES_SINCE_GC.store(0, Ordering::Relaxed);
     AUTO_THRESHOLD.store(DEFAULT_AUTO_COLLECT_THRESHOLD, Ordering::Relaxed);
     COLLECTIONS.store(0, Ordering::Relaxed);
+    // Drop roots left behind by earlier tests (e.g. leaked static-field
+    // cells) so they can never trace objects from a destroyed heap.
+    STATIC_ROOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
     unsafe {
         if !GLOBAL_GC.is_null() {
             let mut gc = Box::from_raw(GLOBAL_GC);

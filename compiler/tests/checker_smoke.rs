@@ -610,3 +610,70 @@ fn rejects_too_few_constructor_args() {
         "expected the arity diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_static_field_access() {
+    // Static fields type-qualify through the class name (read, write, compound)
+    // and are reachable by bare name inside the class's own static methods.
+    let d = check_str(
+        r#"class Counter {
+            static var total: int = 10
+            static var flag: bool
+
+            static fn bump(by: int) -> int {
+                total = total + by
+                return total
+            }
+        }
+
+        fn main() {
+            println(Counter.total)
+            Counter.total = Counter.total + 5
+            Counter.total += 7
+            println(Counter.flag)
+            println(Counter.bump(3))
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_static_field_instance_misuse() {
+    // Static fields cannot be reached through an instance, and instance fields
+    // cannot be reached through the type name (reads or writes).
+    let d = check_str(
+        r#"class Counter {
+            static var total: int = 10
+            var local: int = 1
+        }
+
+        fn main() {
+            let c = Counter()
+            println(c.total)
+            c.total = 3
+            println(Counter.local)
+            Counter.local = 4
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains(
+            "static field `total` must be accessed on the type `Counter`, not on an instance"
+        ),
+        "missing instance-to-static read diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains(
+            "static field `total` must be assigned on the type `Counter`, not on an instance"
+        ),
+        "missing instance-to-static write diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("instance field `local` must be accessed on an instance of `Counter`"),
+        "missing type-to-instance read diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("instance field `local` must be assigned on an instance of `Counter`"),
+        "missing type-to-instance write diagnostic, got:\n{msgs}"
+    );
+}
