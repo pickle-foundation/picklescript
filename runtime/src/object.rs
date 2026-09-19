@@ -23,15 +23,16 @@ use std::ffi::c_void;
 pub const PICKLE_CLASS_STRING: u32 = 0;
 pub const PICKLE_CLASS_LIST: u32 = 1;
 pub const PICKLE_CLASS_MAP: u32 = 2;
-/// Boxed scalars: single 8-byte payload objects so `int`/`float`/`bool`
-/// values can live in managed collections and optionals.
+/// Boxed scalars: single 8-byte payload objects so `int`/`float`/`bool`/
+/// `char` values can live in managed collections, fields, and optionals.
 pub const PICKLE_CLASS_BOX_INT: u32 = 3;
 pub const PICKLE_CLASS_BOX_FLOAT: u32 = 4;
 pub const PICKLE_CLASS_BOX_BOOL: u32 = 5;
+pub const PICKLE_CLASS_BOX_CHAR: u32 = 6;
 /// `PEnum { header, tag: i64, fields: [*mut PickleObject] }` — a variant tag
 /// followed by its boxed payload fields (see `layout::ENUM_*`).
-pub const PICKLE_CLASS_ENUM: u32 = 6;
-pub const PICKLE_CLASS_USER_BASE: u32 = 7;
+pub const PICKLE_CLASS_ENUM: u32 = 7;
+pub const PICKLE_CLASS_USER_BASE: u32 = 8;
 
 /// Object flags.
 pub const PICKLE_FLAG_MARKED: u32 = 1 << 0;

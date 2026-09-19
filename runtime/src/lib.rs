@@ -27,10 +27,10 @@ pub(crate) mod strings;
 mod test;
 mod trace;
 
-/// Descriptor for the builtin types; ids 0..6 are reserved and `enum` keeps a
+/// Descriptor for the builtin types; ids 0..=7 are reserved and `enum` keeps a
 /// (non-traced) placeholder so user classes, registered via
 /// `pickle_runtime_register_class_table`/`pickle_class_register`, start at
-/// `PICKLE_CLASS_USER_BASE` (7).
+/// `PICKLE_CLASS_USER_BASE` (8).
 const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     string_desc(),
     list_desc(),
@@ -38,6 +38,7 @@ const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     box_int_desc(),
     box_float_desc(),
     box_bool_desc(),
+    box_char_desc(),
     enum_desc(),
 ];
 
@@ -113,8 +114,20 @@ const fn box_bool_desc() -> object::ClassDescriptor {
     }
 }
 
+const fn box_char_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"char\0".as_ptr(),
+        name_len: 4,
+        flags: 0,
+        slot_count: 0,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: object::builtin_nop_finalizer,
+    }
+}
+
 // The enum layout (tag slot + fields) is traced by a hardcoded path, so this
-// placeholder descriptor only reserves class id 6 for `PEnum`.
+// placeholder descriptor only reserves class id 7 for `PEnum`.
 const fn enum_desc() -> object::ClassDescriptor {
     object::ClassDescriptor {
         name_ptr: b"enum\0".as_ptr(),
@@ -216,9 +229,11 @@ pub mod abi {
     pub use crate::console::pickle_print_u64;
 
     pub use crate::boxscalar::pickle_box_bool;
+    pub use crate::boxscalar::pickle_box_char;
     pub use crate::boxscalar::pickle_box_f64;
     pub use crate::boxscalar::pickle_box_i64;
     pub use crate::boxscalar::pickle_unbox_bool;
+    pub use crate::boxscalar::pickle_unbox_char;
     pub use crate::boxscalar::pickle_unbox_f64;
     pub use crate::boxscalar::pickle_unbox_i64;
 

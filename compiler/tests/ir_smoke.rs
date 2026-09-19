@@ -368,27 +368,18 @@ fn emits_for_in_list_with_get_and_unbox() {
 }
 
 #[test]
-fn rejects_char_lists_in_codegen() {
-    // `char` elements have no boxed representation yet, so generation bails
-    // with a diagnostic rather than miscompiling.
-    let mut map = pickle_compiler::diag::SourceMap::default();
-    let diags = DiagnosticSink::new();
-    let out = frontend(
-        "test.pkl",
+fn emits_char_lists_in_codegen() {
+    // `char` elements box through `pickle_box_char`/`pickle_unbox_char`,
+    // same as the other scalars, so a char list lowers to real IR.
+    let m = emit_str(
         r#"fn main() {
             let cs = ['a', 'b']
+            println(cs[1])
         }"#,
-        &mut map,
-        &diags,
-    )
-    .expect("frontend failed");
-    let res = emit_ir(&out.program, &out.resolved, &diags);
-    assert!(res.is_none(), "char lists must not emit IR");
-    let text = diags.render_all(&map, false);
-    assert!(
-        text.contains("lists of `char` are not lowered yet"),
-        "diags:\n{text}"
     );
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    assert!(externs.contains(&"pickle_box_char"), "externs: {externs:?}");
+    assert!(externs.contains(&"pickle_unbox_char"), "externs: {externs:?}");
 }
 
 #[test]
@@ -864,4 +855,66 @@ fn property_getter_reads_bare_field_and_this() {
         .filter(|s| *s == "pickle_obj_slot_get")
         .collect();
     assert!(reads.len() >= 2, "bare `value` reads dispatch through `this`, dump:\n{get}");
+}
+
+#[test]
+fn emits_char_fields_and_collections_boxed() {
+    // `char` fields, `List<char>`, and `Map<string, char>` values lower
+    // through `pickle_box_char`/`pickle_unbox_char`; the class no longer bails.
+    let m = emit_str(
+        r#"class Tile {
+            var glyph: char = 'x'
+            var tag: char
+        }
+
+        fn main() {
+            let t = Tile('?')
+            t.tag = '!'
+            println(t.glyph)
+            let cs: List<char> = ['a', t.tag]
+            println(cs[1])
+            let by: Map<string, char> = { "k": 'z' }
+            println(by["k"])
+        }"#,
+    );
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_box_char", "pickle_unbox_char"] {
+        assert!(externs.contains(&want), "externs: {externs:?}");
+    }
+    // RHS-first form: `Tile('?')` records `glyph = 'x'` via a field init, and
+    // `tag` becomes the ctor parameter.
+    let new = m.funcs.iter().find(|f| f.name == "Tile.new").expect("Tile.new");
+    let names: Vec<&str> = new.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["tag"], "`glyph` carries an initializer so it is skipped");
+    let tile = m.funcs.iter().find(|f| f.name == "Tile.new").expect("new");
+    let stores: Vec<&str> = tile
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(stores.contains(&"pickle_box_char"), "new must box the char field init, stores: {stores:?}");
+    // The getter path unboxes: `t.glyph` + `cs[1]` + `by["k"]` all want the
+    // char scalar back.
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let unboxes = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_unbox_char")
+        .count();
+    assert!(unboxes >= 3, "field/get/list/map reads unbox chars, dump:\n{main}");
 }

@@ -18,10 +18,11 @@ use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, 
 use crate::ty::Ty;
 
 /// Runtime class ids for user classes start at this id: the runtime reserves
-/// 0..=5 for the builtin boxed types, 6 for `PEnum`, so the first user class
-/// registered at runtime gets id 7. The compiler assigns `7 + index` in
-/// declaration order, matching the runtime's allocation order.
-const PICKLE_CLASS_USER_BASE: i64 = 7;
+/// 0..=6 for the builtin boxed types (string/list/map/int/float/bool/char)
+/// and 7 for `PEnum`, so the first user class registered at runtime gets id
+/// 8. The compiler assigns `8 + index` in declaration order, matching the
+/// runtime's allocation order.
+const PICKLE_CLASS_USER_BASE: i64 = 8;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
 ///
@@ -303,10 +304,6 @@ let bad = |e: &mut Self, what: &str| {
         }
         if table.fields.iter().any(|f| f.is_static) {
             bad(self, "static fields");
-            return;
-        }
-        if table.fields.iter().any(|f| matches!(f.ty, Ty::Char)) {
-            bad(self, "`char` fields");
             return;
         }
         let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
@@ -2072,6 +2069,7 @@ let bad = |e: &mut Self, what: &str| {
             IrTy::Int => IrConst::Int(0),
             IrTy::Float => IrConst::Float(0.0f64.to_bits()),
             IrTy::Bool => IrConst::Bool(false),
+            IrTy::Char => IrConst::Char(0),
             other => return self.bad(span, format!("no zero value for `{other:?}`")),
         };
         self.instr(IrInstr::Const { dst, c });
@@ -2869,7 +2867,7 @@ let bad = |e: &mut Self, what: &str| {
             Ty::Int => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
             Ty::Float => Ok(Scalar("pickle_box_f64", "pickle_unbox_f64", IrTy::Float)),
             Ty::Bool => Ok(Scalar("pickle_box_bool", "pickle_unbox_bool", IrTy::Bool)),
-            Ty::Char => self.bad(span, "lists of `char` are not lowered yet"),
+            Ty::Char => Ok(Scalar("pickle_box_char", "pickle_unbox_char", IrTy::Char)),
             Ty::String
             | Ty::Option(..)
             | Ty::Class(..)

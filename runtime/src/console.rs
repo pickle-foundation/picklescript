@@ -4,8 +4,8 @@
 
 use crate::layout::{enum_tag, list_len, map_len, str_bytes, str_len};
 use crate::object::{
-    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT,
-    PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
+    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
+    PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
 };
 #[cfg(not(test))]
 use std::io::Write;
@@ -142,6 +142,7 @@ fn print_obj_raw(obj: *mut PickleObject) {
         PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),
         PICKLE_CLASS_BOX_FLOAT => pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64)),
         PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 { b"true\0".as_ptr() } else { b"false\0".as_ptr() }),
+        PICKLE_CLASS_BOX_CHAR => pickle_print_byte(crate::boxscalar::box_bits(obj) as u8),
         _ => {
             let gc = crate::gc::gc_mut();
             let name = gc.class_name(class_id);

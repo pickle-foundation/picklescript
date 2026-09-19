@@ -175,7 +175,7 @@ name (for printing) and a field-validity mask. Descriptors are allocated *at
 runtime* rather than baked into the generated binary: `main`'s entry block
 opens with one `pickle_class_register(name_ptr, name_len, slot_count, mask)`
 void call per class, in registration order, so descriptor id == call site id.
-Call sites inside constructors hardcode that id (`7 + emitted index`), so no
+Call sites inside constructors hardcode that id (`8 + emitted index`), so no
 id is threaded through the lowering; `pickle_class_register` returns the id
 but emitters discard it. `StrAddr` lowerings pull the name bytes from the data
 section (`pkl_strdata_N`) — AOT marks those externs as data, JIT lowers them
@@ -221,6 +221,13 @@ Lowering rules:
   `{ ... }` bodies and may reference fields and methods through `this`.
   Compound assignment to a property bails with "compound assignment to a
   property is not lowered yet". Static properties stay deferred.
+- `char` values are boxed/unboxed exactly like the other scalars: the runtime
+  provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
+  elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`
+  pointers and load them back through the scalar list path. `char` is an i32
+  scalar at the IR boundary; only the low byte is meaningful for ASCII, and the
+  printed form (raw or boxed) is that single byte. An absent map key of type
+  `char` reads back the zero value `'\0'`.
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
   which prints the class name plus `Class` fields when available.
 

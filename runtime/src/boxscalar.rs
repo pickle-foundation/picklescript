@@ -11,7 +11,10 @@
 //! `layout.rs`; descriptors are registered at `pickle_runtime_init`.
 
 use crate::layout::{BOX_OBJECT_SIZE, BOX_PAYLOAD_OFF};
-use crate::object::{PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT};
+use crate::object::{
+    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
+    PICKLE_CLASS_BOX_INT,
+};
 
 #[inline]
 unsafe fn payload(obj: *mut PickleObject) -> *mut i64 {
@@ -51,6 +54,14 @@ pub extern "C" fn pickle_box_bool(v: bool) -> *mut PickleObject {
     new_box(PICKLE_CLASS_BOX_BOOL, v as i64)
 }
 
+/// Box a `char` as a managed object. `char` is an i32 scalar at the IR
+/// boundary (see the Compiler's `IrTy::Char`); only the low 8 bits carry the
+/// code point for ASCII, and the printed form is a single byte.
+#[no_mangle]
+pub extern "C" fn pickle_box_char(v: i32) -> *mut PickleObject {
+    new_box(PICKLE_CLASS_BOX_CHAR, v as i64)
+}
+
 /// Unboxing reads the raw 8 payload bits. The null/type checks live in a plain
 /// Rust helper so the value logic can be unit-tested; the `extern "C"` entry
 /// points below delegate here. (An `extern "C"` function cannot unwind, so a
@@ -82,10 +93,19 @@ pub extern "C" fn pickle_unbox_bool(obj: *const PickleObject) -> bool {
     unbox_bits(obj, "bool") != 0
 }
 
+/// Unbox a managed `char` object back to an `i32` scalar.
+#[no_mangle]
+pub extern "C" fn pickle_unbox_char(obj: *const PickleObject) -> i32 {
+    unbox_bits(obj, "char") as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM};
+    use crate::object::{
+        PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT,
+        PICKLE_CLASS_ENUM,
+    };
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {
         crate::gc::test_begin()
@@ -101,6 +121,9 @@ mod tests {
         assert_eq!(pickle_unbox_f64(f), 3.5);
         let b = pickle_box_bool(true);
         assert!(pickle_unbox_bool(b));
+        let c = pickle_box_char(0x41);
+        assert_eq!(pickle_unbox_char(c), 0x41);
+        assert_eq!(crate::boxscalar::box_bits(c), 0x41);
     }
 
     #[test]
@@ -112,6 +135,9 @@ mod tests {
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_INT), Some(&b"int"[..]));
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_FLOAT), Some(&b"float"[..]));
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_BOOL), Some(&b"bool"[..]));
+        assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_CHAR), Some(&b"char"[..]));
+        let c = pickle_box_char(b'x' as i32);
+        assert_eq!(unsafe { (*c).class_id }, PICKLE_CLASS_BOX_CHAR);
         // Class ids must match the descriptor registration order: the enum
         // holds a placeholder descriptor, so the user-class range begins at
         // `PICKLE_CLASS_ENUM + 1` (`PICKLE_CLASS_USER_BASE`).
