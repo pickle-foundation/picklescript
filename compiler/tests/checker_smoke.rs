@@ -439,3 +439,30 @@ fn rejects_non_string_map_index() {
         "expected a `string` key diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn rejects_too_few_constructor_args() {
+    // A missing synthesized-ctor parameter used to reach codegen and turn into
+    // a JIT verifier crash; the checker must flag the arity mismatch instead.
+    let d = check_str(
+        r#"class Pair {
+            var a: int
+            var b: int
+        }
+
+        fn main() {
+            let p = Pair(1)
+            println(p.a)
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a constructor arity error, got:\n{}",
+        error_msgs(&d)
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("2 argument(s), found 1"),
+        "expected the arity diagnostic, got:\n{msgs}"
+    );
+}

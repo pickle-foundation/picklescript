@@ -271,6 +271,7 @@ pub mod abi {
     pub use crate::strings::pickle_str_from_char;
     pub use crate::strings::pickle_str_from_f64;
     pub use crate::strings::pickle_str_from_i64;
+    pub use crate::strings::pickle_str_get;
     pub use crate::strings::pickle_str_len;
 }
 

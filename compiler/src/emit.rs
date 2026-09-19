@@ -1049,6 +1049,10 @@ let bad = |e: &mut Self, what: &str| {
         let Pattern::Binding { name, .. } = pattern else {
             return self.bad(span, "iteration patterns other than a binding are not lowered yet");
         };
+        if let Some(Ty::String) = self.ty_of(&sequence.span) {
+            let seq_t = self.expr(sequence)?;
+            return self.for_in_string(name, seq_t, body);
+        }
         if let Some(Ty::List(inner)) = self.ty_of(&sequence.span) {
             let elem = inner.as_ref().clone();
             let seq_t = self.expr(sequence)?;
@@ -1215,6 +1219,90 @@ let bad = |e: &mut Self, what: &str| {
             ElemRep::Ptr => raw,
         };
         let elem_slot = self.new_slot(elem_ir);
+        self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
+        self.declare(name, elem_slot);
+        self.block_body_only(body)?;
+        self.pop_scope();
+        self.loops.pop();
+        self.term(IrTerm::Branch { target: next_id });
+        self.cur = next_id;
+        let c = self.load(idx_slot);
+        let one = self.temp();
+        self.instr(IrInstr::Const {
+            dst: one,
+            c: IrConst::Int(1),
+        });
+        let nxt = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: nxt,
+            op: IrBinOp::Add,
+            a: c,
+            b: one,
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = end_id;
+        Ok(())
+    }
+
+    /// `for (c in s)` over a string: iterates byte indices, char-binds the raw
+    /// `i32` from `pickle_str_get` (no unbox). The string lives in a managed
+    /// slot for the whole loop.
+    fn for_in_string(
+        &mut self,
+        name: &str,
+        seq_t: Temp,
+        body: &Block,
+    ) -> Result<(), ()> {
+        let seq_slot = self.new_slot(IrTy::Ptr);
+        let idx_slot = self.new_slot(IrTy::Int);
+        let len_slot = self.new_slot(IrTy::Int);
+        self.instr(IrInstr::StoreSlot { slot: seq_slot, v: seq_t });
+        let zero = self.temp();
+        self.instr(IrInstr::Const {
+            dst: zero,
+            c: IrConst::Int(0),
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        let seq_l = self.load(seq_slot);
+        let len_t = self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
+        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+
+        let cond_id = self.new_block();
+        let body_id = self.new_block();
+        let next_id = self.new_block();
+        let end_id = self.new_block();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = cond_id;
+        let cur_t = self.load(idx_slot);
+        let end_l = self.load(len_slot);
+        let cmp = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: cmp,
+            op: IrBinOp::Lt,
+            a: cur_t,
+            b: end_l,
+        });
+        self.term(IrTerm::BranchIf {
+            cond: cmp,
+            then: body_id,
+            else_: end_id,
+        });
+        self.cur = body_id;
+        self.loops.push(LoopCtx {
+            continue_target: next_id,
+            break_target: end_id,
+        });
+        self.push_scope();
+        let cur_i = self.load(idx_slot);
+        let seq_l = self.load(seq_slot);
+        let v = self.extern_call_t1(
+            "pickle_str_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Char,
+            vec![seq_l, cur_i],
+        )?;
+        let elem_slot = self.new_slot(IrTy::Char);
         self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
         self.declare(name, elem_slot);
         self.block_body_only(body)?;
@@ -1836,7 +1924,14 @@ let bad = |e: &mut Self, what: &str| {
         let elem = match ot {
             Some(Ty::List(inner)) => inner.as_ref().clone(),
             Some(Ty::String) => {
-                return self.bad(e.span, "string indexing is not lowered yet")
+                let obj = self.expr(object)?;
+                let idx = self.expr(index)?;
+                return self.extern_call_t1(
+                    "pickle_str_get",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Char,
+                    vec![obj, idx],
+                );
             }
             _ => return self.bad(e.span, "indexing this type is not lowered yet"),
         };

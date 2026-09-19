@@ -918,3 +918,61 @@ fn emits_char_fields_and_collections_boxed() {
         .count();
     assert!(unboxes >= 3, "field/get/list/map reads unbox chars, dump:\n{main}");
 }
+
+#[test]
+fn emits_string_index_and_char_iteration() {
+    // `s[i]` lowers to `pickle_str_get` (raw `char`, no unbox), and
+    // `for (c in s)` iterates through `pickle_str_len` + `pickle_str_get`.
+    let m = emit_str(
+        r#"class Site {
+            var name: string = "pickle"
+            var first: char = 'P'
+        }
+
+        fn main() {
+            let s = "abc"
+            let c = s[1]
+            println(s[0], s[len(s) - 1], c)
+            var marks = 0
+            for (ch in "xyz") {
+                if (ch == 'y') {
+                    marks = marks + 1
+                }
+            }
+            println(marks)
+        }"#,
+    );
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_str_get", "pickle_str_len"] {
+        assert!(externs.contains(&want), "externs: {externs:?}");
+    }
+    let init = m.funcs.iter().find(|f| f.name == "main").expect("init");
+    let get_calls = init
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_str_get")
+        .count();
+    assert!(get_calls >= 4, "three index reads + one loop-body read, dump:\n{init}");
+    let iter = init
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+                m.externs.get(id.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_str_len")
+        .count();
+    assert!(iter >= 1, "the loop bound uses pickle_str_len, dump:\n{init}");
+}

@@ -1355,6 +1355,16 @@ impl<'a> Checker<'a> {
             self.check_assignable(&want, &got, a.span, "argument");
             position += 1;
         }
+        if position < params.len() {
+            self.err(
+                e.span,
+                format!(
+                    "expected {} argument(s), found {}",
+                    params.len(),
+                    position
+                ),
+            );
+        }
     }
 
     /// Variadic-aware argument checking against `ParamInfo`s. Params flagged

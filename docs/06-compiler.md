@@ -228,6 +228,13 @@ Lowering rules:
   scalar at the IR boundary; only the low byte is meaningful for ASCII, and the
   printed form (raw or boxed) is that single byte. An absent map key of type
   `char` reads back the zero value `'\0'`.
+- `s[i]` on a `string` lowers to `pickle_str_get` (a bounds-checked byte read
+  widening to the `char` `i32` ABI; out-of-range panics). `for (c in s)`
+  iterates a string through the same path (`pickle_str_len` bound +
+  `pickle_str_get` per trip), char-binding the raw scalar with no box. The
+  checker rejects too-few-argument constructor calls, so a miscounted
+  synthesized-ctor call reports "expected N argument(s), found M" instead of
+  reaching a codegen crash.
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
   which prints the class name plus `Class` fields when available.
 
