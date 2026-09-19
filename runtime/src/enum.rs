@@ -16,14 +16,24 @@ use crate::object::{PickleObject, PICKLE_CLASS_ENUM};
 pub fn enum_new(tag: i64, field_count: usize, gc: &mut Gc) -> *mut PickleObject {
     let size = enum_object_size(field_count);
     let obj = gc.alloc(size as u32, PICKLE_CLASS_ENUM);
+    enum_init(obj, tag, field_count);
+    obj
+}
+
+/// Write `tag` and zero every payload field of an already-allocated enum.
+pub(crate) fn enum_init(obj: *mut PickleObject, tag: i64, field_count: usize) {
     unsafe {
         enum_set_tag(obj, tag);
         // Zero the payload fields so uninitialised slots are never traced.
+        // `ENUM_FIELDS_OFF` is measured from the object start, and
+        // `size - ENUM_FIELDS_OFF` is exactly the byte length of the field
+        // region (the tag occupies the 8 bytes before it).
         if field_count > 0 {
-            std::ptr::write_bytes((*obj).payload_mut().add(ENUM_FIELDS_OFF), 0, size - ENUM_FIELDS_OFF);
+            let size = enum_object_size(field_count);
+            let fields = (obj as *mut u8).add(ENUM_FIELDS_OFF);
+            std::ptr::write_bytes(fields, 0, size - ENUM_FIELDS_OFF);
         }
     }
-    obj
 }
 
 /// Write a payload field (unchecked bounds; callers pass constant indices into
@@ -111,6 +121,28 @@ mod tests {
             }
             assert!(enum_field(e, 5).is_null(), "out of range reads null");
             assert_eq!((*e).class_id, PICKLE_CLASS_ENUM);
+        }
+    }
+
+    #[test]
+    fn new_zeroes_reused_dirty_memory() {
+        // Regression: the field-zeroing write must start at the object-relative
+        // `ENUM_FIELDS_OFF`, not at `payload + ENUM_FIELDS_OFF` (which is
+        // HEADER bytes too far and leaves the whole field region dirty). We
+        // poison the region first so the check is deterministic regardless of
+        // whether the allocator hands back zeroed pages.
+        let _guard = setup();
+        let gc = crate::gc::gc_mut();
+        unsafe {
+            let size = crate::layout::enum_object_size(3);
+            let e = gc.alloc(size as u32, PICKLE_CLASS_ENUM);
+            let fields = (e as *mut u8).add(ENUM_FIELDS_OFF);
+            std::ptr::write_bytes(fields, 0xAB, size - ENUM_FIELDS_OFF);
+            enum_init(e, 7, 3);
+            assert_eq!(enum_tag_of(e), 7);
+            for i in 0..3 {
+                assert!(enum_field(e, i).is_null(), "field {i} not re-zeroed");
+            }
         }
     }
 

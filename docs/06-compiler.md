@@ -279,6 +279,23 @@ Options lower as a managed pointer with no dedicated allocation:
   member's declared type — a field slot's type or the property table's `ty` —
   drives the re-lift.
 
+Casts lower for the statically-known subset:
+
+- `x as float` / `x as int` emit `itof` / `ftoi` (the latter saturating, so
+  NaN/out-of-range clamps instead of trapping). `char` is not numeric, so
+  `char`/`int` casts are rejected by the checker.
+- Casting to an option — `x as? T`, or `as T?` — always yields `T?` and never
+  panics: a present value is converted (numeric) and boxed, `none` stays
+  `none`. The checker types `as?` as `T?`.
+- `x as T` where `x: T?` asserts presence: it unwraps (panicking on `none`
+  through `pickle_panic_none_unwrap`) then converts.
+- `x is T` is a presence test when `x: T?` and `T` is `x`'s inner type;
+  otherwise it folds statically (`T is T` -> true, `int is float` -> false).
+- Class/interface `is`/`as` across an inheritance edge bails ("not lowered
+  yet"): `extends`/`implements` are not lowered, so there is no runtime
+  hierarchy to test against yet. The checker accepts such casts; only codegen
+  rejects them.
+
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.
 

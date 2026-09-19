@@ -1228,3 +1228,29 @@ fn emits_optional_access_with_null_test() {
         .count();
     assert!(nulls >= 1, "`?.` none branch stores null, dump:\n{main}");
 }
+
+#[test]
+fn emits_numeric_and_option_casts() {
+    // `as` lowers int<->float via itof/ftoi; `as?` yields an option and
+    // null-tests the source; `is` on an option is a presence test.
+    let m = emit_str(
+        r#"fn main() {
+            let i = 7
+            let f = i as float
+            let g = 3.9 as int
+            println(f, g)
+            let x: int? = 5
+            println(x is int)
+            let y = x as? float
+            println(y ?? 0.0)
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(dump.contains("itof"), "int->float uses itof, dump:\n{dump}");
+    assert!(dump.contains("ftoi"), "float->int uses ftoi, dump:\n{dump}");
+    assert!(dump.contains("binop.ne"), "option `is` null-tests, dump:\n{dump}");
+    let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    for want in ["pickle_box_f64", "pickle_unbox_f64"] {
+        assert!(externs.contains(&want), "`as? float` boxes/unboxes floats: {externs:?}");
+    }
+}

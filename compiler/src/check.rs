@@ -1055,7 +1055,7 @@ impl<'a> Checker<'a> {
                 let _ = type_args;
                 self.generic_fn_ty(e, name)
             }
-            ExprKind::Cast { expr, ty, kind } => self.check_cast(e, expr, ty, kind.clone()),
+            ExprKind::Cast { expr, ty, kind } => self.check_cast(e, expr, ty, *kind),
             ExprKind::Unsafe(b) => self.check_block(b),
             ExprKind::Block(b) => self.check_block(b),
             ExprKind::Tuple(items) => {
@@ -1988,7 +1988,11 @@ impl<'a> Checker<'a> {
                         "cast target must be assignable from, or an ancestor/descendant of, the source",
                     );
                 }
-                target
+                if kind == CastKind::TryAs {
+                    target.opt_of()
+                } else {
+                    target
+                }
             }
         }
     }

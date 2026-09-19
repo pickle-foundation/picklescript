@@ -300,6 +300,23 @@ fn accepts_is_as_casts() {
 }
 
 #[test]
+fn as_question_yields_option() {
+    // `as?` produces an option, so its result assigns to `T?`; plain `as` and
+    // numeric conversions assign to the target/number type.
+    let d = check_str(
+        r#"fn main() {
+            let x: int = 5
+            let y: int? = x as? int
+            let z: int = 3.9 as int
+            let f: float = x as float
+            let b: bool = x is int
+            print(y, z, f, b)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn rejects_invalid_is_cast() {
     let d = check_str(
         r#"fn main() {

@@ -282,7 +282,7 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
     As,
     TryAs,

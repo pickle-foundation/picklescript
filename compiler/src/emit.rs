@@ -1440,7 +1440,7 @@ let bad = |e: &mut Self, what: &str| {
             } => self.match_expr(e, scrutinee, arms),
             ExprKind::Await(_) => self.bad(e.span, "`await` is not lowered yet"),
             ExprKind::GenericCall { .. } => self.bad(e.span, "generic calls are not lowered yet"),
-            ExprKind::Cast { .. } => self.bad(e.span, "casts are not lowered yet"),
+            ExprKind::Cast { expr, ty, kind } => self.cast(e, expr, ty, *kind),
             ExprKind::Unsafe(_) => self.bad(e.span, "`unsafe` blocks are not lowered yet"),
             ExprKind::Tuple(_) => self.bad(e.span, "tuple values are not lowered yet"),
             ExprKind::Array(items) => self.array_literal(e, items),
@@ -1807,14 +1807,20 @@ let bad = |e: &mut Self, what: &str| {
         Ok(self.load(res_slot))
     }
 
-    /// `a!`: unwrap `a` to its inner value, panicking at runtime on `none`.
+    /// `a?`: unwrap `a` to its inner value, panicking at runtime on `none`.
     fn opt_unwrap(&mut self, e: &Expr, operand: &Expr) -> Result<Temp, ()> {
         let Some(inner) = self.ty_of(&operand.span).and_then(|t| t.inner_option()) else {
-            return self.bad(e.span, "`!` operand is not an option");
+            return self.bad(e.span, "`?` operand is not an option");
         };
-        let res_ir = self.map_ty(&inner, e.span)?;
-        let res_slot = self.new_slot(res_ir);
         let p = self.expr(operand)?;
+        self.opt_unwrap_val(e.span, p, &inner)
+    }
+
+    /// Unwrap an already-evaluated option pointer `p` (type `inner?`) to its
+    /// inner value, panicking at runtime on `none`.
+    fn opt_unwrap_val(&mut self, span: Span, p: Temp, inner: &Ty) -> Result<Temp, ()> {
+        let res_ir = self.map_ty(inner, span)?;
+        let res_slot = self.new_slot(res_ir);
         let present = self.opt_is_present(p)?;
         let some_id = self.new_block();
         let none_id = self.new_block();
@@ -1828,7 +1834,7 @@ let bad = |e: &mut Self, what: &str| {
         self.extern_call_void("pickle_panic_none_unwrap", vec![], vec![]);
         self.term(IrTerm::Branch { target: join });
         self.cur = some_id;
-        let v = self.opt_resolve(p, &inner, e.span)?;
+        let v = self.opt_resolve(p, inner, span)?;
         self.instr(IrInstr::StoreSlot { slot: res_slot, v });
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
@@ -1913,6 +1919,148 @@ let bad = |e: &mut Self, what: &str| {
                 .unwrap_or(Ty::Unknown),
             _ => Ty::Unknown,
         }
+    }
+
+    // ---- casts -----------------------------------------------------------
+
+    /// `x is T` / `x as T` / `x as? T`. The result stays in the typed IR value
+    /// domain: `is` -> bool, `as` -> `T`, `as?` -> `T?` (a pointer).
+    fn cast(&mut self, e: &Expr, operand: &Expr, ty: &TypeExpr, kind: CastKind) -> Result<Temp, ()> {
+        let src = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
+        let dst = self.resolved.resolve_ty(ty, &[], self.diags);
+        match kind {
+            CastKind::Is => self.cast_is(e, operand, &src, &dst),
+            CastKind::As => self.cast_as(e, operand, &src, &dst),
+            CastKind::TryAs => {
+                // `x as? T` always yields an option, never panics.
+                let v = self.expr(operand)?;
+                let inner = dst.inner_option().unwrap_or_else(|| dst.clone());
+                self.cast_to_option(e.span, v, &src, &inner)
+            }
+        }
+    }
+
+    fn cast_is(&mut self, e: &Expr, operand: &Expr, src: &Ty, dst: &Ty) -> Result<Temp, ()> {
+        // A cast strips at most one option layer on each side; the underlying
+        // (non-option) types decide whether the test can succeed, because in
+        // this statically-typed subset the runtime type of a value is known
+        // from its static type.
+        let src_opt = src.inner_option();
+        let dst_opt = dst.inner_option();
+        let base_src = src_opt.clone().unwrap_or_else(|| src.clone());
+        let base_dst = dst_opt.clone().unwrap_or_else(|| dst.clone());
+        let v = self.expr(operand)?;
+        if base_src == base_dst {
+            if src_opt.is_some() && dst_opt.is_none() {
+                // `x: T?` is `T` -> "is it present?".
+                return self.opt_is_present(v);
+            }
+            // `T is T`, `T is T?`, `T? is T?` -> always true.
+            return Ok(self.bool_const(true));
+        }
+        if base_src.is_numeric() && base_dst.is_numeric() {
+            // `int is float` etc. is a static mismatch; `v` was evaluated above.
+            return Ok(self.bool_const(false));
+        }
+        self.bad(
+            e.span,
+            format!("`{src} is {dst}` is not lowered yet (class/interface tests need inheritance)"),
+        )
+    }
+
+    fn cast_as(&mut self, e: &Expr, operand: &Expr, src: &Ty, dst: &Ty) -> Result<Temp, ()> {
+        let v = self.expr(operand)?;
+        if let Some(inner) = dst.inner_option() {
+            // Casting to an option type never panics: `none` stays `none`.
+            return self.cast_to_option(e.span, v, src, &inner);
+        }
+        if let Some(si) = src.inner_option() {
+            // `x: T?` as `U` asserts presence: unwrap (panics on none) then
+            // convert the inner value.
+            let ival = self.opt_unwrap_val(e.span, v, &si)?;
+            return self.convert(e.span, ival, &si, dst);
+        }
+        self.convert(e.span, v, src, dst)
+    }
+
+    /// Produce the option `inner?` from an already-evaluated value `v` of type
+    /// `src`. A managed source passes through; scalars are boxed. When `src` is
+    /// itself an option, `none` is preserved and the present value is converted.
+    fn cast_to_option(
+        &mut self,
+        span: Span,
+        v: Temp,
+        src: &Ty,
+        inner: &Ty,
+    ) -> Result<Temp, ()> {
+        if let Some(si) = src.inner_option() {
+            if &si == inner {
+                // Already the requested option; `none` is preserved.
+                return Ok(v);
+            }
+            if !(si.is_numeric() && inner.is_numeric()) {
+                return self.bad(
+                    span,
+                    format!("`{src} as? {inner}` is not lowered yet"),
+                );
+            }
+            // Present -> convert the inner; absent -> none.
+            let res_slot = self.new_slot(IrTy::Ptr);
+            let present = self.opt_is_present(v)?;
+            let some_id = self.new_block();
+            let none_id = self.new_block();
+            let join = self.new_block();
+            self.term(IrTerm::BranchIf {
+                cond: present,
+                then: some_id,
+                else_: none_id,
+            });
+            self.cur = none_id;
+            let n = self.null_temp()?;
+            self.instr(IrInstr::StoreSlot { slot: res_slot, v: n });
+            self.term(IrTerm::Branch { target: join });
+            self.cur = some_id;
+            let iv = self.opt_resolve(v, &si, span)?;
+            let cv = self.convert(span, iv, &si, inner)?;
+            let wrapped = self.option_wrap(cv, inner, span)?;
+            self.instr(IrInstr::StoreSlot { slot: res_slot, v: wrapped });
+            self.term(IrTerm::Branch { target: join });
+            self.cur = join;
+            return Ok(self.load(res_slot));
+        }
+        let cv = self.convert(span, v, src, inner)?;
+        self.option_wrap(cv, inner, span)
+    }
+
+    /// Convert a non-option value between related (non-option) types. Identity
+    /// and numeric conversions are supported; anything else bails.
+    fn convert(&mut self, span: Span, v: Temp, from: &Ty, to: &Ty) -> Result<Temp, ()> {
+        if from == to {
+            return Ok(v);
+        }
+        if from.is_numeric() && to.is_numeric() {
+            let dst = self.temp();
+            let instr = match (from, to) {
+                (Ty::Int, Ty::Float) => IrInstr::Itof { dst, v },
+                (Ty::Float, Ty::Int) => IrInstr::Ftoi { dst, v },
+                _ => return self.bad(span, format!("cannot cast `{from}` to `{to}`")),
+            };
+            self.instr(instr);
+            return Ok(dst);
+        }
+        self.bad(
+            span,
+            format!("`{from} as {to}` is not lowered yet (class/interface casts need inheritance)"),
+        )
+    }
+
+    fn bool_const(&mut self, b: bool) -> Temp {
+        let dst = self.temp();
+        self.instr(IrInstr::Const {
+            dst,
+            c: IrConst::Bool(b),
+        });
+        dst
     }
 
     fn assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Result<Temp, ()> {

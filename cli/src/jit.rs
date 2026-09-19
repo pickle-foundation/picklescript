@@ -275,6 +275,9 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                 IrInstr::Itof { dst, .. } => {
                     tt.insert(dst.0, IrTy::Float);
                 }
+                IrInstr::Ftoi { dst, .. } => {
+                    tt.insert(dst.0, IrTy::Int);
+                }
                 IrInstr::LoadSlot { dst, slot } => {
                     let t = func
                         .slots
@@ -725,6 +728,11 @@ fn lower_instr(
         IrInstr::Itof { dst, v } => {
             let x = *values.get(&v.0).context("itof operand")?;
             let vv = builder.ins().fcvt_from_sint(types::F64, x);
+            values.insert(dst.0, vv);
+        }
+        IrInstr::Ftoi { dst, v } => {
+            let x = *values.get(&v.0).context("ftoi operand")?;
+            let vv = builder.ins().fcvt_to_sint_sat(types::I64, x);
             values.insert(dst.0, vv);
         }
         IrInstr::LoadSlot { dst, slot } => {
