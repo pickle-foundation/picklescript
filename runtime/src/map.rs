@@ -236,9 +236,9 @@ mod tests {
             expected.push(v);
             map_set(m, k, v);
         }
-        for i in 0..500usize {
+        for (i, v) in expected.iter().enumerate() {
             let k = crate::strings::int64_to_string(i as i64);
-            assert_eq!(map_get(m, k), expected[i], "key {i}");
+            assert_eq!(map_get(m, k), *v, "key {i}");
         }
         assert_eq!(map_len_of(m), 500);
     }

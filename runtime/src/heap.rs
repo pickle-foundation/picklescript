@@ -319,7 +319,7 @@ mod tests {
     fn alloc_and_payload() {
         let mut heap = Heap::new();
         let o = heap.alloc_object(48);
-        assert!(o as usize % 8 == 0);
+        assert!((o as usize).is_multiple_of(8));
         unsafe {
             (*o).init(7, 48);
             assert_eq!((*o).class_id, 7);
@@ -332,7 +332,7 @@ mod tests {
     fn raw_alloc_roundtrip() {
         let mut heap = Heap::new();
         let p = heap.raw_alloc(100);
-        assert!(p as usize % 8 == 0);
+        assert!((p as usize).is_multiple_of(8));
         unsafe {
             for i in 0..100 {
                 *p.add(i) = (i % 251) as u8;

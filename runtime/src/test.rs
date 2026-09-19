@@ -125,9 +125,21 @@ mod tests {
         tests.to_vec()
     }
 
+    fn capture_start() {
+        crate::console::testio::HAS_CAPTURE.with(|c| c.set(true));
+        crate::console::testio::CAPTURE.with(|b| b.borrow_mut().clear());
+    }
+
+    fn capture_stop() -> String {
+        let out = crate::console::testio::CAPTURE.with(|b| b.borrow().clone());
+        crate::console::testio::HAS_CAPTURE.with(|c| c.set(false));
+        String::from_utf8(out).unwrap()
+    }
+
     #[test]
     fn all_pass_returns_zero() {
-        crate::gc::test_begin();
+        let _guard = crate::gc::test_begin();
+        capture_start();
         let table = [
             PickleTest {
                 name: b"pass_a\0".as_ptr(),
@@ -143,12 +155,17 @@ mod tests {
         let regs = reg(&table);
         assert_eq!(regs.len(), 2);
         assert_eq!(pickle_runtime_run_tests(), 0);
+        assert_eq!(
+            capture_stop(),
+            "test pass_a ... ok\ntest pass_b ... ok\ntest result: 2 passed; 0 failed\n"
+        );
         TESTS.lock().unwrap().clear();
     }
 
     #[test]
     fn failing_body_returns_nonzero_and_reports() {
-        crate::gc::test_begin();
+        let _guard = crate::gc::test_begin();
+        capture_start();
         let table = [
             PickleTest {
                 name: b"ok\0".as_ptr(),
@@ -163,6 +180,10 @@ mod tests {
         ];
         reg(&table);
         assert_eq!(pickle_runtime_run_tests(), 1);
+        assert_eq!(
+            capture_stop(),
+            "test ok ... ok\ntest bad ... FAILED\ntest result: 1 passed; 1 failed\n"
+        );
         TESTS.lock().unwrap().clear();
     }
 }

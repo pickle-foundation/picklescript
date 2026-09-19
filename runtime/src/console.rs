@@ -8,7 +8,7 @@ use crate::object::{PickleObject, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CL
 use std::io::Write;
 
 #[cfg(test)]
-mod testio {
+pub(crate) mod testio {
     use std::cell::{Cell, RefCell};
 
     thread_local! {
@@ -21,19 +21,19 @@ mod testio {
 /// Errors are ignored on purpose: a closed stdout should not unwind GC paths.
 pub(crate) fn write_to_con(bytes: &[u8]) {
     #[cfg(test)]
-    {
-        if testio::HAS_CAPTURE.with(|c| c.get()) {
-            testio::CAPTURE.with(|buf| buf.borrow_mut().extend_from_slice(bytes));
-            return;
-        }
+    if testio::HAS_CAPTURE.with(|c| c.get()) {
+        testio::CAPTURE.with(|buf| buf.borrow_mut().extend_from_slice(bytes));
+        return;
     }
-    #[cfg(not(test))]
-    {
-        let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        let _ = lock.write_all(bytes);
-        let _ = lock.flush();
-    }
+    write_stdout(bytes);
+}
+
+fn write_stdout(bytes: &[u8]) {
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    let _ = lock.write_all(bytes);
+    let _ = lock.flush();
 }
 
 /// Print raw bytes (from a string literal or the contents of a string).

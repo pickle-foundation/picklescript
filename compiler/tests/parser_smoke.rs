@@ -118,14 +118,11 @@ fn parses_generics_and_interfaces() {
     );
     let items = &p.items;
     assert!(matches!(items[0].kind, ItemKind::Interface(_)));
-    match &items[0].kind {
-        ItemKind::Interface(i) => {
-            assert_eq!(i.generics.len(), 1);
-            use pickle_compiler::ast::InterfaceMember;
-            assert!(matches!(i.members[0], InterfaceMember::Method(_)));
-            assert!(matches!(i.members[1], InterfaceMember::Property { .. }));
-        }
-        _ => {}
+    if let ItemKind::Interface(i) = &items[0].kind {
+        assert_eq!(i.generics.len(), 1);
+        use pickle_compiler::ast::InterfaceMember;
+        assert!(matches!(i.members[0], InterfaceMember::Method(_)));
+        assert!(matches!(i.members[1], InterfaceMember::Property { .. }));
     }
     assert!(matches!(items[1].kind, ItemKind::Class(_)));
 }
@@ -230,13 +227,10 @@ fn parses_generics_fn_and_lambda() {
         }"#,
     );
     assert_eq!(p.items.len(), 2);
-    match &p.items[0].kind {
-        ItemKind::Fn(f) => {
-            assert_eq!(f.generics.len(), 2);
-            assert!(matches!(&f.params[0].ty, Some(t) if t.span.end > 0));
-            assert!(f.return_ty.is_some());
-        }
-        _ => {}
+    if let ItemKind::Fn(f) = &p.items[0].kind {
+        assert_eq!(f.generics.len(), 2);
+        assert!(matches!(&f.params[0].ty, Some(t) if t.span.end > 0));
+        assert!(f.return_ty.is_some());
     }
 }
 

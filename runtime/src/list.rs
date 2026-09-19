@@ -125,8 +125,8 @@ mod tests {
             list_push(l, s);
         }
         assert_eq!(list_len_of(l), 100);
-        for i in 0..100usize {
-            assert_eq!(list_get(l, i) as usize, ids[i]);
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(list_get(l, i) as usize, *id);
         }
         assert!(list_get(l, 100).is_null());
         list_pop(l);
