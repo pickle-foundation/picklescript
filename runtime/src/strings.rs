@@ -164,6 +164,40 @@ pub extern "C" fn pickle_str_cmp(
     string_cmp(a, b) as i64
 }
 
+/// Format an `i64` as a string (string-interpolation helper).
+#[no_mangle]
+pub extern "C" fn pickle_str_from_i64(v: i64) -> *mut PickleObject {
+    int64_to_string(v)
+}
+
+/// Format an `f64` as a string (string-interpolation helper).
+#[no_mangle]
+pub extern "C" fn pickle_str_from_f64(v: f64) -> *mut PickleObject {
+    float64_to_string(v)
+}
+
+/// Format a `bool` as a string (string-interpolation helper).
+#[no_mangle]
+pub extern "C" fn pickle_str_from_bool(v: bool) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    if v {
+        string_from_bytes(b"true".as_ptr(), 4, gc)
+    } else {
+        string_from_bytes(b"false".as_ptr(), 5, gc)
+    }
+}
+
+/// Format a `char` (as a UCS-4 code point) as a string (string-interpolation
+/// helper). Non-ASCII code points are lowered as UTF-8.
+#[no_mangle]
+pub extern "C" fn pickle_str_from_char(v: u32) -> *mut PickleObject {
+    let mut buf = [0u8; 4];
+    let s = char::from_u32(v).unwrap_or('\u{FFFD}');
+    let bytes = s.encode_utf8(&mut buf);
+    let gc = crate::gc::gc_mut();
+    string_from_bytes(bytes.as_ptr(), bytes.len(), gc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

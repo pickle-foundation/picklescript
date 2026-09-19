@@ -951,6 +951,7 @@ impl<'a> Checker<'a> {
 
     fn check_expr_impl(&mut self, e: &Expr) -> Ty {
         match &e.kind {
+            ExprKind::Lit(Lit::String(parts)) => self.string_ty(parts),
             ExprKind::Lit(l) => self.lit_ty(l),
             ExprKind::Ident(name) => self.ident_ty(e, name),
             ExprKind::This => self
@@ -1040,6 +1041,18 @@ impl<'a> Checker<'a> {
             Lit::Bool(_) => Ty::Bool,
             Lit::None => Ty::None,
         }
+    }
+
+    /// Type an interpolated string: check every embedded expression (so the
+    /// codegen side table has its type and unresolved names are reported), and
+    /// the literal itself is a `string`.
+    fn string_ty(&mut self, parts: &[StrPart]) -> Ty {
+        for part in parts {
+            if let StrPart::Expr(e) = part {
+                let _ = self.check_expr(e);
+            }
+        }
+        Ty::String
     }
 
     fn ident_ty(&mut self, e: &Expr, name: &str) -> Ty {

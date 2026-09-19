@@ -1,5 +1,5 @@
 use crate::diag::{Diagnostic, DiagnosticSink, FileId, Span};
-use crate::token::{LexedToken, StrLit, StrSeg, Tok, Token};
+use crate::token::{LexedToken, StrLit, StrSeg, Tok};
 
 pub fn lex(file: FileId, src: &str, diags: &DiagnosticSink) -> Vec<LexedToken> {
     Lexer::new(file, src, diags).run()
@@ -616,7 +616,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Tokenize an interpolated expression `{ ... }` up to the matching `}`.
-    fn lex_interpolated_tokens(&mut self, start: usize) -> Vec<Token> {
+    fn lex_interpolated_tokens(&mut self, start: usize) -> Vec<LexedToken> {
         let mut out = Vec::new();
         let mut brace_depth = 1usize;
         let saved_nesting = self.nesting;
@@ -660,12 +660,12 @@ impl<'a> Lexer<'a> {
             }
         }
         self.nesting = saved_nesting;
-        out.push(Token::new(Tok::Eof, self.span(self.pos, self.pos)));
+        out.push(LexedToken::new(Tok::Eof, self.span(self.pos, self.pos)));
         out
     }
 
     /// Single-token scanner used for interpolation regions (no newlines/braces).
-    fn lex_one_template_token(&mut self) -> Token {
+    fn lex_one_template_token(&mut self) -> LexedToken {
         let start = self.pos;
         let c = self.bump();
         if c.is_ascii_alphabetic() || c == '_' {
@@ -677,25 +677,22 @@ impl<'a> Lexer<'a> {
             let span = self.span(start, self.pos);
             if let Ok(s) = std::str::from_utf8(ident.as_bytes()) {
                 if let Some((_, kw)) = Tok::keyword().iter().find(|(k, _)| *k == s) {
-                    return Token::new(kw.clone(), span);
+                    return LexedToken::new(kw.clone(), span);
                 }
             }
-            return Token::new(Tok::Ident(ident), span);
+            return LexedToken::new(Tok::Ident(ident), span);
         }
         if c.is_ascii_digit() {
             self.pos -= 1;
-            let t = self.lex_number();
-            return Token::new(t.token.kind, t.token.span);
+            return self.lex_number();
         }
         if c == '"' {
             self.pos -= 1;
-            let t = self.lex_string();
-            return Token::new(t.token.kind, t.token.span);
+            return self.lex_string();
         }
         if c == '\'' {
             self.pos -= 1;
-            let t = self.lex_char();
-            return Token::new(t.token.kind, t.token.span);
+            return self.lex_char();
         }
         let span = self.span(start, start + 1);
         let kind = match c {
@@ -707,32 +704,32 @@ impl<'a> Lexer<'a> {
             '.' => {
                 if self.at() == '.' {
                     self.bump();
-                    return Token::new(Tok::Range, self.span(start, self.pos));
+                    return LexedToken::new(Tok::Range, self.span(start, self.pos));
                 }
                 Tok::Dot
             }
             ':' => {
                 if self.at() == ':' {
                     self.bump();
-                    return Token::new(Tok::ColonColon, self.span(start, self.pos));
+                    return LexedToken::new(Tok::ColonColon, self.span(start, self.pos));
                 }
                 Tok::Colon
             }
             '=' => {
                 if self.at() == '=' {
                     self.bump();
-                    return Token::new(Tok::EqEq, self.span(start, self.pos));
+                    return LexedToken::new(Tok::EqEq, self.span(start, self.pos));
                 }
                 if self.at() == '>' {
                     self.bump();
-                    return Token::new(Tok::FatArrow, self.span(start, self.pos));
+                    return LexedToken::new(Tok::FatArrow, self.span(start, self.pos));
                 }
                 Tok::Assign
             }
             '-' => {
                 if self.at() == '>' {
                     self.bump();
-                    return Token::new(Tok::Arrow, self.span(start, self.pos));
+                    return LexedToken::new(Tok::Arrow, self.span(start, self.pos));
                 }
                 Tok::Minus
             }
@@ -740,7 +737,7 @@ impl<'a> Lexer<'a> {
             '*' => {
                 if self.at() == '*' {
                     self.bump();
-                    return Token::new(Tok::StarStar, self.span(start, self.pos));
+                    return LexedToken::new(Tok::StarStar, self.span(start, self.pos));
                 }
                 Tok::Star
             }
@@ -749,21 +746,21 @@ impl<'a> Lexer<'a> {
             '!' => {
                 if self.at() == '=' {
                     self.bump();
-                    return Token::new(Tok::NotEq, self.span(start, self.pos));
+                    return LexedToken::new(Tok::NotEq, self.span(start, self.pos));
                 }
                 Tok::Bang
             }
             '&' => {
                 if self.at() == '&' {
                     self.bump();
-                    return Token::new(Tok::AndAnd, self.span(start, self.pos));
+                    return LexedToken::new(Tok::AndAnd, self.span(start, self.pos));
                 }
                 Tok::Amp
             }
             '|' => {
                 if self.at() == '|' {
                     self.bump();
-                    return Token::new(Tok::OrOr, self.span(start, self.pos));
+                    return LexedToken::new(Tok::OrOr, self.span(start, self.pos));
                 }
                 Tok::Pipe
             }
@@ -771,29 +768,29 @@ impl<'a> Lexer<'a> {
             '?' => {
                 if self.at() == '?' {
                     self.bump();
-                    return Token::new(Tok::QuestionQuestion, self.span(start, self.pos));
+                    return LexedToken::new(Tok::QuestionQuestion, self.span(start, self.pos));
                 }
                 if self.at() == '.' {
                     self.bump();
-                    return Token::new(Tok::QuestionDot, self.span(start, self.pos));
+                    return LexedToken::new(Tok::QuestionDot, self.span(start, self.pos));
                 }
                 Tok::Question
             }
             '<' => {
                 if self.at() == '=' {
                     self.bump();
-                    return Token::new(Tok::Le, self.span(start, self.pos));
+                    return LexedToken::new(Tok::Le, self.span(start, self.pos));
                 }
                 if self.at() == '-' {
                     self.bump();
-                    return Token::new(Tok::SendOp, self.span(start, self.pos));
+                    return LexedToken::new(Tok::SendOp, self.span(start, self.pos));
                 }
                 Tok::Lt
             }
             '>' => {
                 if self.at() == '=' {
                     self.bump();
-                    return Token::new(Tok::Ge, self.span(start, self.pos));
+                    return LexedToken::new(Tok::Ge, self.span(start, self.pos));
                 }
                 Tok::Gt
             }
@@ -804,6 +801,6 @@ impl<'a> Lexer<'a> {
                 Tok::Eof
             }
         };
-        Token::new(kind, span)
+        LexedToken::new(kind, span)
     }
 }

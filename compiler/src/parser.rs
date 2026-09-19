@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
-use crate::token::{LexedToken, Tok};
+use crate::token::{LexedToken, StrLit, StrSeg, Tok};
 
 type PResult<T> = Result<T, ()>;
 
@@ -1101,7 +1101,7 @@ impl<'a> Parser<'a> {
             Tok::Str(_) => {
                 let t = self.advance();
                 match t.token.kind {
-                    Tok::Str(lit) => Ok(Pattern::Literal(Lit::String(lit))),
+                    Tok::Str(lit) => Ok(Pattern::Literal(Lit::String(self.string_parts(lit)?))),
                     _ => unreachable!(),
                 }
             }
@@ -1209,6 +1209,23 @@ impl<'a> Parser<'a> {
     }
 
     // ---------- expressions ----------
+
+    /// Convert a lexed string literal into parsed parts, re-parsing each
+    /// interpolation segment with a nested parser bound to this source's
+    /// diagnostics.
+    fn string_parts(&mut self, lit: StrLit) -> PResult<Vec<StrPart>> {
+        let mut parts = Vec::new();
+        for seg in lit.segments {
+            match seg {
+                StrSeg::Text { text } => parts.push(StrPart::Text(text)),
+                StrSeg::Expr { tokens } => {
+                    let mut sub = Parser::new(tokens, self.diags);
+                    parts.push(StrPart::Expr(sub.parse_expr()?));
+                }
+            }
+        }
+        Ok(parts)
+    }
 
     fn parse_expr(&mut self) -> PResult<Expr> {
         let lhs = self.parse_binary(0)?;
@@ -1461,7 +1478,7 @@ impl<'a> Parser<'a> {
                 match t.token.kind {
                     Tok::Str(lit) => Ok(Expr {
                         span: t.token.span,
-                        kind: ExprKind::Lit(Lit::String(lit)),
+                        kind: ExprKind::Lit(Lit::String(self.string_parts(lit)?)),
                     }),
                     _ => unreachable!(),
                 }

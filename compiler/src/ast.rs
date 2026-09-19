@@ -1,5 +1,4 @@
 use crate::diag::Span;
-use crate::token::StrLit;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -302,10 +301,18 @@ pub struct CallArg {
 pub enum Lit {
     Int { value: i128 },
     Float { value: f64 },
-    String(StrLit),
-    Char(char),
     Bool(bool),
+    Char(char),
+    String(Vec<StrPart>),
     None,
+}
+
+/// One piece of a string literal: plain text, or an interpolated expression
+/// (already parsed and typed by the checker).
+#[derive(Debug, Clone)]
+pub enum StrPart {
+    Text(String),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

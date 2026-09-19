@@ -157,7 +157,11 @@ pub mod abi {
 
     pub use crate::strings::pickle_str_cmp;
     pub use crate::strings::pickle_str_concat;
+    pub use crate::strings::pickle_str_from_bool;
     pub use crate::strings::pickle_str_from_bytes;
+    pub use crate::strings::pickle_str_from_char;
+    pub use crate::strings::pickle_str_from_f64;
+    pub use crate::strings::pickle_str_from_i64;
     pub use crate::strings::pickle_str_len;
 }
 

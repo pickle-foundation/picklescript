@@ -15,7 +15,6 @@ use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
 use crate::resolve::{CallableInfo, ResolvedProgram};
-use crate::token::StrSeg;
 use crate::ty::Ty;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
@@ -597,21 +596,8 @@ impl<'a> Emitter<'a> {
             Lit::Float { value } => IrConst::Float(value.to_bits()),
             Lit::Bool(v) => IrConst::Bool(*v),
             Lit::Char(c) => IrConst::Char(*c as u32),
-            Lit::String(st) => {
-                let mut s = String::new();
-                for seg in &st.segments {
-                    match seg {
-                        StrSeg::Text { text } => s.push_str(text),
-                        StrSeg::Expr { .. } => {
-                            return self.bad(
-                                self.fname_span_fallback(),
-                                "string interpolation is not lowered yet",
-                            )
-                        }
-                    }
-                }
-                let sid = StrId(self.intern_string(&s));
-                IrConst::Str(sid)
+            Lit::String(parts) => {
+                return self.string_literal(parts);
             }
             Lit::None => {
                 return self.bad(
@@ -628,6 +614,76 @@ impl<'a> Emitter<'a> {
         // Literal range errors shouldn't happen for checked i128 ints that
         // overflow i64; give a zero span if the expr span is unavailable.
         Span::new(crate::diag::FileId(0), 0, 0)
+    }
+
+    /// Lower a string literal. Plain text becomes a `Const` string temp; an
+    /// interpolated expression is emitted, stringified via a `pickle_str_from_*`
+    /// helper when needed, and the parts are concatenated with
+    /// `pickle_str_concat`.
+    fn string_literal(&mut self, parts: &[StrPart]) -> Result<Temp, ()> {
+        let mut acc: Option<Temp> = None;
+        for part in parts {
+            let v = match part {
+                StrPart::Text(text) => {
+                    let sid = StrId(self.intern_string(text));
+                    let t = self.temp();
+                    self.instr(IrInstr::Const {
+                        dst: t,
+                        c: IrConst::Str(sid),
+                    });
+                    t
+                }
+                StrPart::Expr(e) => {
+                    let t = self.expr(e)?;
+                    match self.irty(e.span)? {
+                        IrTy::Str => t,
+                        IrTy::Int => self.extern_call_t1(
+                            "pickle_str_from_i64",
+                            vec![IrTy::Int],
+                            IrTy::Str,
+                            vec![t],
+                        )?,
+                        IrTy::Float => self.extern_call_t1(
+                            "pickle_str_from_f64",
+                            vec![IrTy::Float],
+                            IrTy::Str,
+                            vec![t],
+                        )?,
+                        IrTy::Bool => self.extern_call_t1(
+                            "pickle_str_from_bool",
+                            vec![IrTy::Bool],
+                            IrTy::Str,
+                            vec![t],
+                        )?,
+                        IrTy::Char => self.extern_call_t1(
+                            "pickle_str_from_char",
+                            vec![IrTy::Char],
+                            IrTy::Str,
+                            vec![t],
+                        )?,
+                        other => {
+                            return self.bad(
+                                e.span,
+                                format!("interpolation of `{other:?}` is not lowered yet"),
+                            )
+                        }
+                    }
+                }
+            };
+            acc = Some(match acc {
+                None => v,
+                Some(a) => self.extern_call_t1(
+                    "pickle_str_concat",
+                    vec![IrTy::Str, IrTy::Str],
+                    IrTy::Str,
+                    vec![a, v],
+                )?,
+            });
+        }
+        match acc {
+            Some(t) => Ok(t),
+            None => self.bad(Span::new(crate::diag::FileId(0), 0, 0), "empty string literal"),
+        }
     }
 
     fn ident_expr(&mut self, e: &Expr, name: &str) -> Result<Temp, ()> {

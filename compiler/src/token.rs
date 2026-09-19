@@ -3,7 +3,7 @@ use crate::diag::Span;
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrSeg {
     Text { text: String },
-    Expr { tokens: Vec<Token> },
+    Expr { tokens: Vec<LexedToken> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,8 +279,22 @@ pub struct TokenData {
     pub suffix: Option<String>,
 }
 
+impl PartialEq for TokenData {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+            && self.int == other.int
+            && self.is_float == other.is_float
+            && self.suffix == other.suffix
+            && match (self.float, other.float) {
+                (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 /// A token plus the payload needed by the parser.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LexedToken {
     pub token: Token,
     pub data: TokenData,
