@@ -2503,4 +2503,22 @@ fn emits_fs_builtins() {
     }
 }
 
+#[test]
+fn emits_list_mutation_builtins() {
+    let m = emit_str(
+        r#"fn main() {
+            let xi = [3, 1, 2]
+            xi.sort()
+            let v = xi.remove(0)
+            xi.insert(1, v)
+            xi.push(9)
+            println(xi[0], len(xi))
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    for want in ["pickle_list_sort", "pickle_list_remove", "pickle_list_insert", "pickle_list_push"] {
+        assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
+    }
+}
+
 

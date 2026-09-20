@@ -93,7 +93,10 @@ let bs = [byte] { 1, 2 }
 
 Compiled list operations today: array literals `[a, b, c]`, `xs[i]` reads
 and assignments (including `+=`-style compounds), `len(xs)`, `xs.push(v)` /
-`xs.pop()`, `for (x in xs)` iteration, and `print`/`println` on a list
+`xs.pop()`, `xs.remove(i)` (remove by index, returns the element),
+`xs.insert(i, v)`, and `xs.sort()` (in-place ascending for
+`List<int/float/byte/char/bool/string>` — element comparison happens on the
+boxed values), `for (x in xs)` iteration, and `print`/`println` on a list
 (prints `List(len=N)`). Scalar elements are boxed at the runtime boundary;
 strings/lists and other managed values pass through as pointers. Lists of
 `char` and string byte-indexing/iteration are lowered: `List<char>` goes

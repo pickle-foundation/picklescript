@@ -1,0 +1,92 @@
+test fn list_remove_at_middle() {
+    let xs = [10, 20, 30, 40]
+    let v = xs.remove(1)
+    expect(v).toBe(20)
+    expect(len(xs)).toBe(3)
+    expect(xs[0]).toBe(10)
+    expect(xs[1]).toBe(30)
+    expect(xs[2]).toBe(40)
+}
+
+test fn list_remove_first_and_last() {
+    let xs = [1, 2, 3]
+    expect(xs.remove(0)).toBe(1)
+    expect(xs.remove(1)).toBe(3)
+    expect(len(xs)).toBe(1)
+    expect(xs[0]).toBe(2)
+}
+
+test fn list_insert_middle() {
+    let xs = [1, 2, 4, 5]
+    xs.insert(2, 3)
+    expect(len(xs)).toBe(5)
+    expect(xs[0]).toBe(1)
+    expect(xs[1]).toBe(2)
+    expect(xs[2]).toBe(3)
+    expect(xs[3]).toBe(4)
+    expect(xs[4]).toBe(5)
+}
+
+test fn list_insert_front_and_end() {
+    let xs = [2, 3]
+    xs.insert(0, 1)
+    xs.insert(3, 4)
+    expect(len(xs)).toBe(4)
+    expect(xs[0]).toBe(1)
+    expect(xs[1]).toBe(2)
+    expect(xs[2]).toBe(3)
+    expect(xs[3]).toBe(4)
+}
+
+test fn list_remove_and_insert_strings() {
+    let xs = ["a", "b", "c"]
+    expect(xs.remove(1)).toBe("b")
+    expect(len(xs)).toBe(2)
+    expect(xs[0]).toBe("a")
+    expect(xs[1]).toBe("c")
+    xs.insert(1, "b")
+    expect(len(xs)).toBe(3)
+    expect(xs[1]).toBe("b")
+    expect(xs[2]).toBe("c")
+}
+
+test fn list_sort_ints() {
+    let xs = [3, 1, 2]
+    xs.sort()
+    expect(xs[0]).toBe(1)
+    expect(xs[1]).toBe(2)
+    expect(xs[2]).toBe(3)
+}
+
+test fn list_sort_negatives() {
+    let xs = [0, -3, 7, -1]
+    xs.sort()
+    expect(xs[0]).toBe(-3)
+    expect(xs[1]).toBe(-1)
+    expect(xs[2]).toBe(0)
+    expect(xs[3]).toBe(7)
+}
+
+test fn list_sort_floats() {
+    let xs = [2.5, 0.5, 1.5]
+    xs.sort()
+    expect(xs[0]).toBe(0.5)
+    expect(xs[1]).toBe(1.5)
+    expect(xs[2]).toBe(2.5)
+}
+
+test fn list_sort_strings() {
+    let xs = ["pear", "apple", "mango"]
+    xs.sort()
+    expect(xs[0]).toBe("apple")
+    expect(xs[1]).toBe("mango")
+    expect(xs[2]).toBe("pear")
+}
+
+test fn list_sort_bools() {
+    let xs = [true, false, true]
+    xs.sort()
+    expect(xs[0]).toBe(false)
+    expect(xs[1]).toBe(true)
+    expect(xs[2]).toBe(true)
+}

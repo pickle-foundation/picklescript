@@ -183,6 +183,15 @@ fn named_ctor_delegation(body: &Block) -> Option<&Expr> {
 
 /// Free functions annotated `#[manualAlloc]` (result owned by the caller) and,
 /// for each, which positional parameters are `#[manualAlloc]` (owned).
+/// Which `List<T>` element types `sort` can order. It compares raw boxed
+/// payloads (int/byte/char/bool), float bits, or string bytes.
+fn is_list_sortable(t: &Ty) -> bool {
+    matches!(
+        t,
+        Ty::Int | Ty::Float | Ty::Byte | Ty::Char | Ty::Bool | Ty::String
+    )
+}
+
 fn collect_manual_fns(prog: &Program) -> (HashSet<String>, HashMap<String, Vec<bool>>) {
     let mut rets = HashSet::new();
     let mut params = HashMap::new();
@@ -3022,6 +3031,22 @@ impl<'a> Checker<'a> {
             return match name {
                 "push" => Ty::Fn(vec![inner.as_ref().clone()], Box::new(Ty::Empty)),
                 "pop" => Ty::Fn(vec![], Box::new(inner.as_ref().clone())),
+                "remove" => Ty::Fn(vec![Ty::Int], Box::new(inner.as_ref().clone())),
+                "insert" => Ty::Fn(
+                    vec![Ty::Int, inner.as_ref().clone()],
+                    Box::new(Ty::Empty),
+                ),
+                "sort" if is_list_sortable(inner) => Ty::Fn(vec![], Box::new(Ty::Empty)),
+                "sort" => {
+                    self.err(
+                        e.span,
+                        format!(
+                            "`sort` needs a `List` of int, float, byte, char, bool, or string (got `List<{}>`)",
+                            inner.bare_name()
+                        ),
+                    );
+                    Ty::Unknown
+                }
                 other => {
                     self.err(
                         e.span,

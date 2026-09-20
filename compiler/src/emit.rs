@@ -6166,6 +6166,23 @@ fn build_lambda_body(
         dst
     }
 
+    /// Comparison kind for `pickle_list_sort`: 0 = int/byte/char/bool boxed
+    /// payloads, 1 = float bits, 2 = string bytes.
+    fn sort_kind(&mut self, elem: &Ty, span: Span) -> Result<Temp, ()> {
+        let kind = match elem {
+            Ty::Int | Ty::Byte | Ty::Char | Ty::Bool => 0i64,
+            Ty::Float => 1,
+            Ty::String => 2,
+            other => {
+                return self.bad(
+                    span,
+                    format!("`sort` is not lowered for `List<{}>`", other.bare_name()),
+                )
+            }
+        };
+        Ok(self.const_temp(IrConst::Int(kind)))
+    }
+
     /// Bind the names of an arm pattern to the scrutinee in `s_slot` (current
     /// block). `some(v)` unboxes the present option; scalar and string
     /// bindings are just the scrutinee value; `_`/literals bind nothing.
@@ -8746,6 +8763,50 @@ fn build_lambda_body(
                     }
                     ElemRep::Ptr => Ok(raw),
                 }
+            }
+            "remove" => {
+                if args.len() != 1 {
+                    return self.bad(e.span, "`remove` takes one argument (an index)");
+                }
+                let rep = self.elem_rep(&elem, e.span)?;
+                let index = self.expr(&args[0].value)?;
+                let raw =
+                    self.extern_call_t1("pickle_list_remove", vec![IrTy::Ptr, IrTy::Int], IrTy::Ptr, vec![obj, index])?;
+                match rep {
+                    ElemRep::Scalar(_, unbox_sym, ir) => {
+                        self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
+                    }
+                    ElemRep::Ptr => Ok(raw),
+                }
+            }
+            "insert" => {
+                if args.len() != 2 {
+                    return self.bad(e.span, "`insert` takes an index and a value");
+                }
+                let rep = self.elem_rep(&elem, e.span)?;
+                let index = self.expr(&args[0].value)?;
+                let v = self.expr(&args[1].value)?;
+                let ins_v = match rep {
+                    ElemRep::Scalar(box_sym, _, _) => {
+                        let vt = self.irty(args[1].value.span)?;
+                        self.extern_call_t1(box_sym, vec![vt], IrTy::Ptr, vec![v])?
+                    }
+                    ElemRep::Ptr => v,
+                };
+                self.extern_call_void(
+                    "pickle_list_insert",
+                    vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+                    vec![obj, index, ins_v],
+                );
+                Ok(self.unit_temp())
+            }
+            "sort" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, "`sort` takes no arguments");
+                }
+                let kind = self.sort_kind(&elem, e.span)?;
+                self.extern_call_void("pickle_list_sort", vec![IrTy::Ptr, IrTy::Int], vec![obj, kind]);
+                Ok(self.unit_temp())
             }
             other => {
                 self.bad(e.span, format!("`{other}` method on `List` is not lowered yet"))

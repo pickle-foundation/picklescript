@@ -2583,3 +2583,58 @@ fn rejects_read_file_wrong_arity() {
         error_msgs(&d)
     );
 }
+
+#[test]
+fn accepts_list_mutation_methods() {
+    let d = check_str(
+        r#"fn main() {
+            let xi = [1, 2, 3]
+            let v = xi.remove(0)
+            xi.insert(1, 9)
+            xi.sort()
+            let xs = ["a", "c"]
+            xs.remove(0)
+            xs.insert(0, "z")
+            xs.sort()
+            let xf = [2.5, 0.5]
+            xf.sort()
+            let xb = [true, false]
+            xb.sort()
+            println(v, len(xi), len(xs), len(xf), len(xb))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_sort_on_unsortable_list() {
+    let d = check_str(
+        r#"class Point {
+            var n: int
+        }
+        fn main() {
+            let pts = [Point(1), Point(2)]
+            pts.sort()
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `sort` element-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_remove_non_int_index() {
+    let d = check_str(
+        r#"fn main() {
+            let xs = [1, 2, 3]
+            let v = xs.remove("a")
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `remove` index-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}

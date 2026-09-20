@@ -135,8 +135,9 @@ Every other runtime helper is a plain imported `pickle_*` symbol resolved at
 link time against the runtime rlib (the JIT resolves the same names through
 its symbol table). That includes the list slice ABI added later: `pickle_box_*` /
 `pickle_unbox_*` for scalar list elements and `pickle_list_new` / `len` /
-`get` / `set` / `push` / `pop` for `List<T>`, which flow through this shared
-extern path with no extra object glue. The map slice ABI follows the same
+`get` / `set` / `push` / `pop` / `remove` / `insert` / `sort` for `List<T>`,
+which flow through this shared extern path with no extra object glue. The map
+slice ABI follows the same
 path: `pickle_map_new` / `set` / `get_boxed` / `has` / `len` / `keys` /
 `values`.
 

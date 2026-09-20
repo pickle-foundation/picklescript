@@ -268,11 +268,14 @@ pub mod abi {
     pub use crate::boxscalar::pickle_unbox_i64;
 
     pub use crate::list::pickle_list_get;
+    pub use crate::list::pickle_list_insert;
     pub use crate::list::pickle_list_len;
     pub use crate::list::pickle_list_new;
     pub use crate::list::pickle_list_pop;
     pub use crate::list::pickle_list_push;
+    pub use crate::list::pickle_list_remove;
     pub use crate::list::pickle_list_set;
+    pub use crate::list::pickle_list_sort;
     pub use crate::list::pickle_range;
 
     pub use crate::map::pickle_map_get_boxed;
