@@ -2152,6 +2152,63 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // A generic class/struct constructor call `Box<int>(args)`: check the
+        // arguments against the explicit or synthesized constructor parameters
+        // substituted under the type arguments, and type the call as the
+        // concrete instantiation. Inside a generic function or class body the
+        // type arguments may resolve to `Var`s (`Box<T>`, `Box<Pair<A, B>>`),
+        // which stay parametric in the recorded type and materialize when the
+        // enclosing body is instantiated.
+        if let ExprKind::GenericCall { name, type_args } = &callee.kind {
+            if let Some(entry) = self.resolved.types.get(name) {
+                match entry {
+                    TypeTableEntry::Class(_) | TypeTableEntry::Struct(_) => {}
+                    TypeTableEntry::Enum(_) | TypeTableEntry::Interface(_) => {
+                        self.err(e.span, format!("`{name}` cannot be constructed directly"));
+                        return Ty::Unknown;
+                    }
+                }
+                let arg_tys: Vec<Ty> = type_args
+                    .iter()
+                    .map(|te| self.resolved_fn_ty(te, &self.fn_generics))
+                    .collect();
+                let table = self.class_table(name).unwrap();
+                if arg_tys.len() != table.generics.len() {
+                    self.err(
+                        e.span,
+                        format!(
+                            "`{name}` takes {} type argument(s), found {}",
+                            table.generics.len(),
+                            arg_tys.len()
+                        ),
+                    );
+                    return Ty::Unknown;
+                }
+                let map: HashMap<String, Ty> = table
+                    .generics
+                    .iter()
+                    .cloned()
+                    .zip(arg_tys.iter().cloned())
+                    .collect();
+                let params: Vec<Ty> = if let Some(ctor) = &table.ctor {
+                    ctor.params.iter().map(|p| self.subst(&p.ty, &map)).collect()
+                } else {
+                    self.synthesized_ctor_param_tys(name)
+                        .iter()
+                        .map(|t| self.subst(t, &map))
+                        .collect()
+                };
+                self.check_args(e, &params, args);
+                return match entry {
+                    TypeTableEntry::Class(c) => Ty::Class(c.name.clone(), arg_tys),
+                    TypeTableEntry::Struct(s) => Ty::Struct(s.name.clone(), arg_tys),
+                    _ => Ty::Unknown,
+                };
+            }
+            // Not a type name: falls through to the generic-function check
+            // below.
+        }
+
         // Constructor call: `TypeName(args)` where callee is a type name.
         if let ExprKind::Ident(cname) = &callee.kind {
             if let Some(entry) = self.resolved.types.get(cname) {

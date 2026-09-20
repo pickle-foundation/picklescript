@@ -290,6 +290,35 @@ fn codegen_not_lowered_gets_e0900_only_when_it_says_so() {
 }
 
 #[test]
+fn generic_class_lambda_is_e0900() {
+    // A lambda inside a generic class/struct body is rejected at codegen walk
+    // time with a "not lowered yet" diagnostic (never silently miscompiled);
+    // materializing an instantiation still reports it in that spirit.
+    let src = "class Box<T> {
+            var x: T
+            fn make() -> fn (T) -> T {
+                fn (v: T) -> T { v }
+            }
+        }
+        fn main() {
+            var b = Box<int>(1)
+            println(b.make()(2))
+        }";
+    let d = check_str(src);
+    assert!(!d.any_error(), "should type-check cleanly:\n{}", error_msgs(&d));
+    let d2 = DiagnosticSink::new();
+    let mut map = SourceMap::default();
+    let out = pickle_compiler::front::frontend("test.pk", src, &mut map, &d).unwrap();
+    let _ = pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &d2);
+    let diags = d2.diagnostics.borrow();
+    let lam = diags
+        .iter()
+        .find(|d| d.message.contains("generic class/struct"))
+        .expect("expected a codegen error about a lambda in a generic class/struct");
+    assert_eq!(lam.code, Some(ErrorCode::NotLowered));
+}
+
+#[test]
 fn grouped_render_has_code_headlines() {
     let d = check_str("fn main() { let x = nope }");
     let mut map = SourceMap::default();

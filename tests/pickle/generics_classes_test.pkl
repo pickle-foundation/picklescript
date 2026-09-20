@@ -1,0 +1,134 @@
+class Box<T> {
+    var value: T
+
+    fn read() -> T {
+        this.value
+    }
+
+    fn write(newValue: T) {
+        this.value = newValue
+    }
+}
+
+struct Pair<A, B> {
+    var first: A
+    var second: B
+}
+
+class Counter<T> {
+    var count: int = 0
+    var item: T
+
+    fn bump() -> int {
+        this.count = this.count + 1
+        this.count
+    }
+}
+
+class ListBox<T> {
+    var items: List<T>
+    var name: string
+
+    fn firstItem(fallback: T) -> T {
+        if (len(this.items) > 0) {
+            this.items[0]
+        } else {
+            fallback
+        }
+    }
+}
+
+fn unbox<T>(b: Box<T>) -> T {
+    b.read()
+}
+
+fn swap<T>(b: Box<T>, x: T) -> T {
+    var old = b.read()
+    b.write(x)
+    old
+}
+
+fn nested_boxes() -> int {
+    var inner = Box<int>(7)
+    var outer = Box<Box<int>>(inner)
+    var got: Box<int> = outer.read()
+    got.read()
+}
+
+fn make_pair<A, B>(a: A, b: B) -> Pair<A, B> {
+    Pair<A, B>(a, b)
+}
+
+test fn generic_class_int() {
+    var b = Box<int>(5)
+    expect(b.read()).toBe(5)
+    b.write(10)
+    expect(b.read()).toBe(10)
+    expect(b.value).toBe(10)
+}
+
+test fn generic_class_string() {
+    var s = Box<string>("hi")
+    expect(s.read()).toBe("hi")
+}
+
+test fn generic_class_float() {
+    var f = Box<float>(2.5)
+    expect(f.value).toBe(2.5)
+}
+
+test fn generic_struct_two_params() {
+    var p = Pair<int, string>(7, "seven")
+    expect(p.first).toBe(7)
+    expect(p.second).toBe("seven")
+    p.first = 8
+    expect(p.first).toBe(8)
+}
+
+test fn generic_class_field_init() {
+    var c = Counter<int>(42)
+    expect(c.bump()).toBe(1)
+    expect(c.bump()).toBe(2)
+    expect(c.item).toBe(42)
+}
+
+test fn generic_nested_list_type() {
+    var lb = ListBox<int>([3, 1, 2], "nums")
+    expect(lb.name).toBe("nums")
+    expect(lb.firstItem(0)).toBe(3)
+}
+
+test fn generic_swap_positions() {
+    var a = Pair<float, string>(1.5, "x")
+    var b = Pair<string, float>("y", 2.5)
+    expect(a.second).toBe("x")
+    expect(b.second).toBe(2.5)
+}
+
+test fn generic_fn_taking_generic_class() {
+    var b = Box<int>(5)
+    expect(unbox<int>(b)).toBe(5)
+    expect(unbox<string>(Box<string>("z"))).toBe("z")
+}
+
+test fn generic_fn_rebinding_generic_class() {
+    var b = Box<float>(1.5)
+    expect(swap<float>(b, 2.5)).toBe(1.5)
+    expect(b.read()).toBe(2.5)
+}
+
+test fn nested_box_instantiations() {
+    expect(nested_boxes()).toBe(7)
+}
+
+test fn generic_fn_making_generic_class() {
+    var p = make_pair<int, string>(1, "one")
+    expect(p.first).toBe(1)
+    expect(p.second).toBe("one")
+}
+
+test fn nested_generic_type_args() {
+    var p = Pair<int, Box<string>>(3, Box<string>("three"))
+    expect(p.first).toBe(3)
+    expect(p.second.read()).toBe("three")
+}

@@ -15,7 +15,7 @@ use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
-use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, PropertyInfo, ResolvedProgram, TypeTableEntry};
+use crate::resolve::{CallableInfo, ClassTable, CtorInfo, EnumTable, FieldInfo, ParamInfo, PropertyInfo, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
 
 /// Make a function symbol from a type's display name: keep alphanumerics,
@@ -76,6 +76,13 @@ pub fn emit_ir(
         classes: Vec::new(),
         class_by_name: HashMap::new(),
         class_decls: HashMap::new(),
+        generic_type_members: HashMap::new(),
+        struct_members: HashMap::new(),
+        class_inst_by_args: HashMap::new(),
+        class_inst_subst: HashMap::new(),
+        fid_owner: HashMap::new(),
+        fid_generics: HashMap::new(),
+        generic_ctx_name: None,
         class_attempted: Vec::new(),
         ctor_ids: HashMap::new(),
         named_ctor_ids: HashMap::new(),
@@ -384,9 +391,30 @@ struct Emitter<'a> {
     /// Class name -> its declaration (for ancestor field initializers /
     /// `init` blocks and ancestor-first registration).
     class_decls: HashMap<String, &'a ClassDecl>,
+    /// Generic class/struct name -> its member declarations, stashed instead
+    /// of being registered bare. Instantiations materialize on first use.
+    generic_type_members: HashMap<String, &'a [ClassMember]>,
+    /// Instantiation key (class/struct name, concrete type args) -> class id.
+    class_inst_by_args: HashMap<(String, Vec<Ty>), u32>,
+    /// Class id -> the generic substitution its members were lowered under
+    /// (present only for generic class/struct instantiations).
+    class_inst_subst: HashMap<u32, HashMap<String, Ty>>,
+    /// Class/struct function id -> the class id it belongs to (so an
+    /// instantiated method/ctor body builds under the right implicit receiver).
+    fid_owner: HashMap<FuncId, i64>,
+    /// Class/struct function id -> the declaring generic parameter names (so a
+    /// nested generic call inside an instantiated member body can resolve
+    /// `T`-style type arguments in its own namespace).
+    fid_generics: HashMap<FuncId, Vec<String>>,
+    /// While pre-registering lambdas, the generic class/struct whose members are
+    /// being walked (lambdas inside generic bodies are rejected loudly).
+    generic_ctx_name: Option<String>,
     /// Names whose registration has been attempted, so ancestors are pulled in
     /// before descendants exactly once (and cycles terminate).
     class_attempted: Vec<String>,
+    /// Struct name -> its member declarations (field initializers and `init`
+    /// blocks are collected from here, exactly as `class_decls` serves classes).
+    struct_members: HashMap<String, &'a [ClassMember]>,
     /// Class id -> implicit-constructor function.
     ctor_ids: HashMap<u32, FuncId>,
     /// (Class id, named-constructor name) -> redirect function.
@@ -540,7 +568,25 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// A generic class/struct member body's types carry `Var`s that only an
+    /// instantiation can substitute, so a lambda declared inside one cannot be
+    /// lowered yet (its registration happens before instantiations exist). Track
+    /// the generic class whose members are being walked so `walk_expr` can
+    /// reject them loudly.
+    fn generic_class_ctx(&self, cls: &str) -> bool {
+        self.resolved.types.get(cls).is_some_and(|t| match t {
+            TypeTableEntry::Class(c) => !c.generics.is_empty(),
+            TypeTableEntry::Struct(s) => !s.generics.is_empty(),
+            _ => false,
+        })
+    }
+
     fn walk_class_members(&mut self, members: &'a [ClassMember], cls: &str) {
+        let generic_ctx = self.generic_class_ctx(cls);
+        let saved_ctx = self.generic_ctx_name.clone();
+        if generic_ctx {
+            self.generic_ctx_name = Some(cls.to_string());
+        }
         let owner_cid = self.class_by_name.get(cls).copied().map(|x| x as i64);
         for m in members {
             let mut scope = Vec::new();
@@ -580,6 +626,7 @@ impl<'a> Emitter<'a> {
                 self.walk_block(&cd.body, owner_cid, Some(cls), 0, &mut scope, &mut acc);
             }
         }
+        self.generic_ctx_name = saved_ctx;
     }
 
     fn walk_accessor(&mut self, a: &'a PropertyAccessor, owner_cid: Option<i64>, owner_name: Option<&str>) {
@@ -724,15 +771,17 @@ impl<'a> Emitter<'a> {
                 // walk the member), so registering here is harmless: the
                 // trampoline is only consumed at value-use sites.
                 let ot = self.ty_of(&object.span);
-                if let Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) = ot {
-                    if let Some(&cid) = self.class_by_name.get(&cn) {
-                        if let Some(&(fid, is_static)) =
-                            self.method_ids.get(&(cid, name.clone()))
-                        {
-                            if !is_static
-                                && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
+                if let Some(otv) = ot {
+                    if matches!(otv, Ty::Class(..) | Ty::Struct(..)) {
+                        if let Ok(Some(cid)) = self.class_id_of(&otv, object.span) {
+                            if let Some(&(fid, is_static)) =
+                                self.method_ids.get(&(cid, name.clone()))
                             {
-                                self.register_method_trampoline(e.span, fid);
+                                if !is_static
+                                    && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
+                                {
+                                    self.register_method_trampoline(e.span, fid);
+                                }
                             }
                         }
                     }
@@ -759,6 +808,15 @@ impl<'a> Emitter<'a> {
                 body,
                 ..
             } => {
+                if let Some(cls) = &self.generic_ctx_name {
+                    let _ = self.bad::<()>(
+                        e.span,
+                        format!(
+                            "a lambda inside the generic class/struct `{cls}` is not lowered yet"
+                        ),
+                    );
+                    return;
+                }
                 if *is_async {
                     let _ = self.bad::<()>(e.span, "async lambdas are not lowered yet");
                     return;
@@ -1087,6 +1145,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn register_struct_item(&mut self, s: &'a StructDecl) {
+        self.struct_members.insert(s.name.clone(), &s.members[..]);
         let table = match self.resolved.types.get(&s.name) {
             Some(TypeTableEntry::Struct(t)) => t.clone(),
             _ => return,
@@ -1232,11 +1291,19 @@ impl<'a> Emitter<'a> {
     // ---- inheritance layout helpers ---------------------------------------
 
     /// The class/struct table for `name`, from the resolver (or, for the
-    /// synthetic closure classes, from the emitter's own tables).
+    /// synthetic closure classes and generic-class instantiations, from the
+    /// emitter's own tables). An instantiation's plan carries its *substituted*
+    /// table under its mangled name (`Box<int>`), so the layout helpers resolve
+    /// concrete field types directly.
     fn table_of(&self, name: &str) -> Option<ClassTable> {
         match self.resolved.types.get(name) {
             Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => Some(t.clone()),
-            _ => self.closure_tables.get(name).cloned(),
+            _ => self
+                .classes
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.table.clone())
+                .or_else(|| self.closure_tables.get(name).cloned()),
         }
     }
 
@@ -1310,8 +1377,13 @@ impl<'a> Emitter<'a> {
         let mut base = 0usize;
         for cname in self.ancestry(name) {
             let own = self.own_instance_fields(&cname);
-            if let Some(decl) = self.class_decls.get(&cname).copied() {
-                for m in &decl.members {
+            let members = self
+                .class_decls
+                .get(&cname)
+                .map(|d| &d.members[..])
+                .or_else(|| self.struct_members.get(&cname).copied());
+            if let Some(members) = members {
+                for m in members {
                     if let ClassMember::Field {
                         name: fname,
                         init: Some(x),
@@ -1334,8 +1406,13 @@ impl<'a> Emitter<'a> {
     fn collect_init_blocks(&self, name: &str) -> Vec<&'a Block> {
         let mut out = Vec::new();
         for cname in self.ancestry(name) {
-            if let Some(decl) = self.class_decls.get(&cname).copied() {
-                for m in &decl.members {
+            let members = self
+                .class_decls
+                .get(&cname)
+                .map(|d| &d.members[..])
+                .or_else(|| self.struct_members.get(&cname).copied());
+            if let Some(members) = members {
+                for m in members {
                     if let ClassMember::Init(b) = m {
                         out.push(b);
                     }
@@ -1366,7 +1443,8 @@ impl<'a> Emitter<'a> {
     /// function, and its method functions. Members outside the slice are
     /// rejected loudly rather than miscompiled. Single inheritance is lowered
     /// (parent-first field layout, inherited methods, hierarchy casts); generic
-    /// and interface-implementing classes are still skipped entirely.
+    /// classes/structs are stashed for instantiation on first use, and
+    /// interface-implementing classes are still skipped entirely.
     fn maybe_register_class(
         &mut self,
         name: &str,
@@ -1375,10 +1453,10 @@ impl<'a> Emitter<'a> {
         span: Span,
     ) {
         if !table.generics.is_empty() {
-            let _: Result<(), ()> = self.bad(
-                span,
-                format!("`{name}` has type parameters, which are not lowered yet"),
-            );
+            // A generic class/struct is not registered bare. Its concrete
+            // instantiations materialize on first use from this stash
+            // (`register_class_instantiation`).
+            self.generic_type_members.insert(name.to_string(), members);
             return;
         }
         if !table.implements.is_empty() {
@@ -1680,6 +1758,266 @@ impl<'a> Emitter<'a> {
         self.class_by_name.insert(name.to_string(), cid);
     }
 
+    /// The registered runtime class id of a resolved class/struct type.
+    /// Non-generic types resolve through `class_by_name`; a generic type with
+    /// concrete arguments materializes its instantiation on first use. `None`
+    /// means the type is not (yet) lowerable: an uninstantiated generic (`Var`
+    /// arguments, resolved lazily inside a generic body) or an unregistered
+    /// name.
+    fn class_id_of(&mut self, ty: &Ty, span: Span) -> Result<Option<u32>, ()> {
+        let (n, args) = match ty {
+            Ty::Class(n, a) | Ty::Struct(n, a) => (n, a),
+            _ => return Ok(None),
+        };
+        if args.iter().any(|t| t.has_var()) {
+            return Ok(None);
+        }
+        if args.is_empty() {
+            return Ok(self.class_by_name.get(n).copied());
+        }
+        let key = (n.clone(), args.clone());
+        let table_generics = match self.resolved.types.get(n) {
+            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => t.generics.len(),
+            _ => return Ok(None),
+        };
+        if table_generics != args.len() {
+            return Ok(None);
+        }
+        if self.class_inst_by_args.contains_key(&key) {
+            return Ok(Some(self.class_inst_by_args[&key]));
+        }
+        self.register_class_instantiation(n, args, span).map(Some)
+    }
+
+    /// Materialize one concrete instantiation of a generic class/struct:
+    /// substitute its members under the type arguments, reserve a class id, and
+    /// register the instantiated constructor and instance methods (symbols are
+    /// mangled with the argument suffix; bodies lower under the instantiation's
+    /// substitution). Layout is uniform across instantiations (every slot is a
+    /// pointer), so the plan records its substituted table under the mangled
+    /// name and the shared layout helpers resolve it. Members whose lowering
+    /// only exists for concrete classes are rejected loudly.
+    fn register_class_instantiation(
+        &mut self,
+        name: &str,
+        args: &[Ty],
+        span: Span,
+    ) -> Result<u32, ()> {
+        if let Some(&cid) = self.class_inst_by_args.get(&(name.to_string(), args.to_vec())) {
+            return Ok(cid);
+        }
+        let (table, members) = match self.resolved.types.get(name) {
+            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => (t.clone(),
+                self.generic_type_members.get(name).copied()),
+            _ => return self.bad(span, format!("`{name}` is not a class or struct")),
+        };
+        if table.generics.len() != args.len() {
+            return self.bad(
+                span,
+                format!(
+                    "`{name}` takes {} type argument(s), found {}",
+                    table.generics.len(),
+                    args.len()
+                ),
+            );
+        }
+        let Some(members) = members else {
+            return self.bad(span, format!("`{name}` is not lowerable"));
+        };
+        if table.extends.is_some() {
+            return self.bad(
+                span,
+                format!("`{name}` with `extends` is not lowered yet"),
+            );
+        }
+        if !table.implements.is_empty() {
+            return self.bad(
+                span,
+                format!("`{name}` implements interfaces, which are not lowered yet"),
+            );
+        }
+        if members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Method(md) if md.is_override))
+        {
+            return self.bad(span, format!("`{name}` uses `override`, which is not lowered yet"));
+        }
+        if members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor(cd) if cd.name.is_some()))
+        {
+            return self.bad(
+                span,
+                format!("`{name}` uses named constructors, which are not lowered yet"),
+            );
+        }
+        if members.iter().any(|m| matches!(m, ClassMember::Deinit(_))) {
+            return self.bad(
+                span,
+                format!("`{name}` uses `deinit`, which is not lowered yet for generic classes/structs"),
+            );
+        }
+        if members.iter().any(|m| matches!(m, ClassMember::Property(_))) {
+            return self.bad(
+                span,
+                format!("`{name}` uses properties, which are not lowered yet for generic classes/structs"),
+            );
+        }
+        if table.fields.iter().any(|f| f.is_static) || !table.consts.is_empty() {
+            return self.bad(
+                span,
+                format!("`{name}` uses static state, which is not lowered yet for generic classes/structs"),
+            );
+        }
+        let map: HashMap<String, Ty> = table
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let suffix = args
+            .iter()
+            .map(|t| sanitize_symbol(&t.bare_name()))
+            .collect::<Vec<_>>()
+            .join("_");
+        let display = format!("{name}<{}>", args.iter().map(|t| t.bare_name()).collect::<Vec<_>>().join(", "));
+        let stable = ClassTable {
+            name: display.clone(),
+            span: table.span,
+            visibility: table.visibility,
+            generics: table.generics.clone(),
+            extends: None,
+            implements: Vec::new(),
+            fields: table
+                .fields
+                .iter()
+                .map(|f| FieldInfo {
+                    ty: f.ty.subst(&map),
+                    ..f.clone()
+                })
+                .collect(),
+            methods: table
+                .methods
+                .iter()
+                .map(|m| CallableInfo {
+                    params: m
+                        .params
+                        .iter()
+                        .map(|p| ParamInfo {
+                            ty: p.ty.subst(&map),
+                            ..p.clone()
+                        })
+                        .collect(),
+                    ret: m.ret.subst(&map),
+                    ..m.clone()
+                })
+                .collect(),
+            properties: Vec::new(),
+            ctor: table.ctor.as_ref().map(|c| CtorInfo {
+                params: c
+                    .params
+                    .iter()
+                    .map(|p| ParamInfo {
+                        ty: p.ty.subst(&map),
+                        ..p.clone()
+                    })
+                    .collect(),
+                ..c.clone()
+            }),
+            named_ctors: Vec::new(),
+            consts: Vec::new(),
+        };
+        let ctor_decl = members.iter().find_map(|m| match m {
+            ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
+            _ => None,
+        });
+        let inits = self.collect_instance_inits(name);
+        let init_blocks = self.collect_init_blocks(name);
+
+        let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
+        let uniq = |em: &mut Self, base: &str| -> String {
+            let mut symbol = base.to_string();
+            let mut n = 0;
+            while em.module.funcs.iter().any(|f| f.symbol == symbol) {
+                n += 1;
+                symbol = format!("{base}_v{n}");
+            }
+            symbol
+        };
+
+        let ctor_symbol = uniq(self, &format!("pkl_{name}_new__{suffix}"));
+        let ctor_fid = self.push_class_func(
+            &format!("{display}.new"),
+            &ctor_symbol,
+            FnSource::Ctor {
+                table: stable.clone(),
+                inits,
+                init_blocks,
+                ctor: ctor_decl,
+            },
+        );
+        self.ctor_ids.insert(cid, ctor_fid);
+        self.src_param_tys.insert(
+            ctor_fid,
+            stable
+                .ctor
+                .as_ref()
+                .map(|c| c.params.iter().map(|p| p.ty.clone()).collect())
+                .unwrap_or_default(),
+        );
+        self.instanton_subst.insert(ctor_fid, map.clone());
+        self.fid_owner.insert(ctor_fid, cid as i64);
+        self.fid_generics.insert(ctor_fid, table.generics.clone());
+
+        for md in members.iter().filter_map(|m| match m {
+            ClassMember::Method(md) => Some(md),
+            _ => None,
+        }) {
+            if md.is_async || md.is_override || md.body.is_none() || !md.generics.is_empty() {
+                continue;
+            }
+            let Some(info) = stable.methods.iter().find(|m| m.name == md.name).cloned() else {
+                continue;
+            };
+            if info.params.iter().any(|p| p.has_default || p.rest) {
+                continue;
+            }
+            let symbol = if info.is_static {
+                format!("pkl_{name}_sm_{}_{suffix}", md.name)
+            } else {
+                format!("pkl_{name}_{}_{suffix}", md.name)
+            };
+            let symbol = uniq(self, &symbol);
+            let mid = self.push_class_func(
+                &format!("{display}.{}", md.name),
+                &symbol,
+                FnSource::Method {
+                    table: stable.clone(),
+                    md,
+                },
+            );
+            self.finfo.insert(mid, info.clone());
+            self.src_param_tys
+                .insert(mid, info.params.iter().map(|p| p.ty.clone()).collect());
+            self.method_ids
+                .insert((cid, md.name.clone()), (mid, info.is_static));
+            self.instanton_subst.insert(mid, map.clone());
+            self.fid_owner.insert(mid, cid as i64);
+            self.fid_generics.insert(mid, table.generics.clone());
+        }
+
+        self.classes.push(ClassPlan {
+            name: display.clone(),
+            class_id: cid,
+            parent: None,
+            table: stable,
+        });
+        self.class_inst_by_args
+            .insert((name.to_string(), args.to_vec()), cid);
+        self.class_inst_subst.insert(cid, map);
+        Ok(cid)
+    }
+
     fn push_class_func(&mut self, name: &str, symbol: &str, src: FnSource<'a>) -> FuncId {
         let fid = FuncId(self.module.funcs.len());
         self.module.funcs.push(IrFunc {
@@ -1746,12 +2084,14 @@ impl<'a> Emitter<'a> {
         // instantiation's substitution while this body compiles. Lambdas,
         // trampolines, and non-instantiated functions carry none.
         self.current_subst = self.instanton_subst.get(&fid).cloned().unwrap_or_default();
-        self.fn_generics = match &self.fsource.get(&fid) {
-            Some(FnSource::TopLevel(f)) => {
-                f.generics.iter().map(|g| g.name.clone()).collect()
+        self.fn_generics = self.fid_generics.get(&fid).cloned().unwrap_or_else(|| {
+            match &self.fsource.get(&fid) {
+                Some(FnSource::TopLevel(f)) => {
+                    f.generics.iter().map(|g| g.name.clone()).collect()
+                }
+                _ => Vec::new(),
             }
-            _ => Vec::new(),
-        };
+        });
 
         let Some(src) = self.fsource.get(&fid).cloned() else {
             return;
@@ -1787,26 +2127,46 @@ impl<'a> Emitter<'a> {
                 init_blocks,
                 ctor,
             } => {
-                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                self.owner = self
+                    .fid_owner
+                    .get(&fid)
+                    .copied()
+                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
                 let _ = self.build_ctor_body(&table, &inits, &init_blocks, ctor);
             }
             FnSource::NamedCtor { table, ctor } => {
-                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                self.owner = self
+                    .fid_owner
+                    .get(&fid)
+                    .copied()
+                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
                 let _ = self.build_named_ctor(&table, ctor);
             }
             FnSource::Deinit { table, body } => {
-                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                self.owner = self
+                    .fid_owner
+                    .get(&fid)
+                    .copied()
+                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
                 let _ = self.build_deinit_body(&table, body);
             }
             FnSource::Method { table, md } => {
                 let Some(info) = self.finfo.get(&fid).cloned() else {
                     return;
                 };
-                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                self.owner = self
+                    .fid_owner
+                    .get(&fid)
+                    .copied()
+                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
                 let _ = self.build_method_body(&table, md, &info);
             }
             FnSource::Property { table, pd, info, is_set, is_static } => {
-                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                self.owner = self
+                    .fid_owner
+                    .get(&fid)
+                    .copied()
+                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
                 let _ = self.build_property_body(&table, pd, &info, is_set, is_static);
             }
             FnSource::StaticInit { inits } => {
@@ -2100,11 +2460,7 @@ fn build_lambda_body(
         }
         self.fret = IrTy::Ptr;
 
-        let cid = self
-            .class_by_name
-            .get(&table.name)
-            .copied()
-            .unwrap_or(PICKLE_CLASS_USER_BASE as u32);
+        let cid = self.owner.unwrap_or(PICKLE_CLASS_USER_BASE) as u32;
         let this_slot = self.new_slot(IrTy::Ptr);
         self.declare("this", this_slot);
 
@@ -3588,9 +3944,7 @@ fn build_lambda_body(
         name: &str,
     ) -> Result<(Ty, Temp), ()> {
         let (cid, cname) = match recv_ty {
-            Ty::Class(cn, _) | Ty::Struct(cn, _) => {
-                (self.class_by_name.get(cn).copied(), cn.clone())
-            }
+            Ty::Class(cn, _) | Ty::Struct(cn, _) => (self.class_id_of(recv_ty, e.span)?, cn.clone()),
             _ => (None, String::new()),
         };
         let Some(cid) = cid else {
@@ -3981,9 +4335,7 @@ fn build_lambda_body(
             other => other,
         };
         let cid = match ot {
-            Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
-                self.class_by_name.get(&cn).copied()
-            }
+            Some(otv @ (Ty::Class(..) | Ty::Struct(..))) => self.class_id_of(&otv, e.span)?,
             _ => None,
         };
         let Some(cid) = cid else {
@@ -5665,6 +6017,15 @@ fn build_lambda_body(
     /// address of its pre-registered hoisted body.
     fn lambda_value(&mut self, e: &Expr) -> Result<Temp, ()> {
         let Some(&fid) = self.lambda_fids.get(&e.span) else {
+            // A lambda inside a generic class/struct body is rejected at
+            // walk time (E0900); if lowering still reaches it, keep the
+            // diagnostic in that spirit instead of an uncoded surprise.
+            if let Some(cls) = self.generic_owner() {
+                return self.bad(
+                    e.span,
+                    format!("a lambda inside the generic class/struct `{cls}` is not lowered yet"),
+                );
+            }
             return self.bad(e.span, "this lambda was not registered for lowering");
         };
         let caps = self.lambda_caps.get(&e.span).cloned().unwrap_or_default();
@@ -6238,6 +6599,14 @@ fn build_lambda_body(
         type_args: &[TypeExpr],
         args: &[CallArg],
     ) -> Result<Temp, ()> {
+        // `Box<int>(...)`: a generic class/struct constructor call. The name
+        // shares the generic-call surface with generic functions, but
+        // resolves through the type table.
+        if let Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) =
+            self.resolved.types.get(name)
+        {
+            return self.generic_class_call(e, name, t, type_args, args);
+        }
         let Some(info) = self
             .resolved
             .fns
@@ -6303,9 +6672,76 @@ fn build_lambda_body(
         Ok(dst)
     }
 
+    /// A generic class/struct constructor call `Box<int>(arg, ...)`. Resolves
+    /// the concrete type arguments, materializes the instantiation plan, and
+    /// calls its implicit constructor exactly like a plain `TypeName(arg)`
+    /// call.
+    fn generic_class_call(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        table: &ClassTable,
+        type_args: &[TypeExpr],
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let arg_tys: Vec<Ty> = type_args
+            .iter()
+            .map(|te| {
+                let t = self.resolved.resolve_ty(te, &self.fn_generics, self.diags);
+                self.subst_ty(t)
+            })
+            .collect();
+        if arg_tys.len() != table.generics.len() {
+            return self.bad(
+                e.span,
+                format!(
+                    "`{name}` takes {} type argument(s), found {}",
+                    table.generics.len(),
+                    arg_tys.len()
+                ),
+            );
+        }
+        let key = (name.to_string(), arg_tys.clone());
+        let cid = match self.class_inst_by_args.get(&key) {
+            Some(&cid) => cid,
+            None => self.register_class_instantiation(name, &arg_tys, e.span)?,
+        };
+        let fid = *self
+            .ctor_ids
+            .get(&cid)
+            .ok_or(())?;
+        // Mirror the plain class-constructor call: borrow `&T` reference
+        // parameters, wrap optional parameters, and store the result.
+        let fparams = self.module.funcs[fid.0].params.clone();
+        let mut arg_temps = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
+            let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+            let t = self.borrow_arg(src.as_ref(), a)?;
+            let t = if !is_ref && matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(t, &vt, a.value.span)?
+            } else {
+                t
+            };
+            arg_temps.push(t);
+        }
+        let dst = self.temp();
+        self.instr(IrInstr::Call {
+            dst: Some(dst),
+            callee: Callee::Func(fid),
+            args: arg_temps,
+        });
+        Ok(dst)
+    }
+
     /// Create the concrete instantiation of a generic function over `map`
     /// (generic parameter -> concrete type), registering its signature under
     /// `key`, and return its function id. Later calls with the same key reuse
+    /// the existing function.
     /// the same instantiation.
     fn instantiate_generic_fn(
         &mut self,
@@ -6510,9 +6946,7 @@ fn build_lambda_body(
             other => other,
         };
         let cid = match ot {
-            Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
-                self.class_by_name.get(&cn).copied()
-            }
+            Some(otv @ (Ty::Class(..) | Ty::Struct(..))) => self.class_id_of(&otv, e.span)?,
             _ => None,
         };
         if let Some(cid) = cid {
@@ -6632,6 +7066,15 @@ fn build_lambda_body(
             .unwrap_or_else(|| format!("class#{cid}"))
     }
 
+    /// The class whose instantiated member body is currently being built,
+    /// when it is a generic class/struct instantiation (plan names of
+    /// materialized generics contain the `<` type-argument separator).
+    fn generic_owner(&self) -> Option<String> {
+        let cid = self.owner? as u32;
+        let name = self.class_name_of(cid);
+        (name.contains('<')).then_some(name)
+    }
+
     /// `obj.slot` field read: `pickle_obj_slot_get` then unbox scalars.
     fn field_read(&mut self, span: Span, obj: Temp, field_ty: &Ty, slot: usize) -> Result<Temp, ()> {
         let rep = self.elem_rep(field_ty, span)?;
@@ -6687,18 +7130,15 @@ fn build_lambda_body(
 
         // `instance.method(...)` on a class/struct instance, also through an
         // immutable `&T` borrow (which borrows the receiver).
-        if let Some(cid) = match ot {
-            Some(Ty::Class(ref cn, _)) | Some(Ty::Struct(ref cn, _)) => {
-                self.class_by_name.get(cn).copied()
-            }
+        let cid = match ot {
+            Some(ref otv @ (Ty::Class(..) | Ty::Struct(..))) => self.class_id_of(otv, e.span)?,
             Some(Ty::Ref(ref inner)) => match inner.as_ref() {
-                Ty::Class(ref cn, _) | Ty::Struct(ref cn, _) => {
-                    self.class_by_name.get(cn).copied()
-                }
+                Ty::Class(..) | Ty::Struct(..) => self.class_id_of(inner.as_ref(), e.span)?,
                 _ => None,
             },
             _ => None,
-        } {
+        };
+        if let Some(cid) = cid {
             if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
                 if is_static {
                     return self.bad(

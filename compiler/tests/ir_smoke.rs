@@ -475,6 +475,71 @@ fn emits_generic_function_instantiation() {
 }
 
 #[test]
+fn emits_generic_class_instantiation() {
+    // `Box<int>(...)` lower like ordinary classes: the materialized ctor and
+    // methods carry mangled symbols (a type-argument suffix, deduplicated with
+    // `_v{n}` on symbol collisions), a per-instantiation plan table records the
+    // substituted layout under the mangled display name, and a single
+    // `pickle_class_register` call registers the runtime class. Reusing the
+    // same type arguments shares one instantiation.
+    let m = emit_str(
+        r#"class Box<T> {
+            var value: T
+
+            fn read() -> T {
+                this.value
+            }
+
+            fn write(newValue: T) {
+                this.value = newValue
+            }
+        }
+
+        struct Pair<A, B> {
+            var first: A
+            var second: B
+        }
+
+        fn main() {
+            var b = Box<int>(5)
+            b.write(7)
+            println(b.read())
+            var p = Pair<int, string>(1, "one")
+            println(p.first, p.second)
+        }"#,
+    );
+    let symbols: Vec<&str> = m.funcs.iter().map(|f| f.symbol.as_str()).collect();
+    for want in [
+        "pkl_Box_new__int",
+        "pkl_Box_read_int",
+        "pkl_Box_write_int",
+        "pkl_Pair_new__int_string",
+    ] {
+        assert!(
+            symbols.contains(&want),
+            "missing instantiation symbol {want:?} in {symbols:?}"
+        );
+    }
+    // The ctor + both methods must all be owned by (and lower under) the same
+    // instantiated plan: the plan table is registered under the mangled
+    // display name `Box<int>`.
+    let regs = m
+        .funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(_), .. }))
+        .count();
+    assert!(regs > 0);
+    // The class name is interned for `pickle_class_register` and field reads
+    // (`pickle_obj_slot_get`).
+    let externs = externs(&m);
+    for need in ["pickle_class_register", "pickle_obj_slot_get", "pickle_obj_slot_set"] {
+        assert!(externs.iter().any(|e| e == need), "missing extern {need:?}");
+    }
+}
+
+#[test]
 fn emits_enum_construct_and_match() {
     // `Enum.Variant(...)` lowers to `pickle_enum_new` + `pickle_enum_set_field`
     // (boxing scalar payloads); `match` lowers to `pickle_enum_tag` checks with
