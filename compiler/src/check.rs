@@ -2512,11 +2512,21 @@ impl<'a> Checker<'a> {
                     Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) | Ty::String | Ty::Unknown => {
                         Ty::Ptr(Box::new(t))
                     }
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char => {
+                        if !matches!(&operand.kind, ExprKind::Ident(_)) {
+                            self.err(
+                                e.span,
+                                "`&` of a scalar requires a local variable",
+                            );
+                            return Ty::Unknown;
+                        }
+                        Ty::Ptr(Box::new(t))
+                    }
                     other => {
                         self.err(
                             e.span,
                             format!(
-                                "`&` currently only supports class, struct, and pointer values, found `{other}`"
+                                "`&` currently only supports class, struct, pointer, and scalar values, found `{other}`"
                             ),
                         );
                         Ty::Unknown

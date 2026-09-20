@@ -171,20 +171,28 @@ Implemented today:
   separate `->` operator; `(*p).field` is always available).
 - Assigning through a pointer to a class, struct, or pointer value:
   `*p = v` rebinds the pointer, and `p.field = v` writes the field.
+- Scalar raw pointers: `*int`, `*float`, `*bool`, `*char` hold the address
+  of a local, and `*p` reads / `(*p) = v` writes through them. A scalar
+  pointer is carried as an unmanaged address (never GC-tracked). Address-of
+  a scalar requires a local variable, so `&n` is legal but `&(1 + 2)` is not.
+
+Line-leading `*`: the parser reads a line that starts with `*` as a
+multiplication continuation, so a store through a scalar pointer on its own
+line uses the parenthesized form `(*p) = v` (or `;` to end the previous
+statement).
 
 Rules enforced by the type checker:
 
 - `&` and `*` (and pointer field access) are only legal inside `unsafe`.
-- `&` currently accepts class, struct, and pointer values; `*p` requires `p`
-  to be a raw pointer.
+- `&` accepts class, struct, pointer, and scalar values; a scalar operand
+  must be a local binding. `*p` requires `p` to be a raw pointer.
 - Pointer values are non-owning: they neither keep an object alive nor free
   it. A `#[manualAlloc]` owner still performs the deterministic free.
 
-Planned (not lowered yet): `&T` immutable-reference parameters, scalar raw
-pointers (`*int`) with store-through, pointer arithmetic and indexing,
-`alloc(T)` / raw `free`, custom allocators and arenas. The syntax is
-reserved above but those lowering paths return a "not lowered yet"
-diagnostic rather than miscompiling.
+Planned (not lowered yet): `&T` immutable-reference parameters, pointer
+arithmetic and indexing, `alloc(T)` / raw `free`, custom allocators and
+arenas. The syntax is reserved above but those lowering paths return a
+"not lowered yet" diagnostic rather than miscompiling.
 
 Rules enforced by the type checker inside `unsafe` (planned):
 - A raw pointer derived from a managed object must not outlive a GC point in
@@ -215,9 +223,10 @@ as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
 
 | Syntax          | Meaning                                  |
 |-----------------|------------------------------------------|
-| `&expr`         | address of a class/struct/pointer value  |
+| `&expr`         | address of a class/struct/pointer value, or a scalar local |
 | `*T`            | raw pointer type (unsafe only)           |
-| `*ptr`          | dereference                              |
+| `*ptr`          | dereference (read a scalar pointee)      |
+| `(*ptr) = v`    | store through a scalar/pointer pointee   |
 | `ptr.field`     | field through a raw pointer (auto-deref) |
 | `p[n]`          | index through pointer (unsafe, planned)  |
 

@@ -2191,14 +2191,39 @@ impl<'a> Emitter<'a> {
                 });
                 Ok(dst)
             }
-            AstUnOp::Deref => self.expr(operand),
+            AstUnOp::Deref => {
+                let scalar = match self.ty_of(&operand.span) {
+                    Some(Ty::Ptr(inner)) => Self::scalar_ir(&inner),
+                    _ => None,
+                };
+                match scalar {
+                    Some(ty) => {
+                        let addr = self.expr(operand)?;
+                        let dst = self.temp();
+                        self.instr(IrInstr::LoadRaw { dst, addr, ty });
+                        Ok(dst)
+                    }
+                    None => self.expr(operand),
+                }
+            }
             AstUnOp::AddrOf => {
                 let t = self.ty_of(&operand.span);
+                if t.as_ref().and_then(Self::scalar_ir).is_some() {
+                    let ExprKind::Ident(name) = &operand.kind else {
+                        return self.bad(e.span, "`&` of a scalar requires a local variable");
+                    };
+                    let Some(slot) = self.lookup(name) else {
+                        return self.bad(e.span, "`&` of an unknown local");
+                    };
+                    let dst = self.temp();
+                    self.instr(IrInstr::LocalAddr { dst, slot });
+                    return Ok(dst);
+                }
                 match t {
                     Some(Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..)) => self.expr(operand),
                     _ => self.bad(
                         e.span,
-                        "`&` currently only supports class, struct, and pointer values",
+                        "`&` currently only supports class, struct, pointer, and scalar local variables",
                     ),
                 }
             }
@@ -2679,11 +2704,19 @@ impl<'a> Emitter<'a> {
                 );
             }
             let pt = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
+            if let Ty::Ptr(inner) = &pt {
+                if let Some(ty) = Self::scalar_ir(inner) {
+                    let addr = self.expr(operand)?;
+                    let v = self.expr(value)?;
+                    self.instr(IrInstr::StoreRaw { addr, v, ty });
+                    return Ok(v);
+                }
+            }
             return match pt {
                 Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) => self.assign(e, operand, op, value),
                 _ => self.bad(
                     span,
-                    "assignment through a raw pointer is only supported for class, struct, and pointer values",
+                    "assignment through a raw pointer is only supported for class, struct, pointer, and scalar values",
                 ),
             };
         }
@@ -4472,6 +4505,17 @@ impl<'a> Emitter<'a> {
         self.types.get(span).cloned()
     }
 
+    /// The IR scalar type behind a language scalar type, if any.
+    fn scalar_ir(t: &Ty) -> Option<IrTy> {
+        match t {
+            Ty::Int => Some(IrTy::Int),
+            Ty::Float => Some(IrTy::Float),
+            Ty::Bool => Some(IrTy::Bool),
+            Ty::Char => Some(IrTy::Char),
+            _ => None,
+        }
+    }
+
     fn irty(&mut self, span: Span) -> Result<IrTy, ()> {
         let Some(t) = self.ty_of(&span) else {
             return self.bad(span, "no inferred type available for this expression");
@@ -4487,6 +4531,14 @@ impl<'a> Emitter<'a> {
             Ty::Float => Ok(IrTy::Float),
             Ty::String => Ok(IrTy::Str),
             Ty::None | Ty::Empty => Ok(IrTy::Unit),
+            // A pointer is always carried as a 64-bit address: `Int` for a
+            // raw scalar pointee (never GC-tracked, like `StrAddr`/`FuncAddr`)
+            // and `Ptr` for a managed pointee, which is the object pointer
+            // itself.
+            Ty::Ptr(inner) => match inner.as_ref() {
+                Ty::Int | Ty::Float | Ty::Bool | Ty::Char => Ok(IrTy::Int),
+                _ => Ok(IrTy::Ptr),
+            },
             Ty::Option(..)
             | Ty::Class(..)
             | Ty::Struct(..)
@@ -4495,8 +4547,7 @@ impl<'a> Emitter<'a> {
             | Ty::List(..)
             | Ty::Map(..)
             | Ty::Tuple(..)
-            | Ty::Range(..)
-            | Ty::Ptr(..) => {
+            | Ty::Range(..) => {
                 let _ = span;
                 Ok(IrTy::Ptr)
             }
@@ -4519,7 +4570,12 @@ impl<'a> Emitter<'a> {
                 "String" => Ok(IrTy::Str),
                 _ => Ok(IrTy::Ptr),
             },
-            TypeExprKind::Pointer(_) | TypeExprKind::Ref(_) => Ok(IrTy::Ptr),
+            TypeExprKind::Pointer(inner) | TypeExprKind::Ref(inner) => {
+                match self.annot_ty(&Some((**inner).clone()), span)? {
+                    IrTy::Int | IrTy::Float | IrTy::Bool | IrTy::Char => Ok(IrTy::Int),
+                    _ => Ok(IrTy::Ptr),
+                }
+            }
             _ => self.bad(span, "this type annotation is not lowered yet"),
         }
     }

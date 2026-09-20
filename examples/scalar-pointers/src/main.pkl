@@ -1,0 +1,39 @@
+module scalarPointers
+
+// A raw pointer to a scalar (`int`, `float`, `bool`, `char`) holds the address
+// of a local. It is not GC-managed and may only be used inside `unsafe { }`.
+// A line that starts with `*p` would parse as a multiplication continuation,
+// so store through a scalar pointer with the parenthesized form `(*p) = v`.
+
+fn addTo(p: *int, delta: int) {
+    unsafe {
+        (*p) = (*p) + delta
+    }
+}
+
+fn main() {
+    var total = 10
+    unsafe {
+        let p: *int = &total
+        (*p) = (*p) + 5
+        addTo(p, 100)
+        println(*p)
+        println(total)
+    }
+
+    var ratio = 1.5
+    unsafe {
+        let q: *float = &ratio
+        (*q) = (*q) * 2.0
+        println(ratio)
+    }
+
+    var flag = false
+    unsafe {
+        let r: *bool = &flag
+        (*r) = true
+        println(flag)
+    }
+
+    println("done")
+}

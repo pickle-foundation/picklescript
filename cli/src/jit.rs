@@ -289,6 +289,15 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                     tt.insert(dst.0, t);
                 }
                 IrInstr::StoreSlot { .. } => {}
+                IrInstr::LocalAddr { dst, .. } => {
+                    // Raw address: tagged `Int` so it never enters the shadow
+                    // frame (it is not a managed pointer).
+                    tt.insert(dst.0, IrTy::Int);
+                }
+                IrInstr::LoadRaw { dst, ty, .. } => {
+                    tt.insert(dst.0, *ty);
+                }
+                IrInstr::StoreRaw { .. } => {}
                 IrInstr::Call { dst, callee, .. } => {
                     let ret = match callee {
                         Callee::Func(fid) => module.funcs[fid.0].ret,
@@ -750,6 +759,24 @@ fn lower_instr(
         IrInstr::StoreSlot { slot, v } => {
             let x = *values.get(&v.0).context("store operand")?;
             store_slot(builder, func, plan, frame, slot_ss, *slot, x);
+        }
+        IrInstr::LocalAddr { dst, slot } => {
+            let ss = slot_ss
+                .get(&slot.0)
+                .context("raw address of a managed or absent slot")?;
+            let a = builder.ins().stack_addr(types::I64, *ss, Offset32::new(0));
+            values.insert(dst.0, a);
+        }
+        IrInstr::LoadRaw { dst, addr, ty } => {
+            let a = *values.get(&addr.0).context("loadraw address")?;
+            let v = builder.ins().load(clif_ty(*ty), MemFlags::trusted(), a, 0);
+            values.insert(dst.0, v);
+        }
+        IrInstr::StoreRaw { addr, v, ty } => {
+            let a = *values.get(&addr.0).context("storeraw address")?;
+            let x = *values.get(&v.0).context("storeraw value")?;
+            builder.ins().store(MemFlags::trusted(), x, a, 0);
+            let _ = ty;
         }
         IrInstr::Call { dst, callee, args } => {
             let mut iargs: Vec<Value> = Vec::with_capacity(args.len());

@@ -171,6 +171,13 @@ pub enum IrInstr {
     Ftoi { dst: Temp, v: Temp },
     LoadSlot { dst: Temp, slot: Slot },
     StoreSlot { slot: Slot, v: Temp },
+    /// Raw address (`Int`) of a scalar local's stack storage. Only valid for
+    /// non-managed slots; the address is never GC-tracked.
+    LocalAddr { dst: Temp, slot: Slot },
+    /// Load a scalar of `ty` through a raw address (`Int`) temp.
+    LoadRaw { dst: Temp, addr: Temp, ty: IrTy },
+    /// Store a scalar of `ty` through a raw address (`Int`) temp.
+    StoreRaw { addr: Temp, v: Temp, ty: IrTy },
     /// Call a user function or runtime symbol. `dst` absent for void calls.
     Call { dst: Option<Temp>, callee: Callee, args: Vec<Temp> },
 }
@@ -294,6 +301,15 @@ impl fmt::Display for IrInstr {
             }
             IrInstr::StoreSlot { slot, v } => {
                 write!(f, "store {} -> slot s{}", temp_name(*v), slot.0)
+            }
+            IrInstr::LocalAddr { dst, slot } => {
+                write!(f, "{} = addr slot s{}", temp_name(*dst), slot.0)
+            }
+            IrInstr::LoadRaw { dst, addr, ty } => {
+                write!(f, "{} = loadraw.{} [{}]", temp_name(*dst), ty, temp_name(*addr))
+            }
+            IrInstr::StoreRaw { addr, v, ty } => {
+                write!(f, "storeraw.{} {} -> [{}]", ty, temp_name(*v), temp_name(*addr))
             }
             IrInstr::Call { dst, callee, args } => {
                 let callee = match callee {

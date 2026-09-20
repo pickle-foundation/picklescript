@@ -1677,12 +1677,26 @@ fn rejects_deref_of_non_pointer() {
 }
 
 #[test]
-fn rejects_addr_of_scalar() {
+fn accepts_scalar_raw_pointer_store_through() {
     let d = check_str(
         r#"fn main() {
-            let n = 3
+            var n = 3
             unsafe {
                 let p: *int = &n
+                (*p) = (*p) + 1
+                println(*p)
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_addr_of_non_local_scalar() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                let p: *int = &(1 + 2)
                 println(p)
             }
         }"#,
@@ -1690,8 +1704,26 @@ fn rejects_addr_of_scalar() {
     let msgs = error_msgs(&d);
     assert!(has_errors(&d), "expected an error, got none");
     assert!(
-        msgs.contains("`&` currently only supports"),
-        "expected an address-of diagnostic, got:\n{msgs}"
+        msgs.contains("`&` of a scalar requires a local variable"),
+        "expected a local-variable diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_scalar_store_through_read_only_value() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                let p: *int = &5
+                println(p)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`&` of a scalar requires a local variable"),
+        "expected a local-variable diagnostic, got:\n{msgs}"
     );
 }
 

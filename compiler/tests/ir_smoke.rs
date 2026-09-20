@@ -1723,3 +1723,38 @@ fn emits_manual_alloc_adopt_and_free() {
         "managed bindings must stay GC-owned: {msyms:?}"
     );
 }
+
+#[test]
+fn emits_scalar_pointer_address_load_and_store() {
+    let m = emit_str(
+        r#"fn bump(p: *int) {
+            unsafe {
+                (*p) = (*p) + 1
+            }
+        }
+
+        fn main() {
+            var n = 10
+            unsafe {
+                let p: *int = &n
+                (*p) = (*p) + 5
+                bump(p)
+            }
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        dump.contains("addr slot"),
+        "a scalar `&local` must take the local's stack address:\n{dump}"
+    );
+    assert!(
+        dump.contains("loadraw.int64"),
+        "`*p` must lower to a raw load:\n{dump}"
+    );
+    assert!(
+        dump.contains("storeraw.int64"),
+        "`(*p) = v` must lower to a raw store:\n{dump}"
+    );
+}
+
+
