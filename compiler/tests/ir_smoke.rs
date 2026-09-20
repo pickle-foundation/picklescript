@@ -2200,6 +2200,51 @@ fn emits_zero_capture_lambda_and_fn_value_trampoline() {
 }
 
 #[test]
+fn emits_generic_body_lambda_per_instantiation() {
+    // A lambda declared inside a generic function body has no module-scope
+    // hoist: each instantiation that lowers it emits its own `pkl_closure_*`
+    // copy, with that instantiation substituted into the signature. This is
+    // what lets `make_identity<int>()` and `make_identity<float>()` return
+    // distinct closure types.
+    let m = emit_str(
+        r#"fn make_identity<T>() -> fn (T) -> T {
+            (x: T) => x
+        }
+
+        fn main() {
+            let d = make_identity<int>()
+            println(d(5))
+            let f = make_identity<float>()
+            println(f(1.5))
+        }"#,
+    );
+    let dump = format!("{m}");
+    let closures: Vec<usize> = m
+        .funcs
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.symbol.starts_with("pkl_closure_"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(closures.len(), 2, "one hoisted copy per instantiation, got:\n{dump}");
+    let int_copy = m
+        .funcs
+        .iter()
+        .any(|f| f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Int));
+    let float_copy = m
+        .funcs
+        .iter()
+        .any(|f| f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Float));
+    assert!(int_copy, "an int-typed closure copy must exist:\n{dump}");
+    assert!(float_copy, "a float-typed closure copy must exist:\n{dump}");
+    // Both enclosing instantiations lower (and are called), so no bare generic
+    // declaration body is emitted.
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_make_identity__int"), "missing int instantiation:\n{dump}");
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_make_identity__float"), "missing float instantiation:\n{dump}");
+    assert!(!m.funcs.iter().any(|f| f.symbol == "pkl_make_identity"), "bare generic body must not lower:\n{dump}");
+}
+
+#[test]
 fn emits_capturing_lambda_closure() {
     let m = emit_str(
         r#"fn make(base: int) -> fn (int) -> int {

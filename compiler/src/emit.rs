@@ -83,6 +83,7 @@ pub fn emit_ir(
         fid_owner: HashMap::new(),
         fid_generics: HashMap::new(),
         generic_ctx_name: None,
+        generic_fn_ctx: None,
         class_attempted: Vec::new(),
         ctor_ids: HashMap::new(),
         named_ctor_ids: HashMap::new(),
@@ -97,12 +98,15 @@ pub fn emit_ir(
         closure_tables: HashMap::new(),
         lambda_fids: HashMap::new(),
         lambda_caps: HashMap::new(),
+        lambda_owners: HashMap::new(),
+        lambda_exprs: HashMap::new(),
         next_closure: 0,
         tramp_fids: HashMap::new(),
         fn_tramp: HashMap::new(),
         fname: String::new(),
         symbol: String::new(),
         current_subst: HashMap::new(),
+        current_fid: None,
         fn_generics: Vec::new(),
         fparams: Vec::new(),
         fret: IrTy::Unit,
@@ -141,6 +145,10 @@ enum FnSource<'a> {
     Lambda {
         lambda: &'a Expr,
         captures: Vec<Capture>,
+        /// The lambda's parameter types (substituted under the enclosing
+        /// instantiation for a per-instantiation copy, and parallel to the
+        /// lambda's `params` order).
+        pty: Vec<Ty>,
         ret: Ty,
         owner: Option<i64>,
     },
@@ -409,6 +417,11 @@ struct Emitter<'a> {
     /// While pre-registering lambdas, the generic class/struct whose members are
     /// being walked (lambdas inside generic bodies are rejected loudly).
     generic_ctx_name: Option<String>,
+    /// While pre-registering lambdas, the generic top-level function whose body
+    /// is being walked. Lambdas declared inside one cannot be registered yet
+    /// (their signatures carry `Var`s), so they are stashed for a lazily-
+    /// registered per-instantiation copy when the body lowers.
+    generic_fn_ctx: Option<String>,
     /// Names whose registration has been attempted, so ancestors are pulled in
     /// before descendants exactly once (and cycles terminate).
     class_attempted: Vec<String>,
@@ -442,12 +455,22 @@ struct Emitter<'a> {
     /// Synthetic `__closure_N` class tables, so field helpers (`table_of`,
     /// `all_instance_fields`, ...) resolve them exactly like user classes.
     closure_tables: HashMap<String, ClassTable>,
-    /// The lambda expression's span -> its hoisted body function, assigned
-    /// during pre-registration.
-    lambda_fids: HashMap<Span, FuncId>,
-    /// The lambda expression's span -> the captured values its closure object
-    /// must load (parallel to `lambda_fids`).
-    lambda_caps: HashMap<Span, Vec<Capture>>,
+    /// A lambda expression keyed by the enclosing function that introduces it
+    /// (`None` = module scope) -> its hoisted body function. Module-scope
+    /// lambdas are assigned during pre-registration; a lambda declared inside a
+    /// generic function body gets one entry per enclosing instantiation,
+    /// registered lazily the first time that body lowers the lambda.
+    lambda_fids: HashMap<(Option<FuncId>, Span), FuncId>,
+    /// The lambda expression's captured values its closure object must load
+    /// (parallel to `lambda_fids`).
+    lambda_caps: HashMap<(Option<FuncId>, Span), Vec<Capture>>,
+    /// A lambda expression's span -> the class owner id its declaring scope
+    /// had at walk time, for per-instantiation copies registered during build.
+    lambda_owners: HashMap<Span, Option<i64>>,
+    /// A lambda expression's span -> its `&'a Expr`, re-fetched from the walk
+    /// when a per-instantiation copy registers during build (the build-time
+    /// expression handle is not known to live for `'a`).
+    lambda_exprs: HashMap<Span, &'a Expr>,
     /// Monotonic id for hoisted lambda body names (`pkl_closure_<n>`).
     next_closure: u32,
     /// Top-level function id -> its value-use trampoline (`FnSource::Trampoline`),
@@ -466,6 +489,10 @@ struct Emitter<'a> {
     /// inferred type read out of the checker's `types` map is substituted
     /// through this before being mapped to IR.
     current_subst: HashMap<String, Ty>,
+    /// The function currently being built (`None` during pre-registration).
+    /// Keys per-instantiation lambda copies so each generic instantiation that
+    /// lowers the same lambda expression emits its own hoisted body.
+    current_fid: Option<FuncId>,
     /// The current function's generic parameter names, needed to resolve the
     /// type arguments of a nested generic call in its body.
     fn_generics: Vec<String>,
@@ -553,7 +580,13 @@ impl<'a> Emitter<'a> {
                     let mut scope = Vec::new();
                     let mut acc = Vec::new();
                     if let Some(b) = &f.body {
+                        let generic = !f.generics.is_empty();
+                        let saved = self.generic_fn_ctx.clone();
+                        if generic {
+                            self.generic_fn_ctx = Some(f.name.clone());
+                        }
                         self.walk_fn_body(b, None, None, 0, &mut scope, &mut acc);
+                        self.generic_fn_ctx = saved;
                     }
                 }
                 ItemKind::Class(c) => self.walk_class_members(&c.members, &c.name),
@@ -849,7 +882,18 @@ impl<'a> Emitter<'a> {
                     Ok(c) => c,
                     Err(()) => return,
                 };
-                self.register_lambda(e, captures, owner_cid);
+                if self.generic_fn_ctx.is_some() {
+                    // Lambdas declared inside a generic function body cannot be
+                    // registered during the walk: their signatures carry `Var`s
+                    // only an instantiation can substitute. Stash the captures
+                    // and owner so a per-instantiation copy registers lazily the
+                    // first time the lowered body reaches this lambda.
+                    self.lambda_caps.insert((None, e.span), captures);
+                    self.lambda_owners.insert(e.span, owner_cid);
+                    self.lambda_exprs.insert(e.span, e);
+                } else {
+                    self.register_lambda(e, captures, owner_cid);
+                }
                 // Propagate to the parent only the names the parent must also
                 // capture: those it cannot already see in ITS own scopes. A
                 // name bound in the parent-lambda's internals lives in the
@@ -1017,21 +1061,41 @@ impl<'a> Emitter<'a> {
 
     /// Register a lambda's hoisted body and its closure class.
     fn register_lambda(&mut self, lambda: &'a Expr, captures: Vec<Capture>, owner_cid: Option<i64>) {
+        self.register_lambda_at(lambda, captures, owner_cid, &HashMap::new(), None);
+    }
+
+    /// Register a hoisted lambda body under the (enclosing function, span) key
+    /// `base`, substituting `subst` into the signature, captures, and return
+    /// type. Module-scope lambdas register during the walk with an empty
+    /// substitution and `base == None`; a lambda declared inside a generic
+    /// function body registers lazily once per enclosing instantiation with
+    /// that instantiation's substitution and `base == Some(inst fid)`. The
+    /// copy's body then builds under the same substitution (`instanton_subst`),
+    /// so every `Var` inside it resolves to the concrete instantiation.
+    fn register_lambda_at(
+        &mut self,
+        lambda: &'a Expr,
+        captures: Vec<Capture>,
+        owner_cid: Option<i64>,
+        subst: &HashMap<String, Ty>,
+        base: Option<FuncId>,
+    ) -> Option<FuncId> {
         let ExprKind::Lambda { body, .. } = &lambda.kind else {
-            return;
+            return None;
         };
         let _ = self.register_closure_class(captures.len(), lambda.span);
         let fnty = self.types.get(&lambda.span).cloned().unwrap_or(Ty::Unknown);
         // Only lambdas with a fully-resolved checker signature are registered;
         // otherwise leave it unregistered and bail loudly when it is lowered.
         let Ty::Fn(pts, _) = &fnty else {
-            return;
+            return None;
         };
         if params_len(lambda) != pts.len() {
-            return;
+            return None;
         }
+        let pts: Vec<Ty> = pts.iter().map(|t| t.subst(subst)).collect();
         if pts.iter().any(|t| self.map_ty(t, lambda.span).is_err()) {
-            return;
+            return None;
         }
         let mut ret = match &fnty {
             Ty::Fn(_, r) if !matches!(r.as_ref(), Ty::Unknown) => (**r).clone(),
@@ -1040,22 +1104,35 @@ impl<'a> Emitter<'a> {
         if matches!(ret, Ty::Unknown) {
             ret = self.infer_lambda_ret(body);
         }
+        let ret = ret.subst(subst);
         if self.map_ty(&ret, lambda.span).is_err() {
-            return;
+            return None;
         }
+        let caps: Vec<Capture> = captures
+            .iter()
+            .map(|c| Capture {
+                ty: c.ty.subst(subst),
+                ..c.clone()
+            })
+            .collect();
         let fid = self.push_class_func(
             "lambda",
             &format!("pkl_closure_{}", self.next_closure),
             FnSource::Lambda {
                 lambda,
-                captures: captures.clone(),
+                captures: caps.clone(),
+                pty: pts,
                 ret,
                 owner: owner_cid,
             },
         );
         self.next_closure += 1;
-        self.lambda_fids.insert(lambda.span, fid);
-        self.lambda_caps.insert(lambda.span, captures);
+        // A per-instantiation copy's body carries `Var`s until its own build;
+        // keep the substitution live for it exactly as for a generic function.
+        self.instanton_subst.insert(fid, subst.clone());
+        self.lambda_fids.insert((base, lambda.span), fid);
+        self.lambda_caps.insert((base, lambda.span), caps);
+        Some(fid)
     }
 
     /// A lambda body's inferred return type: its trailing expression, or unit
@@ -2078,6 +2155,7 @@ impl<'a> Emitter<'a> {
         self.loops = Vec::new();
         self.cur = BlockId(0);
         self.owner = None;
+        self.current_fid = Some(fid);
 
         // An instantiated generic function's body is checked over its generic
         // parameters, so every inferred type in it carries `Var`s. Apply the
@@ -2110,9 +2188,10 @@ impl<'a> Emitter<'a> {
             FnSource::Lambda {
                 lambda,
                 captures,
+                pty,
                 ret,
                 owner,
-            } => self.build_lambda_body(lambda, &captures, &ret, owner, fid),
+            } => self.build_lambda_body(lambda, &captures, &pty, &ret, owner, fid),
             FnSource::Trampoline { span, target, pty, ret } => {
                 self.owner = None;
                 self.build_trampoline(span, target, &pty, &ret);
@@ -2241,6 +2320,7 @@ fn build_lambda_body(
         &mut self,
         lambda: &'a Expr,
         captures: &[Capture],
+        pty: &[Ty],
         ret: &Ty,
         owner: Option<i64>,
         _fid: FuncId,
@@ -2249,9 +2329,19 @@ fn build_lambda_body(
             let _ = self.bad::<()>(lambda.span, "lambda lost its body");
             return;
         };
-        let Some(Ty::Fn(pty, _)) = self.types.get(&lambda.span).cloned() else {
-            let _ = self.bad::<()>(lambda.span, "lambda parameter types are not statically known");
-            return;
+        let pty: Vec<Ty> = if pty.is_empty() {
+            match self.types.get(&lambda.span) {
+                Some(Ty::Fn(pts, _)) => pts.clone(),
+                _ => {
+                    let _ = self.bad::<()>(
+                        lambda.span,
+                        "lambda parameter types are not statically known",
+                    );
+                    return;
+                }
+            }
+        } else {
+            pty.to_vec()
         };
         let _ = self.map_ty(ret, lambda.span).map(|ir| self.fret = ir);
         self.owner = owner;
@@ -6035,21 +6125,53 @@ fn build_lambda_body(
     }
 
     /// Lower a lambda expression to a closure object whose slot 0 holds the
-    /// address of its pre-registered hoisted body.
+    /// address of its pre-registered hoisted body. A lambda declared inside a
+    /// generic function body has no module-scope registration: the first time
+    /// an instantiation lowers it, a per-instantiation copy is registered under
+    /// that enclosing function id (substituting the instantiation into the
+    /// signature, captures, and return type).
     fn lambda_value(&mut self, e: &Expr) -> Result<Temp, ()> {
-        let Some(&fid) = self.lambda_fids.get(&e.span) else {
-            // A lambda inside a generic class/struct body is rejected at
-            // walk time (E0900); if lowering still reaches it, keep the
-            // diagnostic in that spirit instead of an uncoded surprise.
+        let inst_key = self.current_fid.map(|f| (Some(f), e.span));
+        let base_key = (None, e.span);
+        let mut fid = inst_key
+            .as_ref()
+            .and_then(|k| self.lambda_fids.get(k).copied())
+            .or_else(|| self.lambda_fids.get(&base_key).copied());
+        if fid.is_none() {
+            // A lambda inside a generic class/struct body is rejected at walk
+            // time (E0900); if lowering still reaches it, keep the diagnostic
+            // in that spirit instead of an uncoded surprise.
             if let Some(cls) = self.generic_owner() {
                 return self.bad(
                     e.span,
                     format!("a lambda inside the generic class/struct `{cls}` is not lowered yet"),
                 );
             }
+            // Inside an instantiated generic body, the walk stashed the
+            // captures (and owner); register the copy under this instantiation.
+            let inst = match (self.current_fid, self.current_subst.is_empty()) {
+                (Some(i), false) => i,
+                _ => {
+                    return self.bad(e.span, "this lambda was not registered for lowering");
+                }
+            };
+            let caps = self.lambda_caps.get(&base_key).cloned().unwrap_or_default();
+            let owner = self.lambda_owners.get(&e.span).copied().flatten();
+            let sub = self.instanton_subst.get(&inst).cloned().unwrap_or_default();
+            let Some(le) = self.lambda_exprs.get(&e.span).copied() else {
+                return self.bad(e.span, "this lambda was not registered for lowering");
+            };
+            fid = self.register_lambda_at(le, caps, owner, &sub, Some(inst));
+        }
+        let Some(fid) = fid else {
             return self.bad(e.span, "this lambda was not registered for lowering");
         };
-        let caps = self.lambda_caps.get(&e.span).cloned().unwrap_or_default();
+        let caps = inst_key
+            .as_ref()
+            .and_then(|k| self.lambda_caps.get(k))
+            .or_else(|| self.lambda_caps.get(&base_key))
+            .cloned()
+            .unwrap_or_default();
         self.closure_obj(e, fid, &caps)
     }
 

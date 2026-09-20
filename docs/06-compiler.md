@@ -264,6 +264,20 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
    checker flags at the first use, and the emitter bails if one ever slips
    through; instantiations with unresolved `Var` type arguments bail cleanly
    with a "cannot instantiate …with unresolved type arguments" diagnostic.
+- Lambdas **declared inside a generic function body** (`fn make_identity<T>()
+   -> fn (T) -> T { (x: T) => x }`) are skipped at the pre-registration walk
+   (`register_lambdas` runs under a `generic_fn_ctx` flag): their signatures
+   carry `Var`s no module-scope hoist could type. Each instantiation that
+   lowers the lambda registers its own hoisted body on first contact — in
+   `lambda_value`, keyed `(enclosing instantiation id, span)` in `lambda_fids`
+   — via `register_lambda_at`, which substitutes that instantiation into the
+   parameter types, captures, and return type, and seeds `instanton_subst` for
+   the copy's own build so nested lambdas inside it resolve the same
+   substitution. Distinct instantiations therefore get distinct, correctly
+   typed closure bodies (`make_identity<int>()` and `make_identity<float>()`
+   emit `pkl_closure_*` bodies with `int` vs `float` parameters). Lambdas
+   inside generic *class/struct* members still bail cleanly ("a lambda inside
+   the generic class/struct … is not lowered yet").
 - Generic classes and structs (`class Box<T>` / `struct Pair<A, B>`) lower by
   **lazy per-use-site materialization**. The first reference with a concrete
   type-argument list (`Box<int>(…)`, a `b.value`/`b.read()` access on a

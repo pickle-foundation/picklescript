@@ -144,3 +144,46 @@ test fn generic_fn_value_list_instantiation() {
     expect(list_reflect(id_fn<List<int>>, [1, 2])).toBe(2)
     expect(list_reflect(id_fn, [3, 4])).toBe(2)
 }
+
+fn make_identity<T>() -> fn (T) -> T {
+    (x: T) => x
+}
+
+fn apply_gen<T>(f: fn (T) -> T, x: T) -> T {
+    f(f(x))
+}
+
+fn gen_ignore_first<T>(a: T) -> fn (T) -> T {
+    (x: T) => a
+}
+
+test fn lambda_inside_generic_body() {
+    let d = make_identity<int>()
+    expect(d(21)).toBe(21)
+}
+
+test fn generic_body_lambda_via_higher_order() {
+    expect(apply_gen(make_identity<int>(), 6)).toBe(6)
+}
+
+test fn generic_body_lambda_distinct_instantiations() {
+    let di = make_identity<int>()
+    let df = make_identity<float>()
+    expect(di(7)).toBe(7)
+    expect(df(2.5)).toBe(2.5)
+}
+
+test fn generic_body_lambda_captures_generic_value() {
+    let g = gen_ignore_first<int>(41)
+    expect(g(999)).toBe(41)
+}
+
+fn make_outer<T>() -> fn (T) -> fn (T) -> T {
+    (x: T) => (y: T) => x
+}
+
+test fn nested_lambda_inside_generic_body() {
+    let m = make_outer<int>()
+    let g = m(5)
+    expect(g(6)).toBe(5)
+}

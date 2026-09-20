@@ -99,8 +99,12 @@ fn max<T>(a: T, b: T) -> T where T: Comparable => a > b ? a : b
 > instantiation is shared with direct calls and a `let idU = id` with nothing
 > to pin is an error (an unresolved type variable leaks into its uses). Still
 > bails cleanly ("not lowered yet"): `where` bounds, and lambdas **declared
-> inside** generic class/function bodies (lambdas passed **into** an
-> instantiation lower fine). See docs/06-compiler.md "Generic classes…".
+> inside** generic class/struct bodies (lambdas passed **into** an
+> instantiation lower fine). Lambdas **declared inside a generic function
+> body** (such as `fn make_identity<T>() -> fn(T) -> T { (x: T) => x }`) are
+> supported: each instantiation that reaches the lambda lowers its own hoisted
+> copy with that instantiation substituted into the signature, captures, and
+> return type. See docs/06-compiler.md "Generic classes…".
 
 ## Function types
 
