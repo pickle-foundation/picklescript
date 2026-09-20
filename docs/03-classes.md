@@ -84,22 +84,29 @@ Rules:
   (`fn review()`) in a class; often via an `interface` instead.
 
 > **Implemented subset (current compiler).** `extends` is lowered for state,
-> methods, `override fn`, `super.m()`, and `is`/`as`. Fields are laid out
-> parent-first (superclass slots occupy the low indices), a subclass inherits
-> its parent's methods, and its synthesized constructor takes every
-> non-initialized instance field superclass-first. Classes must be registered
-> ancestor-first, so a superclass always has a lower runtime id. A method that
-> is overridden somewhere in the program dispatches on the receiver's runtime
-> class (`after : Animal`, `p : Poodle` both call `Poodle.describe`), while
-> `super.m()` stays bound to the superclass implementation and never-overridden
-> methods call statically. `x is T` / `x as T` test the runtime class chain: an
-> upcast is statically true/identity, a downcast is a checked runtime test
-> (`as` panics on a bad cast). **Not yet lowered** (a loud "not lowered yet"
-> diagnostic, never a silent miscompile): `super(...)` constructor chaining,
-> explicit or named constructors anywhere in a hierarchy, and
-> interfaces/`implements`. Generic classes (`class Box<T>`) are lowered on
-> their own (see 04-types.md), but **not inside a hierarchy**: an instantiated
-> generic class using `extends`/`implements`/`override` bails.
+> methods, `override fn`, `super.m()`, `is`/`as`, and constructor chaining.
+> Fields are laid out parent-first (superclass slots occupy the low indices), a
+> subclass inherits its parent's methods, and its synthesized constructor takes
+> every non-initialized instance field superclass-first. Classes must be
+> registered ancestor-first, so a superclass always has a lower runtime id. A
+> method that is overridden somewhere in the program dispatches on the
+> receiver's runtime class (`after : Animal`, `p : Poodle` both call
+> `Poodle.describe`), while `super.m()` stays bound to the superclass
+> implementation and never-overridden methods call statically. `x is T` /
+> `x as T` test the runtime class chain: an upcast is statically
+> true/identity, a downcast is a checked runtime test (`as` panics on a bad
+> cast). A subclass constructor may open with `super(args)`: the arguments are
+> checked against (and chain into) the parent constructor — an explicit parent
+> gets its parameters bound and its body run inlined, a synthesized parent gets
+> its uninitialized fields filled — recursing across the whole hierarchy.
+> Named constructors in a hierarchy delegate through their class's primary
+> constructor, which handles the chain. A class that relies on the synthesized
+> constructor still cannot sit below a class that declares an explicit
+> constructor. **Not yet lowered** (a loud "not lowered yet" diagnostic, never
+> a silent miscompile): interfaces/`implements`. Generic classes
+> (`class Box<T>`) are lowered on their own (see 04-types.md), but **not inside
+> a hierarchy**: an instantiated generic class using
+> `extends`/`implements`/`override` bails.
 
 ## Interfaces
 

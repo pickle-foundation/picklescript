@@ -210,7 +210,8 @@ Lowering rules:
   `FuncAddr` const (`addrof fn#N`, typed `int` so the raw code pointer never
   enters the GC trace frame). A class without `deinit` passes `0`.
 - Single inheritance (`class Child extends Parent`) is lowered for a subset:
-  state, methods, `override fn`, `super.m()`, and hierarchy casts. Classes must
+  state, methods, `override fn`, `super.m()`, hierarchy casts, and constructor
+  chaining. Classes must
   be registered **ancestor-first** (the emitter pulls superclasses in before
   subclasses), so a superclass always has a lower id. Instance fields are laid
   out **parent-first**: a subclass's object slots begin with the superclass's
@@ -221,6 +222,21 @@ Lowering rules:
   its synthesized constructor parameters from all instance fields without
   initializers, superclass first. `super.m(...)` lowers to a direct call of the
   superclass method on the same receiver.
+- Constructors in a hierarchy use **`super(...)` chaining**. A subclass
+  constructor that opens with `super(args)` has the chain inlined into its own
+  `pkl_<Name>_new`: after `pickle_class_new` allocates the whole hierarchy and
+  every field initializer (all ancestry, parent-first) runs, the evaluated
+  `super` arguments bind the parent constructor's parameters — or, for a
+  synthesized parent, are boxed into its uninitialized field slots — and the
+  parent constructor body runs, recursing up the chain. Parameter binding for
+  pointer-typed parameters option-wraps the argument the same way a direct
+  constructor call does. The rest of the child's body then runs, followed by
+  the hierarchy's `init` blocks (still run once, in the leaf constructor).
+  Named constructors lowdown unchanged: they delegate via `this(...)` to the
+  class's primary constructor, which absorbs the chain. Validation: an explicit
+  constructor whose parent declares an explicit constructor must start with
+  `super(...)` (else E0900), and a class with no explicit primary constructor
+  cannot sit below an ancestor that declares one.
 - A method redefined lower down with `override fn` is called through a
   **virtual dispatch cascade**. `build_virtual_dispatch` runs once after all
   classes register and, for every static receiver class, records the
@@ -237,8 +253,7 @@ Lowering rules:
   bypasses the cascade (it always calls this class's implementation) and a
   method with no cascade entry is an ordinary direct call.
 - Not-yet-lowered inheritance edges bail loudly instead of miscompiling:
-  `implements`/interfaces, explicit or named
-  constructors in a hierarchy, and a subclass whose superclass is itself
+  `implements`/interfaces and a subclass whose superclass is itself
   unbounded. A class using one of these is skipped with a "… not lowered yet"
   diagnostic. Generic classes target these same edges when instantiated:
   an instantiation whose plan hits `extends`/`implements`/`override`/named
@@ -324,7 +339,8 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
   initializers (declaration order, superclass fields first). Fields with
   initializers (`var x: int = 0`) and `init { ... }` blocks run during
   construction: field initializers across the ancestry in root-first order, then
-  the explicit constructor body (an implicit one has none), then any `init`
+  the explicit constructor body (an implicit one has none — unless it opens with
+  `super(...)`, which inlines the parent chain first), then any `init`
   blocks (also root-first). `this` is live throughout, so initializers can read
   earlier fields and the body can assign any member. An initialized field
   therefore needs no constructor argument, but still occupies a slot.
