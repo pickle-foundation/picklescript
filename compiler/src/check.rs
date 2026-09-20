@@ -18,6 +18,10 @@ struct Local {
     /// Already freed via `.free()` in this scope (statically provable
     /// use-after-free).
     freed: bool,
+    /// Ownership was moved out of this binding (`#[manualAlloc] let y = x`,
+    /// passing to an owned parameter, or returning it). A moved binding may
+    /// not be read or freed again.
+    moved: bool,
 }
 
 pub fn check_program(
@@ -82,6 +86,9 @@ struct Checker<'a> {
     named_ctor_delegated: bool,
     /// Loop depth for `break`/`continue` validation.
     loop_depth: usize,
+    /// Whether the current function is `#[manualAlloc]`, i.e. returns ownership
+    /// of its result to the caller.
+    ret_manual: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -104,6 +111,7 @@ impl<'a> Checker<'a> {
             named_ctor_params: None,
             named_ctor_delegated: false,
             loop_depth: 0,
+            ret_manual: false,
         }
     }
 
@@ -160,6 +168,7 @@ impl<'a> Checker<'a> {
                     mutable,
                     manual: false,
                     freed: false,
+                    moved: false,
                 },
             );
         }
@@ -202,6 +211,66 @@ impl<'a> Checker<'a> {
 
     fn is_freed(&self, name: &str) -> bool {
         self.lookup(name).map(|l| l.freed).unwrap_or(false)
+    }
+
+    fn mark_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(l) = scope.get_mut(name) {
+                l.moved = true;
+                return;
+            }
+        }
+    }
+
+    /// If `e` is a bare identifier naming a live `#[manualAlloc]` local, return
+    /// its name. Naming it in an owning position (another manual binding, an
+    /// owned parameter, or an owned return) hands over ownership.
+    fn manual_move_source(&self, e: &Expr) -> Option<String> {
+        if let ExprKind::Ident(name) = &e.kind {
+            if let Some(l) = self.lookup(name) {
+                if l.manual && !l.moved && !l.freed {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Snapshot the consumption state (`moved`, `freed`) of every live local,
+    /// so a branch can be analysed from the state at the join point and merged
+    /// afterwards.
+    fn capture_moved(&self) -> Vec<HashMap<String, (bool, bool)>> {
+        self.scopes
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|(k, v)| (k.clone(), (v.moved, v.freed)))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn set_moved(&mut self, state: &[HashMap<String, (bool, bool)>]) {
+        for (scope, snapshot) in self.scopes.iter_mut().zip(state.iter()) {
+            for (name, local) in scope.iter_mut() {
+                if let Some((moved, freed)) = snapshot.get(name) {
+                    local.moved = *moved;
+                    local.freed = *freed;
+                }
+            }
+        }
+    }
+
+    /// Union the consumption bits of `b` into `a` (a value consumed on *either*
+    /// path must be treated as consumed after the join).
+    fn union_moved(a: &mut [HashMap<String, (bool, bool)>], b: &[HashMap<String, (bool, bool)>]) {
+        for (sa, sb) in a.iter_mut().zip(b.iter()) {
+            for (name, (moved, freed)) in sb {
+                let slot = sa.entry(name.clone()).or_insert((false, false));
+                slot.0 = slot.0 || *moved;
+                slot.1 = slot.1 || *freed;
+            }
+        }
     }
 
     fn mark_freed(&mut self, name: &str) {
@@ -732,8 +801,13 @@ impl<'a> Checker<'a> {
                     (None, Some(i)) => i.clone(),
                     (None, None) => Ty::Unknown,
                 };
+                let moved_from = init.as_ref().and_then(|e| self.manual_move_source(e));
                 if manual {
-                    if init.is_none() {
+                    if let Some(src) = &moved_from {
+                        // Ownership transfer: `#[manualAlloc] let y = x`
+                        // moves the allocation out of `x`.
+                        self.mark_moved(src);
+                    } else if init.is_none() {
                         self.err(
                             *span,
                             "`#[manualAlloc]` requires an allocation initializer",
@@ -745,6 +819,12 @@ impl<'a> Checker<'a> {
                             "manual allocation applies to class/struct instances",
                         );
                     }
+                } else if let Some(src) = &moved_from {
+                    self.err_note(
+                        *span,
+                        format!("cannot bind `#[manualAlloc]` value `{src}` to a managed binding"),
+                        format!("take ownership with `#[manualAlloc] let ... = {src}`, or `{src}.free()`"),
+                    );
                 }
                 self.bind_pattern(pattern, &final_ty, *mutable);
                 if manual {
@@ -770,6 +850,22 @@ impl<'a> Checker<'a> {
                     Some(e) => self.check_expr(e),
                     None => Ty::Empty,
                 };
+                if let Some(src) = value.as_ref().and_then(|e| self.manual_move_source(e)) {
+                    if self.ret_manual {
+                        // Ownership passes to the caller.
+                        self.mark_moved(&src);
+                    } else {
+                        self.err_note(
+                            *span,
+                            format!(
+                                "cannot return `#[manualAlloc]` value `{src}` from a function that does not own its result"
+                            ),
+                            format!(
+                                "mark the function `#[manualAlloc]` to transfer `{src}` to the caller"
+                            ),
+                        );
+                    }
+                }
                 if self.ret_ty == Ty::Empty {
                     if value.is_some() {
                         self.err_note(
@@ -1339,6 +1435,12 @@ impl<'a> Checker<'a> {
         if let Some(l) = self.lookup(name) {
             if l.freed {
                 self.err(e.span, format!("use of `{name}` after `free()`"));
+            } else if l.moved {
+                self.err_note(
+                    e.span,
+                    format!("use of `{name}` after it was moved"),
+                    "a `#[manualAlloc]` value has a single owner; bind the new name and use that",
+                );
             }
             return l.ty.clone();
         }
@@ -2037,6 +2139,7 @@ impl<'a> Checker<'a> {
     fn check_assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Ty {
         let _ = op;
         let vt = self.check_expr(value);
+        let moved_from = self.manual_move_source(value);
         match &target.kind {
             ExprKind::Ident(name) => {
                 match self.lookup(name).cloned() {
@@ -2045,6 +2148,21 @@ impl<'a> Checker<'a> {
                             self.err(
                                 target.span,
                                 format!("cannot assign to immutable binding `{name}`"),
+                            );
+                        }
+                        if l.manual {
+                            self.err_note(
+                                target.span,
+                                format!("cannot overwrite `#[manualAlloc]` binding `{name}`"),
+                                format!("`free()` `{name}` first, then bind a new value with `let`"),
+                            );
+                        } else if let Some(src) = &moved_from {
+                            self.err_note(
+                                target.span,
+                                format!(
+                                    "cannot assign `#[manualAlloc]` value `{src}` to managed binding `{name}`"
+                                ),
+                                format!("take ownership with `#[manualAlloc] let ... = {src}`, or `{src}.free()`"),
                             );
                         }
                         self.check_assignable(&l.ty, &vt, target.span, "assignment");
@@ -2061,6 +2179,15 @@ impl<'a> Checker<'a> {
                                             format!("cannot assign to immutable field `{name}`"),
                                         );
                                     }
+                                    if let Some(src) = &moved_from {
+                                        self.err_note(
+                                            target.span,
+                                            format!(
+                                                "cannot store `#[manualAlloc]` value `{src}` in managed field `{name}`"
+                                            ),
+                                            "an owned value must stay in an owned position",
+                                        );
+                                    }
                                     self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
                                     return Ty::Empty;
                                 }
@@ -2074,6 +2201,15 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Member { object, name } => {
+                if let Some(src) = &moved_from {
+                    self.err_note(
+                        target.span,
+                        format!(
+                            "cannot store `#[manualAlloc]` value `{src}` in managed field `{name}`"
+                        ),
+                        "an owned value must stay in an owned position",
+                    );
+                }
     // Type-qualified static property assignment: `Type.prop = v`.
     if let ExprKind::Ident(tname) = &object.kind {
         if let Some(entry) = self.resolved.types.get(tname) {
@@ -2160,6 +2296,15 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Index { object, index } => {
+                if let Some(src) = &moved_from {
+                    self.err_note(
+                        target.span,
+                        format!(
+                            "cannot store `#[manualAlloc]` value `{src}` in a managed collection"
+                        ),
+                        "an owned value must stay in an owned position",
+                    );
+                }
                 let ot = self.check_expr(object);
                 let it = self.check_expr(index);
                 match &ot {
@@ -2242,10 +2387,18 @@ impl<'a> Checker<'a> {
                 self.pop_scope();
             }
         }
+        // Analyze each branch from the same entry state and merge the moved
+        // bits, so a value moved on one path is treated as moved afterwards
+        // without falsely rejecting a move that happens on both paths.
+        let before = self.capture_moved();
         let tt = self.check_block(then);
+        let mut after = self.capture_moved();
         let _ = e.span;
         if let Some(else_e) = else_else {
+            self.set_moved(&before);
             let et = self.check_expr(else_e);
+            let after_else = self.capture_moved();
+            Self::union_moved(&mut after, &after_else);
             if tt != Ty::Empty && et != Ty::Empty && tt != et {
                 self.err_note(
                     else_e.span,
@@ -2253,8 +2406,10 @@ impl<'a> Checker<'a> {
                     "both branches of an if-expression must produce the same type",
                 );
             }
+            self.set_moved(&after);
             tt
         } else {
+            self.set_moved(&after);
             Ty::Empty
         }
     }
@@ -2262,13 +2417,22 @@ impl<'a> Checker<'a> {
     fn check_match(&mut self, e: &Expr, scrutinee: &Expr, arms: &[MatchArm]) -> Ty {
         let st = self.check_expr(scrutinee);
         let mut result = Ty::Empty;
+        let before = self.capture_moved();
+        let mut merged: Option<Vec<HashMap<String, (bool, bool)>>> = None;
         for arm in arms {
+            self.set_moved(&before);
             self.push_scope();
             self.bind_pattern(&arm.pattern, &st, false);
             if let Some(g) = &arm.guard {
                 self.check_bool_cond(g);
             }
             let bt = self.check_expr(&arm.body);
+            self.pop_scope();
+            let after_arm = self.capture_moved();
+            match &mut merged {
+                Some(acc) => Self::union_moved(acc, &after_arm),
+                None => merged = Some(after_arm),
+            }
             if result == Ty::Empty {
                 result = bt;
             } else if bt != Ty::Empty && bt != result {
@@ -2278,7 +2442,9 @@ impl<'a> Checker<'a> {
                     "all arms of a match expression must produce the same type",
                 );
             }
-            self.pop_scope();
+        }
+        if let Some(acc) = merged {
+            self.set_moved(&acc);
         }
         let _ = e.span;
         result

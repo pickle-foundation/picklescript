@@ -1080,6 +1080,178 @@ fn rejects_item_level_attributes() {
 }
 
 #[test]
+fn accepts_manual_move_between_bindings() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let a = Widget(1)
+            #[manualAlloc] let b = a
+            println(b.value)
+            b.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_use_after_move() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let a = Widget(1)
+            #[manualAlloc] let b = a
+            println(a.value)
+            b.free()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("after it was moved"),
+        "expected a use-after-move diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_manual_value_into_managed_binding() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let a = Widget(1)
+            let b = a
+            a.free()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("managed binding"),
+        "expected a managed-binding diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_storing_manual_value_in_managed_field() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        class Holder {
+            var widget: Widget?
+        }
+
+        fn main() {
+            #[manualAlloc] let a = Widget(1)
+            let h = Holder(none)
+            h.widget = a
+            a.free()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("managed field"),
+        "expected a managed-field diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn accepts_free_in_both_if_branches() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main(flag: bool) {
+            #[manualAlloc] let w = Widget(1)
+            if (flag) {
+                w.free()
+            } else {
+                w.free()
+            }
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "freeing on both branches must not be a double free:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_use_after_free_on_only_one_branch() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main(flag: bool) {
+            #[manualAlloc] let w = Widget(1)
+            if (flag) {
+                w.free()
+            }
+            println(w.value)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("after `free()`") || msgs.contains("after it was moved"),
+        "expected a consumption diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_returning_manual_from_managed_fn() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn leak() -> Widget {
+            #[manualAlloc] let w = Widget(1)
+            return w
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("does not own its result"),
+        "expected an ownership diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_overwriting_live_manual_binding() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] var w = Widget(1)
+            w = Widget(2)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("overwrite") || msgs.contains("unknown attribute"),
+        "expected an overwrite diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
 fn rejects_unknown_member_in_subclass() {
     let d = check_str(
         r#"class Animal {
