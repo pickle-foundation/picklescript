@@ -32,8 +32,17 @@ pub struct ImportDecl {
 #[derive(Debug, Clone)]
 pub struct Item {
     pub doc: Vec<String>,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
     pub kind: ItemKind,
+}
+
+/// `#[name]` or `#[name(args)]` attached to an item or a `let` binding.
+#[derive(Debug, Clone)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +160,7 @@ pub enum Stmt {
         ty: Option<TypeExpr>,
         init: Option<Expr>,
         mutable: bool,
+        attrs: Vec<Attribute>,
         span: Span,
     },
     Const {

@@ -9,7 +9,7 @@ use crate::heap::{raw_free, Heap};
 use crate::layout::{list_data, map_entries};
 use crate::object::{
     DescriptorTable, PickleObject, RootCell, PICKLE_CLASS_FLAG_FINALIZER, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
-    PICKLE_CLASS_STRING,
+    PICKLE_CLASS_STRING, PICKLE_FLAG_MANUAL,
 };
 use crate::shadow;
 use crate::trace;
@@ -50,6 +50,9 @@ pub struct Gc {
     class_parents: Vec<u32>,
     /// Total live object bytes (updated at sweep).
     pub live_bytes: AtomicU32,
+    /// Objects owned by `#[manualAlloc]` bindings. Always traced as roots and
+    /// never swept; released only by `pickle_manual_free`.
+    manual_objects: Vec<*mut PickleObject>,
 }
 
 impl Gc {
@@ -59,6 +62,7 @@ impl Gc {
             descriptors: DescriptorTable::new(),
             class_parents: Vec::new(),
             live_bytes: AtomicU32::new(0),
+            manual_objects: Vec::new(),
         }
     }
 
@@ -135,7 +139,7 @@ impl Gc {
             cells.iter().map(|cell| cell.cell).collect()
         };
         let descriptors = &self.descriptors;
-        trace::trace_from_roots(descriptors, &roots);
+        trace::trace_from_roots(descriptors, &roots, &self.manual_objects);
 
         // Sweep: release dead list/map raw buffers and pick out the objects
         // whose finalizers must run. Finalizers are *deferred*: the heap borrow
@@ -207,6 +211,60 @@ impl Gc {
             self.collect();
         }
     }
+
+    /// Adopt `obj` as a programmer-owned (`#[manualAlloc]`) allocation. The
+    /// object is flagged and registered so the collector treats it as a root;
+    /// it is released only by `manual_free`. Returns `obj` for chaining.
+    pub fn manual_adopt(&mut self, obj: *mut PickleObject) -> *mut PickleObject {
+        if obj.is_null() {
+            return obj;
+        }
+        unsafe {
+            (*obj).flags |= PICKLE_FLAG_MANUAL;
+        }
+        if !self.manual_objects.contains(&obj) {
+            self.manual_objects.push(obj);
+        }
+        obj
+    }
+
+    /// Explicitly release a `#[manualAlloc]` object: run its finalizer, free
+    /// any raw side buffers, and return the block to the heap. Panics if the
+    /// object was not adopted (double free / free of a managed object).
+    pub fn manual_free(&mut self, obj: *mut PickleObject) {
+        assert!(!obj.is_null(), "pickle: `free()` on a null object");
+        let (class_id, flags) = unsafe { ((*obj).class_id, (*obj).flags) };
+        assert!(
+            flags & PICKLE_FLAG_MANUAL != 0,
+            "pickle: `free()` on an object not allocated with `#[manualAlloc]`"
+        );
+        // Deregister first so a finalizer that allocates can never see a
+        // half-freed manual object.
+        self.manual_objects.retain(|&o| o != obj);
+        if let Some(d) = self.descriptors.get(class_id) {
+            if d.flags & PICKLE_CLASS_FLAG_FINALIZER != 0 {
+                (d.finalizer)(obj);
+            }
+        }
+        unsafe {
+            match class_id {
+                PICKLE_CLASS_LIST => {
+                    let data = list_data(obj);
+                    if !data.is_null() {
+                        raw_free(data as *mut u8);
+                    }
+                }
+                PICKLE_CLASS_MAP => {
+                    let entries = map_entries(obj);
+                    if !entries.is_null() {
+                        raw_free(entries as *mut u8);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.heap.free_object(obj);
+    }
 }
 
 impl Default for Gc {
@@ -257,6 +315,19 @@ pub(crate) fn shutdown() {
 pub extern "C" fn pickle_gc_alloc(size: u32, class_id: u32) -> *mut PickleObject {
     let gc = gc_mut();
     gc.alloc(size, class_id)
+}
+
+/// Adopt an object into the manual (`#[manualAlloc]`) registry. Returns the
+/// object pointer so it can wrap a constructor expression.
+#[no_mangle]
+pub extern "C" fn pickle_manual_adopt(obj: *mut PickleObject) -> *mut PickleObject {
+    gc_mut().manual_adopt(obj)
+}
+
+/// Release an object adopted with `pickle_manual_adopt`.
+#[no_mangle]
+pub extern "C" fn pickle_manual_free(obj: *mut PickleObject) {
+    gc_mut().manual_free(obj);
 }
 
 /// Register a static root cell (`*mut *mut PickleObject`). The cell's pointee
@@ -541,5 +612,96 @@ mod tests {
         }
         pickle_gc_root_drop(handle);
         unsafe { drop(Box::from_raw(root)) };
+    }
+
+    #[test]
+    fn manual_object_survives_collect_and_finalizes_on_free() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        FINALIZED.store(0, Ordering::Relaxed);
+        let gc = gc_mut();
+        let cls = finalizable_class(gc);
+        let obj = gc.alloc(64, cls);
+        let addr = obj as usize;
+        assert_eq!(gc.manual_adopt(obj), obj, "adopt returns the object");
+        assert_ne!(
+            unsafe { (*obj).flags } & crate::object::PICKLE_FLAG_MANUAL,
+            0,
+            "adopted objects carry the manual flag"
+        );
+        // A collection must neither sweep nor finalize a manual object.
+        gc.collect();
+        assert_eq!(
+            FINALIZED.load(Ordering::Relaxed),
+            0,
+            "a manual object must not be finalized by the collector"
+        );
+        assert_eq!(unsafe { (*obj).class_id }, cls, "manual object must survive the sweep");
+        assert_eq!(gc.manual_objects.len(), 1);
+        // Explicit free finalizes exactly once, deregisters, and recycles.
+        gc.manual_free(obj);
+        assert_eq!(
+            FINALIZED.load(Ordering::Relaxed),
+            1,
+            "`free` must run the finalizer exactly once"
+        );
+        assert!(gc.manual_objects.is_empty(), "`free` must deregister the object");
+        let recycled = gc.alloc(64, cls);
+        assert_eq!(recycled as usize, addr, "the freed manual block must be reusable");
+    }
+
+    #[test]
+    fn manual_adopt_is_idempotent() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        let gc = gc_mut();
+        let cls = leaf_class(gc);
+        let obj = gc.alloc(48, cls);
+        gc.manual_adopt(obj);
+        gc.manual_adopt(obj);
+        assert_eq!(gc.manual_objects.len(), 1, "adopting twice must register once");
+        gc.manual_free(obj);
+        assert!(gc.manual_objects.is_empty());
+    }
+
+    #[test]
+    fn manual_object_keeps_managed_field_alive() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        let gc = gc_mut();
+        let holder_cls = gc.register_class(crate::object::ClassDescriptor {
+            name_ptr: b"holder\0".as_ptr(),
+            name_len: 6,
+            flags: 0,
+            slot_count: 1,
+            mask_words: 1,
+            managed_mask: &[1u32] as *const u32,
+            finalizer: crate::object::builtin_nop_finalizer,
+        });
+        let leaf = leaf_class(gc);
+        let holder = gc.alloc(48, holder_cls);
+        let child = gc.alloc(48, leaf);
+        unsafe {
+            (*holder).set_slot(0, child);
+        }
+        gc.manual_adopt(holder);
+        gc.collect();
+        assert_eq!(
+            unsafe { (*holder).slot(0) },
+            child,
+            "a managed field of a manual object must be traced and survive"
+        );
+        gc.manual_free(holder);
+    }
+
+    #[test]
+    #[should_panic(expected = "not allocated with")]
+    fn manual_free_rejects_managed_object() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        let gc = gc_mut();
+        let cls = leaf_class(gc);
+        let obj = gc.alloc(48, cls);
+        gc.manual_free(obj);
     }
 }

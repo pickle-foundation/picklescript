@@ -221,6 +221,9 @@ pub mod abi {
     pub use crate::class::pickle_obj_slot_get;
     pub use crate::class::pickle_obj_slot_set;
 
+    pub use crate::gc::pickle_manual_adopt;
+    pub use crate::gc::pickle_manual_free;
+
     pub use crate::statics::pickle_static_get;
     pub use crate::statics::pickle_static_set;
 

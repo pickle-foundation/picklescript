@@ -295,6 +295,7 @@ impl<'a> Lexer<'a> {
                 LexedToken::new(Tok::Bang, self.span(start, start + 1))
             }
             '~' => LexedToken::new(Tok::Tilde, self.span(start, start + 1)),
+            '#' => LexedToken::new(Tok::Hash, self.span(start, start + 1)),
             '&' => {
                 if self.at() == '&' {
                     self.bump();

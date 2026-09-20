@@ -25,6 +25,39 @@ fn main() {
 - Locals, fields, collection elements are all managed uniformly.
 - Strings are immutable and UTF-8; substring/slice operations copy.
 
+## Deterministic memory: `#[manualAlloc]`
+
+Safe PickleScript is garbage collected. When you want to control exactly when
+an object dies — a pool, a mesh, a buffer, a node in a hot loop — annotate the
+binding with `#[manualAlloc]`:
+
+```
+#[manualAlloc]
+let mesh = Mesh("terrain")
+// ... use mesh ...
+mesh.free()                       // runs deinit(), returns the memory now
+```
+
+Rules:
+
+- The initializer must construct a `class` or `struct` object.
+- A `#[manualAlloc]` binding is the object's **single owner**. While it is
+  live the collector never reclaims the object and never runs its `deinit`;
+  the object counts as a GC root, so anything it references stays alive too.
+- `free()` runs `deinit` (if any) exactly once, then releases the memory back
+  to the heap for reuse. Calling `free()` a second time, or reading the
+  binding after `free()`, is a compile error.
+- `free()` is only valid on a manual binding. Annotating a binding whose type
+  is not a class/struct, passing arguments to the attribute, or using an
+  unknown attribute is a compile error.
+- Attributes on declarations (a class, `fn`, ...) are not lowered yet and are
+  rejected with a clear message.
+
+There are no lifetimes and no borrow checker: the model is "one owner, free it
+once". Cross-tier transfers (moving a manual object into a GC graph and back)
+and manual *fields*, *parameters* and *returns* are the next step; raw
+pointers live in `unsafe`.
+
 ## Collector
 
 The v1 collector is a **non-moving, stop-the-world, mark-and-sweep GC**

@@ -329,3 +329,51 @@ fn parses_nested_generic_types() {
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["fn", "fn", "fn"]);
 }
+
+#[test]
+fn parses_attributes_on_items_and_let() {
+    use pickle_compiler::ast::{Block, FnBody, Stmt};
+    let p = parse_str(
+        r#"#[manualAlloc]
+        class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc]
+            let w = Widget(1)
+        }"#,
+    );
+    assert_eq!(p.items[0].attrs.len(), 1, "class attribute lost");
+    assert_eq!(p.items[0].attrs[0].name, "manualAlloc");
+    assert!(p.items[0].attrs[0].args.is_empty());
+
+    let body = match &p.items[1].kind {
+        ItemKind::Fn(f) => f.body.as_ref().expect("fn body"),
+        other => panic!("expected fn, got {other:?}"),
+    };
+    let block: &Block = match body {
+        FnBody::Block(b) => b,
+        FnBody::Expr(_) => panic!("expected block body"),
+    };
+    match &block.stmts[0] {
+        Stmt::Let { attrs, .. } => {
+            assert_eq!(attrs.len(), 1, "let attribute lost");
+            assert_eq!(attrs[0].name, "manualAlloc");
+        }
+        other => panic!("expected let, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_attributes_with_arguments() {
+    let p = parse_str(
+        r#"#[inline(always)]
+        fn fast() -> int {
+            1
+        }"#,
+    );
+    assert_eq!(p.items[0].attrs.len(), 1);
+    assert_eq!(p.items[0].attrs[0].name, "inline");
+    assert_eq!(p.items[0].attrs[0].args.len(), 1, "attribute argument lost");
+}

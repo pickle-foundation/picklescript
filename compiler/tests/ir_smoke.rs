@@ -1683,3 +1683,43 @@ fn emits_class_is_and_as_lowering() {
     assert!(syms.contains(&"pickle_class_is"), "downcast `is` needs the runtime test:\n{m}");
     assert!(syms.contains(&"pickle_class_cast"), "downcast `as` needs the checked cast:\n{m}");
 }
+
+#[test]
+fn emits_manual_alloc_adopt_and_free() {
+    let m = emit_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let w = Widget(1)
+            println(w.value)
+            w.free()
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(
+        syms.iter().any(|s| s == "pickle_manual_adopt"),
+        "manual let must adopt the allocation: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_manual_free"),
+        "`.free()` must lower to the runtime release: {syms:?}"
+    );
+    // A managed binding must not adopt or free anything.
+    let managed = emit_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            let w = Widget(1)
+            println(w.value)
+        }"#,
+    );
+    let msyms = externs(&managed);
+    assert!(
+        !msyms.iter().any(|s| s == "pickle_manual_adopt" || s == "pickle_manual_free"),
+        "managed bindings must stay GC-owned: {msyms:?}"
+    );
+}

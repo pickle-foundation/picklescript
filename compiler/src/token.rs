@@ -124,6 +124,7 @@ pub enum Tok {
     SendOp,
     Ellipsis,
     At,
+    Hash,
 
     Newline,
     Eof,
@@ -198,6 +199,7 @@ impl Tok {
             SendOp => "<-",
             Ellipsis => "...",
             At => "@",
+            Hash => "#",
             _ => "?",
         }
     }

@@ -931,6 +931,155 @@ fn accepts_inheritance_and_hierarchy_casts() {
 }
 
 #[test]
+fn accepts_manual_alloc_and_free() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+            constructor(v: int) {
+                value = v
+            }
+        }
+
+        fn main() {
+            #[manualAlloc] let w = Widget(1)
+            println(w.value)
+            w.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_free_on_managed_binding() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            let w = Widget(1)
+            w.free()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("manualAlloc"),
+        "expected a manualAlloc hint, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_double_free() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let w = Widget(1)
+            w.free()
+            w.free()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("already freed"),
+        "expected a double-free diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_use_after_free() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc] let w = Widget(1)
+            w.free()
+            println(w.value)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("after `free()`"),
+        "expected a use-after-free diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_manual_alloc_of_non_class() {
+    let d = check_str(
+        r#"fn main() {
+            #[manualAlloc] let n = 5
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("class or struct"),
+        "expected a manual-alloc type diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_unknown_attribute() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[bogus] let w = Widget(1)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("unknown attribute"),
+        "expected an unknown-attribute diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_manual_alloc_with_arguments() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn main() {
+            #[manualAlloc(8)] let w = Widget(1)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("takes no arguments"),
+        "expected an argument diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_item_level_attributes() {
+    let d = check_str(
+        r#"#[manualAlloc]
+        fn main() {
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("not lowered yet"),
+        "expected an item-attribute diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
 fn rejects_unknown_member_in_subclass() {
     let d = check_str(
         r#"class Animal {

@@ -313,7 +313,7 @@ mod tests {
             let root: *mut PickleObject = o;
             let roots: Vec<*mut *mut PickleObject> =
                 vec![(&root as *const *mut PickleObject) as *mut _];
-            crate::trace::trace_from_roots(&desc, &roots);
+            crate::trace::trace_from_roots(&desc, &roots, &[]);
             assert!((*o).is_marked());
             assert!((*payload).is_marked(), "field slot must be traced");
         }

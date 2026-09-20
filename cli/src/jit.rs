@@ -948,6 +948,8 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_class_cast" => abi::pickle_class_cast as *const () as usize,
         "pickle_obj_slot_get" => abi::pickle_obj_slot_get as *const () as usize,
         "pickle_obj_slot_set" => abi::pickle_obj_slot_set as *const () as usize,
+        "pickle_manual_adopt" => abi::pickle_manual_adopt as *const () as usize,
+        "pickle_manual_free" => abi::pickle_manual_free as *const () as usize,
         "pickle_static_get" => abi::pickle_static_get as *const () as usize,
         "pickle_static_set" => abi::pickle_static_set as *const () as usize,
         "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,

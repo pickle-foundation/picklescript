@@ -13,13 +13,24 @@ use crate::object::{
 use crate::shadow::all_threads;
 
 /// Mark `obj` (and transitively everything it references) from the given
-/// roots. `roots` is typically the list of registered static cells.
-pub fn trace_from_roots(descriptors: &DescriptorTable, roots: &[*mut *mut PickleObject]) {
+/// roots. `roots` is typically the list of registered static cells. `manual`
+/// holds the `#[manualAlloc]` objects, which are always treated as roots so
+/// they survive until explicitly freed.
+pub fn trace_from_roots(
+    descriptors: &DescriptorTable,
+    roots: &[*mut *mut PickleObject],
+    manual: &[*mut PickleObject],
+) {
     let mut worklist: Vec<*mut PickleObject> = Vec::new();
     for cell in roots {
         let r = unsafe { **cell };
         if !r.is_null() {
             enqueue(&mut worklist, r);
+        }
+    }
+    for obj in manual {
+        if !obj.is_null() {
+            enqueue(&mut worklist, *obj);
         }
     }
     // Shadow-stack slots of every registered thread. Hold the registry lock for
@@ -163,7 +174,7 @@ mod tests {
 
             let root: *mut PickleObject = list;
             let roots: Vec<*mut *mut PickleObject> = vec![(&root as *const *mut PickleObject) as *mut _];
-            trace_from_roots(&desc, &roots);
+            trace_from_roots(&desc, &roots, &[]);
 
             assert!((*list).is_marked());
             assert!((*elem).is_marked());

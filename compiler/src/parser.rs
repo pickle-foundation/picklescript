@@ -379,6 +379,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Tok::Fn | Tok::Class | Tok::Struct | Tok::Enum | Tok::Interface | Tok::Const
+                | Tok::Hash
                     if depth == 0 =>
                 {
                     break;
@@ -402,6 +403,7 @@ impl<'a> Parser<'a> {
                 | Tok::Public
                 | Tok::Private
                 | Tok::Protected
+                | Tok::Hash
         ) || self.is_test_fn_ahead()
     }
 
@@ -412,9 +414,49 @@ impl<'a> Parser<'a> {
 
     // ---------- items ----------
 
+    /// Parse zero or more `#[name]` / `#[name(args)]` attributes. Attribute
+    /// arguments are full expressions; newlines inside the brackets are
+    /// suppressed by the lexer's nesting depth.
+    fn parse_attributes(&mut self) -> PResult<Vec<Attribute>> {
+        let mut out = Vec::new();
+        while self.at(&Tok::Hash) {
+            let start = self.span();
+            self.bump();
+            self.expect(&Tok::LBracket)?;
+            let name = self.expect_ident("attribute name")?;
+            let mut args = Vec::new();
+            if self.eat(&Tok::LParen) {
+                if !self.at(&Tok::RParen) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if self.eat(&Tok::Comma) {
+                            if self.at(&Tok::RParen) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+            }
+            self.expect(&Tok::RBracket)?;
+            out.push(Attribute {
+                name,
+                args,
+                span: start.to(self.prev_span()),
+            });
+            // Attributes are conventionally one per line; any newline here
+            // separates the attribute from the declaration it annotates.
+            self.newlines();
+        }
+        Ok(out)
+    }
+
     fn parse_item(&mut self) -> PResult<Item> {
         let doc = Vec::new();
         let start = self.span();
+        let attrs = self.parse_attributes()?;
         let mut visibility = Visibility::Default;
         let mut is_test = false;
 
@@ -499,7 +541,12 @@ impl<'a> Parser<'a> {
             }
         };
         let span = start.to(self.prev_span());
-        Ok(Item { doc, span, kind })
+        Ok(Item {
+            doc,
+            attrs,
+            span,
+            kind,
+        })
     }
 
     fn parse_fn(&mut self) -> PResult<FnDecl> {
@@ -667,6 +714,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
+        let attrs = self.parse_attributes()?;
+        let mut stmt = self.parse_stmt_inner()?;
+        if !attrs.is_empty() {
+            match &mut stmt {
+                Stmt::Let { attrs: slot, .. } => *slot = attrs,
+                _ => self.err_here("attributes are only supported on `let`/`var` bindings"),
+            }
+        }
+        Ok(stmt)
+    }
+
+    fn parse_stmt_inner(&mut self) -> PResult<Stmt> {
         match self.kind().clone() {
             Tok::Let | Tok::Var => {
                 let mutable = self.at(&Tok::Var);
@@ -690,6 +749,7 @@ impl<'a> Parser<'a> {
                     ty,
                     init,
                     mutable,
+                    attrs: Vec::new(),
                     span,
                 })
             }

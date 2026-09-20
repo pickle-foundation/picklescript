@@ -38,6 +38,9 @@ pub const PICKLE_CLASS_USER_BASE: u32 = 8;
 pub const PICKLE_FLAG_MARKED: u32 = 1 << 0;
 /// Installed a finalizer (class descriptors set this in `flags` instead).
 pub const PICKLE_FLAG_FINALIZABLE: u32 = 1 << 1;
+/// Programmer-owned allocation (`#[manualAlloc]`); never swept automatically,
+/// released only by `pickle_manual_free`.
+pub const PICKLE_FLAG_MANUAL: u32 = 1 << 2;
 
 /// The first word of every managed object.
 #[repr(C)]

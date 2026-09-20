@@ -52,8 +52,10 @@ tools, libraries, and other application workloads.
   runtime.** `struct` = value, `class` = reference, primitives are values,
   `string`/`List<T>`/`Map<K,V>` are managed references.
 - **Safe by default, powerful on request.** Normal code is garbage
-  collected. `unsafe { }` unlocks pointers, raw access, and custom
-  allocators — one keywords worth of ceremony for systems work.
+  collected. `#[manualAlloc]` opts a binding into deterministic, single-owner
+  memory with an explicit `free()` — no lifetimes, no borrow checker.
+  `unsafe { }` unlocks pointers, raw access, and custom allocators — a
+  keyword's worth of ceremony for systems work.
 - **No header files, no build scripts.** The module system is the build
   system. `pickle build` finds files, resolves imports, compiles, links, and
   produces an executable.
@@ -66,8 +68,8 @@ tools, libraries, and other application workloads.
 - Java-style boilerplate (everything inside a class, checked exceptions).
 - Go's minimalism taken to the point of hand-writing trivially generic code.
 - TypeScript's loose structural type system.
-- Rust's borrower ceremony as the *default* for application code (available
-  in `unsafe`, where it matters).
+- Rust's borrower ceremony as the *default* for application code (deterministic
+  memory is opt-in via `#[manualAlloc]`; raw pointers live in `unsafe`).
 
 ## The social contract
 

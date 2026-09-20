@@ -6,6 +6,7 @@
 //! "not lowered yet" diagnostic rather than miscompiled.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::ast::*;
 use crate::ast::BinOp as AstBinOp;
@@ -69,6 +70,7 @@ pub fn emit_ir(
         fret: IrTy::Unit,
         fslots: Vec::new(),
         env: Vec::new(),
+        manual_env: Vec::new(),
         blocks: Vec::new(),
         cur: BlockId(0),
         next_block: 0,
@@ -253,6 +255,8 @@ struct Emitter<'a> {
     fslots: Vec<IrTy>,
     /// Lexical scopes; bottom is outermost (params live there).
     env: Vec<HashMap<String, Slot>>,
+    /// Names bound with `#[manualAlloc]`, parallel to `env`.
+    manual_env: Vec<HashSet<String>>,
     blocks: Vec<IrBlock>,
     cur: BlockId,
     next_block: u32,
@@ -842,6 +846,7 @@ impl<'a> Emitter<'a> {
         self.fparams = Vec::new();
         self.fslots = Vec::new();
         self.env = vec![HashMap::new()];
+        self.manual_env = vec![HashSet::new()];
         self.blocks = vec![IrBlock {
             id: BlockId(0),
             instrs: Vec::new(),
@@ -1436,8 +1441,10 @@ impl<'a> Emitter<'a> {
                 ty,
                 init,
                 mutable: _,
+                attrs,
                 span,
             } => {
+                let manual = attrs.iter().any(|a| a.name == "manualAlloc");
                 match pattern {
                     Pattern::Binding { ty: pat_ty, .. } => {
                         let annot: &Option<TypeExpr> = if pat_ty.is_some() { pat_ty } else { ty };
@@ -1462,10 +1469,23 @@ impl<'a> Emitter<'a> {
                             } else {
                                 t
                             };
+                            let v = if manual {
+                                self.extern_call_t1(
+                                    "pickle_manual_adopt",
+                                    vec![IrTy::Ptr],
+                                    IrTy::Ptr,
+                                    vec![v],
+                                )?
+                            } else {
+                                v
+                            };
                             self.instr(IrInstr::StoreSlot { slot, v });
                         }
                         if let Pattern::Binding { name, .. } = pattern {
                             self.declare(name, slot);
+                            if manual {
+                                self.declare_manual(name);
+                            }
                         }
                         Ok(())
                     }
@@ -3696,6 +3716,23 @@ impl<'a> Emitter<'a> {
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
         if let ExprKind::Member { object, name } = &callee.kind {
+            // `.free()` on a `#[manualAlloc]` binding releases the object.
+            if name == "free" {
+                if let ExprKind::Ident(id) = &object.kind {
+                    if self.is_manual(id) {
+                        if !args.is_empty() {
+                            return self.bad(e.span, "`free()` takes no arguments");
+                        }
+                        let obj = self.expr(object)?;
+                        self.extern_call_void(
+                            "pickle_manual_free",
+                            vec![IrTy::Ptr],
+                            vec![obj],
+                        );
+                        return Ok(self.unit_temp());
+                    }
+                }
+            }
             // `Enum.Variant(...)` constructor call.
             if let ExprKind::Ident(enum_name) = &object.kind {
                 if let Some(TypeTableEntry::Enum(t)) = self.resolved.types.get(enum_name) {
@@ -4466,16 +4503,29 @@ impl<'a> Emitter<'a> {
 
     fn push_scope(&mut self) {
         self.env.push(HashMap::new());
+        self.manual_env.push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.env.pop();
+        self.manual_env.pop();
     }
 
     fn declare(&mut self, name: &str, slot: Slot) {
         if let Some(scope) = self.env.last_mut() {
             scope.insert(name.to_string(), slot);
         }
+    }
+
+    /// Record that `name` is a `#[manualAlloc]` binding in the current scope.
+    fn declare_manual(&mut self, name: &str) {
+        if let Some(scope) = self.manual_env.last_mut() {
+            scope.insert(name.to_string());
+        }
+    }
+
+    fn is_manual(&self, name: &str) -> bool {
+        self.manual_env.iter().rev().any(|s| s.contains(name))
     }
 
     fn lookup(&self, name: &str) -> Option<Slot> {

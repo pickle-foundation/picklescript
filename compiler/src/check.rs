@@ -12,6 +12,12 @@ use crate::ty::Ty;
 struct Local {
     ty: Ty,
     mutable: bool,
+    /// Declared with `#[manualAlloc]`: the binding owns its allocation and
+    /// must be released with `.free()`.
+    manual: bool,
+    /// Already freed via `.free()` in this scope (statically provable
+    /// use-after-free).
+    freed: bool,
 }
 
 pub fn check_program(
@@ -104,6 +110,15 @@ impl<'a> Checker<'a> {
     fn check(&mut self) {
         // Item bodies: fn / test / const values.
         for item in &self.prog.items {
+            for a in &item.attrs {
+                self.err(
+                    a.span,
+                    format!(
+                        "attributes on declarations are not lowered yet (`#[{}]`)",
+                        a.name
+                    ),
+                );
+            }
             match &item.kind {
                 ItemKind::Fn(f) => self.check_fn_signature_bodies(f),
                 ItemKind::Test(f) => self.check_fn_signature_bodies(f),
@@ -138,7 +153,63 @@ impl<'a> Checker<'a> {
 
     fn declare(&mut self, name: &str, ty: Ty, mutable: bool) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), Local { ty, mutable });
+            scope.insert(
+                name.to_string(),
+                Local {
+                    ty,
+                    mutable,
+                    manual: false,
+                    freed: false,
+                },
+            );
+        }
+    }
+
+    /// Validate `#[...]` attributes on a `let`/`var` binding and report
+    /// whether the binding is `#[manualAlloc]`.
+    fn check_let_attributes(&mut self, attrs: &[Attribute]) -> bool {
+        let mut manual = false;
+        for a in attrs {
+            match a.name.as_str() {
+                "manualAlloc" => {
+                    if !a.args.is_empty() {
+                        self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                    }
+                    if manual {
+                        self.err(a.span, "duplicate `#[manualAlloc]` attribute");
+                    }
+                    manual = true;
+                }
+                other => self.err(a.span, format!("unknown attribute `#[{other}]`")),
+            }
+        }
+        manual
+    }
+
+    /// Mark a local as `#[manualAlloc]` after `bind_pattern` inserted it.
+    fn mark_manual(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(l) = scope.get_mut(name) {
+                l.manual = true;
+                return;
+            }
+        }
+    }
+
+    fn is_manual(&self, name: &str) -> bool {
+        self.lookup(name).map(|l| l.manual).unwrap_or(false)
+    }
+
+    fn is_freed(&self, name: &str) -> bool {
+        self.lookup(name).map(|l| l.freed).unwrap_or(false)
+    }
+
+    fn mark_freed(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(l) = scope.get_mut(name) {
+                l.freed = true;
+                return;
+            }
         }
     }
 
@@ -644,8 +715,10 @@ impl<'a> Checker<'a> {
                 ty,
                 init,
                 mutable,
+                attrs,
                 span,
             } => {
+                let manual = self.check_let_attributes(attrs);
                 let annotated = ty
                     .as_ref()
                     .map(|t| self.resolved_fn_ty(t, &self.fn_generics));
@@ -659,7 +732,26 @@ impl<'a> Checker<'a> {
                     (None, Some(i)) => i.clone(),
                     (None, None) => Ty::Unknown,
                 };
+                if manual {
+                    if init.is_none() {
+                        self.err(
+                            *span,
+                            "`#[manualAlloc]` requires an allocation initializer",
+                        );
+                    } else if !matches!(final_ty, Ty::Class(..) | Ty::Struct(..)) {
+                        self.err_note(
+                            *span,
+                            format!("`#[manualAlloc]` requires a class or struct type, found `{final_ty}`"),
+                            "manual allocation applies to class/struct instances",
+                        );
+                    }
+                }
                 self.bind_pattern(pattern, &final_ty, *mutable);
+                if manual {
+                    if let Pattern::Binding { name, .. } = pattern {
+                        self.mark_manual(name);
+                    }
+                }
                 final_ty
             }
             Stmt::Const { name, ty, value, span } => {
@@ -1245,6 +1337,9 @@ impl<'a> Checker<'a> {
 
     fn ident_ty(&mut self, e: &Expr, name: &str) -> Ty {
         if let Some(l) = self.lookup(name) {
+            if l.freed {
+                self.err(e.span, format!("use of `{name}` after `free()`"));
+            }
             return l.ty.clone();
         }
         if let Some(fns) = self.resolved.fns.get(name) {
@@ -1344,6 +1439,30 @@ impl<'a> Checker<'a> {
             self.named_ctor_delegated = true;
             self.check_args(e, &params, args);
             return Ty::Empty;
+        }
+
+        // `.free()` on a `#[manualAlloc]` binding.
+        if let ExprKind::Member { object, name } = &callee.kind {
+            if name == "free" {
+                if let ExprKind::Ident(id) = &object.kind {
+                    if self.is_manual(id) {
+                        let _ = self.check_expr(object);
+                        return self.check_free(e, id, args);
+                    }
+                }
+                let rt = self.check_expr(object);
+                let has_user_free = self
+                    .type_key(&rt)
+                    .is_some_and(|(c, _)| self.find_method(&c, "free").is_some());
+                if !has_user_free {
+                    self.err_note(
+                        e.span,
+                        "`free` is only available on a `#[manualAlloc]` binding",
+                        "declare the binding with `#[manualAlloc] let x = T()`",
+                    );
+                    return Ty::Unknown;
+                }
+            }
         }
 
         // `Enum.Variant(...)` constructor call.
@@ -1446,6 +1565,20 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
         }
+    }
+
+    /// Validate `x.free()` on a `#[manualAlloc]` binding and mark it released.
+    fn check_free(&mut self, e: &Expr, name: &str, args: &[CallArg]) -> Ty {
+        for a in args {
+            self.err(a.span, "`free()` takes no arguments");
+            let _ = self.check_expr(&a.value);
+        }
+        if self.is_freed(name) {
+            self.err(e.span, format!("`{name}` was already freed"));
+            return Ty::Empty;
+        }
+        self.mark_freed(name);
+        Ty::Empty
     }
 
     fn generic_fn_ty(&mut self, e: &Expr, name: &str) -> Ty {
