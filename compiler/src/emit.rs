@@ -168,6 +168,18 @@ enum FnSource<'a> {
         pty: Vec<Ty>,
         ret: Ty,
     },
+    /// A dynamically-callable forwarder for an instance method bound to a
+    /// receiver. Slot 0 is the closure object, slot 1 holds the bound receiver
+    /// (captured like a lambda capture), and the real arguments occupy slots
+    /// 2..N; the body loads the receiver and calls `target` with it first, then
+    /// returns the result. This gives a bound method the same `(env, ...)` ABI
+    /// as a hoisted lambda body, so `fn_value_call` dispatches to it uniformly.
+    MethodTrampoline {
+        span: Span,
+        target: FuncId,
+        pty: Vec<Ty>,
+        ret: Ty,
+    },
     /// The synthesized `pkl_test_setup` function: registers every user class
     /// and runs `pkl_static_init` before the test runner starts (test modules
     /// have no `main`, so the preamble cannot ride on one).
@@ -655,8 +667,28 @@ impl<'a> Emitter<'a> {
                     self.walk_expr(&a.value, owner_cid, owner_name, lmark, scope, acc);
                 }
             }
-            ExprKind::Member { object, .. } => {
-                self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc)
+            ExprKind::Member { object, name } => {
+                self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc);
+                // An instance method used as a bound value (`c.method`) needs a
+                // method trampoline: its closure object carries the receiver in
+                // slot 1, and the forwarder calls the real method with it.
+                // `method_call` handles direct `c.method(...)` calls (which also
+                // walk the member), so registering here is harmless: the
+                // trampoline is only consumed at value-use sites.
+                let ot = self.ty_of(&object.span);
+                if let Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) = ot {
+                    if let Some(&cid) = self.class_by_name.get(&cn) {
+                        if let Some(&(fid, is_static)) =
+                            self.method_ids.get(&(cid, name.clone()))
+                        {
+                            if !is_static
+                                && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
+                            {
+                                self.register_method_trampoline(e.span, fid);
+                            }
+                        }
+                    }
+                }
             }
             ExprKind::Index { object, index } => {
                 self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc);
@@ -874,7 +906,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -1100,6 +1132,42 @@ impl<'a> Emitter<'a> {
                     "fn.value",
                     &format!("pkl_tramp_{}", fid.0),
                     FnSource::Trampoline {
+                        span,
+                        target: fid,
+                        pty,
+                        ret: *ret,
+                    },
+                );
+                self.tramp_fids.insert(fid, t);
+                t
+            }
+        };
+        self.fn_tramp.insert(span, tramp);
+    }
+
+    /// Register the forwarder (`FnSource::MethodTrampoline`) that lets an
+    /// instance method bound to a receiver be used as a value: it accepts the
+    /// closure as slot 0, loads the bound receiver from closure slot 1, then
+    /// forwards the real arguments to the target method. One trampoline per
+    /// target method; every value-reference site of that method is mapped to it
+    /// in `fn_tramp`.
+    fn register_method_trampoline(&mut self, span: Span, fid: FuncId) {
+        let Some(Ty::Fn(pty, ret)) = self.types.get(&span).cloned() else {
+            return;
+        };
+        if pty.iter().any(|t| self.map_ty(t, span).is_err()) {
+            return;
+        }
+        if self.map_ty(&ret, span).is_err() {
+            return;
+        }
+        let tramp = match self.tramp_fids.get(&fid) {
+            Some(&t) => t,
+            None => {
+                let t = self.push_class_func(
+                    "fn.method.value",
+                    &format!("pkl_mtramp_{}", fid.0),
+                    FnSource::MethodTrampoline {
                         span,
                         target: fid,
                         pty,
@@ -1649,6 +1717,10 @@ impl<'a> Emitter<'a> {
                 self.owner = None;
                 self.build_trampoline(span, target, &pty, &ret);
             }
+            FnSource::MethodTrampoline { span, target, pty, ret } => {
+                self.owner = None;
+                self.build_method_trampoline(span, target, &pty, &ret);
+            }
             FnSource::Ctor {
                 table,
                 inits,
@@ -1837,6 +1909,65 @@ fn build_lambda_body(
         });
         self.declare("env", env_slot);
         let mut args = Vec::with_capacity(pty.len());
+        for (i, t) in pty.iter().enumerate() {
+            let ir = self.map_ty(t, span).unwrap_or(IrTy::Ptr);
+            let slot = self.new_slot(ir);
+            let pname = format!("arg{i}");
+            self.fparams.push(IrParam {
+                name: pname.clone(),
+                ty: ir,
+            });
+            self.declare(&pname, slot);
+            args.push(self.load(slot));
+        }
+        if matches!(self.fret, IrTy::Unit) {
+            self.instr(IrInstr::Call {
+                dst: None,
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: None });
+        } else {
+            let dst = self.temp();
+            self.instr(IrInstr::Call {
+                dst: Some(dst),
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: Some(dst) });
+        }
+    }
+
+    /// Build the body of a bound-method trampoline: a forwarder with the
+    /// hoisted-lambda signature `(env, args...) -> ret` whose closure subject
+    /// slot 1 holds the bound receiver. The body loads that receiver and calls
+    /// the wrapped instance method `target` with it first, then returns the
+    /// result. This lets `c.method` (an instance method used as a value) be a
+    /// one-capture closure object, dispatching uniformly through
+    /// `fn_value_call`.
+    fn build_method_trampoline(&mut self, span: Span, target: FuncId, pty: &[Ty], ret: &Ty) {
+        let _ = self.map_ty(ret, span).map(|ir| self.fret = ir);
+        let env_ir = IrTy::Ptr;
+        let env_slot = self.new_slot(env_ir);
+        self.fparams.push(IrParam {
+            name: "env".to_string(),
+            ty: env_ir,
+        });
+        self.declare("env", env_slot);
+        // Slot 1 of the closure object is the bound receiver (a class object,
+        // so `box_for_store`/`elem_rep` store it as its identity pointer).
+        let env = self.load(env_slot);
+        let one = self.int_const(1);
+        let receiver = match self.extern_call_t1(
+            "pickle_obj_slot_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![env, one],
+        ) {
+            Ok(t) => t,
+            Err(()) => return,
+        };
+        let mut args = vec![receiver];
         for (i, t) in pty.iter().enumerate() {
             let ir = self.map_ty(t, span).unwrap_or(IrTy::Ptr);
             let slot = self.new_slot(ir);
@@ -4901,7 +5032,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str") {
                     return false;
                 }
             }
@@ -5351,6 +5482,21 @@ fn build_lambda_body(
             return self.bad(callee.span, "function-valued call has no signature");
         };
         let obj = self.expr(callee)?;
+        self.fn_value_call_from(e, obj, &Ty::Fn(pty, prt), args)
+    }
+
+    /// Core dynamic dispatch for a closure-valued callee whose object was
+    /// already evaluated (`obj`) together with its `fn` type.
+    fn fn_value_call_from(
+        &mut self,
+        e: &Expr,
+        obj: Temp,
+        fnty: &Ty,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let Ty::Fn(pty, prt) = fnty else {
+            return self.bad(e.span, "function-valued call has no signature");
+        };
         let zero = self.int_const(0);
         let addr_boxed = self.extern_call_t1(
             "pickle_obj_slot_get",
@@ -5386,7 +5532,7 @@ fn build_lambda_body(
             ir_params.push(ir);
             iargs.push(t);
         }
-        let ir_ret = self.map_ty(&prt, e.span).unwrap_or(IrTy::Unit);
+        let ir_ret = self.map_ty(prt, e.span).unwrap_or(IrTy::Unit);
         let dst = self.temp();
         self.instr(IrInstr::CallInd {
             dst: Some(dst),
@@ -5466,6 +5612,58 @@ fn build_lambda_body(
             return self.bad(e.span, "function value was not registered for dynamic dispatch");
         };
         self.closure_obj(e, tramp, &[])
+    }
+
+    /// An instance method bound to a receiver, used as a value: a one-capture
+    /// closure object whose slot 0 is the method trampoline and whose slot 1 is
+    /// the receiver object. `fn_value_call` dispatches through it exactly like
+    /// a lambda capture (`closure_obj`), except the captured value is the
+    /// receiver rather than a checked lambda capture.
+    fn bound_method_value(
+        &mut self,
+        e: &Expr,
+        object: &Expr,
+    ) -> Result<Temp, ()> {
+        let Some(&tramp) = self.fn_tramp.get(&e.span) else {
+            return self.bad(e.span, "bound method was not registered for dynamic dispatch");
+        };
+        let cid = self.register_closure_class(1, e.span)?;
+        let cid_t = self.int_const(cid as i64);
+        let n_t = self.int_const(2);
+        let obj = self.extern_call_t1(
+            "pickle_class_new",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![cid_t, n_t],
+        )?;
+        // Slot 0: the trampoline's address -- the same data slot 0 of a lambda
+        // closure holds, so `fn_value_call`'s load-then-call does exactly the
+        // same thing.
+        let addr = self.temp();
+        self.instr(IrInstr::Const {
+            dst: addr,
+            c: IrConst::FuncAddr(tramp),
+        });
+        let boxed =
+            self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![addr])?;
+        let zero = self.int_const(0);
+        self.extern_call_void(
+            "pickle_obj_slot_set",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+            vec![obj, zero, boxed],
+        );
+        // Slot 1: the receiver, stored as its identity pointer (a managed
+        // class object; `single_boxed` passes it through).
+        let recv = self.expr(object)?;
+        let recv_ty = self.ty_of(&object.span).unwrap_or(Ty::Unknown);
+        let packed = self.pack_for_pointer_boundary(&ElemRep::Ptr, recv, &recv_ty, e.span)?;
+        let one = self.int_const(1);
+        self.extern_call_void(
+            "pickle_obj_slot_set",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+            vec![obj, one, packed],
+        );
+        Ok(obj)
     }
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
@@ -5771,6 +5969,139 @@ fn build_lambda_body(
                 self.cur = join;
                 Ok(self.load(res_slot))
             }
+            "min" | "max" => {
+                if args.len() != 2 || args[0].name.is_some() || args[0].spread
+                    || args[1].name.is_some() || args[1].spread
+                {
+                    return self.bad(e.span, format!("`{name}(a, b)` takes exactly two arguments"));
+                }
+                let it = self.irty(args[0].value.span)?;
+                if !matches!(it, IrTy::Int | IrTy::Float) {
+                    return self.bad(e.span, "`min`/`max` requires `int` or `float` arguments");
+                }
+                let a = self.expr(&args[0].value)?;
+                let b = self.expr(&args[1].value)?;
+                let pick_a = self.temp();
+                let op = if name == "min" { IrBinOp::Lt } else { IrBinOp::Gt };
+                self.instr(IrInstr::BinOp {
+                    dst: pick_a,
+                    op,
+                    a,
+                    b,
+                });
+                // `pick_a ? a : b`
+                let res_slot = self.new_slot(it);
+                let a_b = self.new_block();
+                let b_b = self.new_block();
+                let join = self.new_block();
+                self.term(IrTerm::BranchIf {
+                    cond: pick_a,
+                    then: a_b,
+                    else_: b_b,
+                });
+                self.cur = a_b;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v: a });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = b_b;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = join;
+                Ok(self.load(res_slot))
+            }
+            "clamp" => {
+                if args.len() != 3 || args.iter().any(|a| a.name.is_some() || a.spread) {
+                    return self.bad(e.span, "`clamp(x, lo, hi)` takes exactly three arguments");
+                }
+                let it = self.irty(args[0].value.span)?;
+                if !matches!(it, IrTy::Int | IrTy::Float) {
+                    return self.bad(e.span, "`clamp` requires `int` or `float` arguments");
+                }
+                let x = self.expr(&args[0].value)?;
+                let lo = self.expr(&args[1].value)?;
+                let hi = self.expr(&args[2].value)?;
+                // clamp(x, lo, hi) = min(max(x, lo), hi)
+                let max_cond = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: max_cond,
+                    op: IrBinOp::Gt,
+                    a: x,
+                    b: lo,
+                });
+                let mid = self.new_slot(it);
+                let take_x = self.new_block();
+                let take_lo = self.new_block();
+                let max_join = self.new_block();
+                self.term(IrTerm::BranchIf {
+                    cond: max_cond,
+                    then: take_x,
+                    else_: take_lo,
+                });
+                self.cur = take_x;
+                self.instr(IrInstr::StoreSlot { slot: mid, v: x });
+                self.term(IrTerm::Branch { target: max_join });
+                self.cur = take_lo;
+                self.instr(IrInstr::StoreSlot { slot: mid, v: lo });
+                self.term(IrTerm::Branch { target: max_join });
+                self.cur = max_join;
+                let maxv = self.load(mid);
+                let min_cond = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: min_cond,
+                    op: IrBinOp::Lt,
+                    a: maxv,
+                    b: hi,
+                });
+                let res_slot = self.new_slot(it);
+                let take_max = self.new_block();
+                let take_hi = self.new_block();
+                let join = self.new_block();
+                self.term(IrTerm::BranchIf {
+                    cond: min_cond,
+                    then: take_max,
+                    else_: take_hi,
+                });
+                self.cur = take_max;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v: maxv });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = take_hi;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v: hi });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = join;
+                Ok(self.load(res_slot))
+            }
+            "str" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`str(x)` takes exactly one argument");
+                }
+                let v = self.expr(&args[0].value)?;
+                match self.irty(args[0].value.span)? {
+                    IrTy::Int => self.extern_call_t1(
+                        "pickle_str_from_i64",
+                        vec![IrTy::Int],
+                        IrTy::Str,
+                        vec![v],
+                    ),
+                    IrTy::Float => self.extern_call_t1(
+                        "pickle_str_from_f64",
+                        vec![IrTy::Float],
+                        IrTy::Str,
+                        vec![v],
+                    ),
+                    IrTy::Bool => self.extern_call_t1(
+                        "pickle_str_from_bool",
+                        vec![IrTy::Bool],
+                        IrTy::Str,
+                        vec![v],
+                    ),
+                    IrTy::Char => self.extern_call_t1(
+                        "pickle_str_from_char",
+                        vec![IrTy::Char],
+                        IrTy::Str,
+                        vec![v],
+                    ),
+                    _ => self.bad(e.span, "`str` requires an `int`, `float`, `bool`, or `char`"),
+                }
+            }
             "range" => {
                 if args.is_empty() || args.len() > 3 {
                     return self.bad(
@@ -5945,6 +6276,19 @@ fn build_lambda_body(
                 let obj = self.expr(object)?;
                 return self.call_method(e, fid, &[], Some(obj));
             }
+            // An instance method used as a bound value: build a one-capture
+            // closure object whose slot 0 is its method trampoline and whose
+            // slot 1 is the receiver. `fn_value_call` dispatches through it
+            // exactly like a lambda capture.
+            if let Some(&(_, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
+                if is_static {
+                    return self.bad(
+                        e.span,
+                        format!("static method `{name}` cannot be used as a value"),
+                    );
+                }
+                return self.bound_method_value(e, object);
+            }
             return self.bad(
                 e.span,
                 format!("method `{name}` of `{}` cannot be used as a value", self.class_name_of(cid)),
@@ -6116,6 +6460,21 @@ fn build_lambda_body(
                 let receiver = self.expr(object)?;
                 return self.call_method(e, fid, args, Some(receiver));
             }
+            // A fn-typed field (`h.f(...)` where `f` is a function field) loads
+            // the field value and dispatches dynamically, like any other
+            // closure-valued callee.
+            if let Some(slot) = self.instance_field_index(cid as i64, name) {
+                let field_ty = self.field_at(cid as i64, slot).ty.clone();
+                if matches!(field_ty, Ty::Fn(..)) {
+                    let owner = self.expr(object)?;
+                    let fv = self.field_read(e.span, owner, &field_ty, slot)?;
+                    return self.fn_value_call_from(e, fv, &field_ty, args);
+                }
+                return self.bad(
+                    e.span,
+                    format!("field `{name}` of `{}` is not callable", self.class_name_of(cid)),
+                );
+            }
             return self.bad(
                 e.span,
                 format!("`{}` has no method `{name}`", self.class_name_of(cid)),
@@ -6286,10 +6645,10 @@ fn build_lambda_body(
             | Ty::Map(..)
             | Ty::Tuple(..)
             | Ty::Range(..)
-            | Ty::Ptr(..) => Ok(Ptr),
+            | Ty::Ptr(..)
+            | Ty::Fn(..) => Ok(Ptr),
             Ty::Ref(..) => self.bad(span, "lists of `&T` references are not supported yet"),
             Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
-            Ty::Fn(..) => self.bad(span, "function values are not lowered yet"),
             Ty::Unknown => self.bad(span, "list element type is not statically known"),
             Ty::Var(_) => self.bad(span, "generic element types are not lowered yet"),
         }

@@ -64,3 +64,48 @@ test fn for_in_range_step() {
     }
     expect(sum).toBe(25)
 }
+
+test fn min_ints() {
+    expect(min(3, 7)).toBe(3)
+    expect(min(7, 3)).toBe(3)
+    expect(min(-2, 5)).toBe(-2)
+    expect(max(3, 7)).toBe(7)
+    expect(max(7, 3)).toBe(7)
+    expect(max(-2, -5)).toBe(-2)
+}
+
+test fn min_floats() {
+    expect(min(0.5, 1.5)).toBe(0.5)
+    expect(max(0.5, 1.5)).toBe(1.5)
+}
+
+test fn clamp_ints() {
+    expect(clamp(5, 0, 10)).toBe(5)
+    expect(clamp(-3, 0, 10)).toBe(0)
+    expect(clamp(42, 0, 10)).toBe(10)
+}
+
+test fn clamp_floats() {
+    expect(clamp(2.5, 0.0, 1.0)).toBe(1.0)
+    expect(clamp(-2.5, 0.0, 1.0)).toBe(0.0)
+    expect(clamp(0.5, 0.0, 1.0)).toBe(0.5)
+}
+
+test fn str_numbers() {
+    expect(str(42)).toBe("42")
+    expect(str(-7)).toBe("-7")
+    expect(str(2.5)).toBe("2.5")
+    expect(str(true)).toBe("true")
+}
+
+test fn interp_numbers() {
+    let s = "x={42} y={-7} f={2.5}"
+    expect(s).toBe("x=42 y=-7 f=2.5")
+}
+
+test fn interp_concat_codegen_style() {
+    let fn_ = 3
+    let id = 7
+    let s = "pkl_" + str(fn_) + "_" + str(id)
+    expect(s).toBe("pkl_3_7")
+}

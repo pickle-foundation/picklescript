@@ -325,6 +325,12 @@ impl<'a> Resolver<'a> {
             mk("println", vec![any("args")], Ty::Empty, true),
             mk("len", vec![any("items")], Ty::Int, true),
             mk("abs", vec![any("x")], Ty::Unknown, true),
+            mk("min", vec![any("bounds")], Ty::Unknown, true),
+            mk("max", vec![any("bounds")], Ty::Unknown, true),
+            mk("clamp", vec![any("bounds")], Ty::Unknown, true),
+            // `str(x)`: numeric/bool/char value rendered as `string`; the
+            // checker matches the runtime's `pickle_str_from_*` family.
+            mk("str", vec![any("x")], Ty::String, true),
             // `range(end)`, `range(start, end)`, `range(start, end, step)`:
             // typed as `List<int>` by a dedicated checker rule; the loose
             // declaration just makes the name resolvable and dispatchable.

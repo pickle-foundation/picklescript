@@ -2092,6 +2092,18 @@ impl<'a> Checker<'a> {
             if bname == "abs" {
                 return self.check_abs(e, args);
             }
+            // `min(a, b)` / `max(a, b)`: numeric binary, both same type.
+            if bname == "min" || bname == "max" {
+                return self.check_minmax(e, bname, args);
+            }
+            // `clamp(x, lo, hi)`: numeric ternary, all same type.
+            if bname == "clamp" {
+                return self.check_clamp(e, args);
+            }
+            // `str(x)`: numeric/bool/char value rendered as `string`.
+            if bname == "str" {
+                return self.check_str(e, args);
+            }
             // `range(...)`: always a `List<int>`.
             if bname == "range" {
                 return self.check_range(e, args);
@@ -3485,8 +3497,81 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// `range(end)`, `range(start, end)`, `range(start, end, step)`: integer
-    /// bounds produce a `List<int>`.
+    /// `min(a, b)` / `max(a, b)`: two arguments of the same numeric type;
+    /// the result has that type.
+    fn check_minmax(&mut self, e: &Expr, bname: &str, args: &[CallArg]) -> Ty {
+        if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
+            self.err(e.span, format!("`{bname}(a, b)` takes exactly two arguments"));
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let lt = self.check_expr(&args[0].value);
+        let rt = self.check_expr(&args[1].value);
+        let good = |t: &Ty| matches!(t, Ty::Int | Ty::Float | Ty::Unknown);
+        if !good(&lt) || !good(&rt) {
+            self.err(
+                e.span,
+                format!("`{bname}` requires two `int` or `float` arguments"),
+            );
+            return Ty::Unknown;
+        }
+        match (&lt, &rt) {
+            (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
+            (Ty::Int, _) | (_, Ty::Int) => Ty::Int,
+            _ => Ty::Unknown,
+        }
+    }
+
+    /// `clamp(x, lo, hi)`: three arguments of the same numeric type;
+    /// the result has that type.
+    fn check_clamp(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 3 || args.iter().any(|a| a.name.is_some() || a.spread) {
+            self.err(e.span, "`clamp(x, lo, hi)` takes exactly three arguments");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let mut t = Ty::Unknown;
+        for a in args {
+            let at = self.check_expr(&a.value);
+            if !matches!(at, Ty::Int | Ty::Float | Ty::Unknown) {
+                self.err(a.value.span, "`clamp` arguments must be `int` or `float`");
+                return Ty::Unknown;
+            }
+            if matches!(at, Ty::Float) {
+                t = Ty::Float;
+            } else if matches!(at, Ty::Int) && !matches!(t, Ty::Float) {
+                t = Ty::Int;
+            }
+        }
+        t
+    }
+
+    /// `str(x)`: an `int`, `float`, `bool`, or `char` value rendered as
+    /// `string` (matching the runtime's `pickle_str_from_*` family).
+    fn check_str(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`str(x)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        match &at {
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Unknown => Ty::String,
+            _ => {
+                self.err(
+                    args[0].value.span,
+                    "`str` requires an `int`, `float`, `bool`, or `char` argument",
+                );
+                Ty::Unknown
+            }
+        }
+    }
     fn check_range(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
         if args.is_empty() || args.len() > 3 {
             self.err(

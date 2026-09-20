@@ -1,0 +1,111 @@
+fn double(x: int) -> int {
+    x * 2
+}
+
+fn apply(f: fn (int) -> int, x: int) -> int {
+    f(x)
+}
+
+class Counter {
+    var base: int
+
+    fn add(x: int) -> int {
+        this.base + x
+    }
+}
+
+class Holder {
+    var f: fn (int) -> int
+}
+
+struct Pair {
+    f: fn (int) -> int
+    tag: int
+}
+
+fn use_holder(h: Holder, x: int) -> int {
+    h.f(x)
+}
+
+fn use_pair(p: Pair) -> int {
+    p.f(p.tag)
+}
+
+fn make_map(f: fn (int) -> int) -> fn (int) -> int {
+    (x: int) => f(x)
+}
+
+fn return_fn(x: int) -> fn (int) -> int {
+    (y: int) => y + x
+}
+
+test fn module_fn_direct() {
+    let f = double
+    expect(f(3)).toBe(6)
+}
+
+test fn module_fn_passed() {
+    expect(apply(double, 4)).toBe(8)
+}
+
+test fn module_fn_as_direct_call() {
+    expect(apply(double, 2)).toBe(4)
+}
+
+test fn lambda_value() {
+    let g = (x: int) => x + 1
+    expect(apply(g, 5)).toBe(6)
+}
+
+test fn lambda_captures_in_higher_order() {
+    var base = 10
+    let g = (x: int) => x + base
+    expect(apply(g, 1)).toBe(11)
+}
+
+test fn fn_captured_in_lambda_return() {
+    let g = make_map(double)
+    expect(g(3)).toBe(6)
+}
+
+test fn fn_in_lambda_capture() {
+    var f: fn (int) -> int = double
+    let g = (x: int) => f(x) + 1
+    expect(g(2)).toBe(5)
+}
+
+test fn fn_returned() {
+    let p = return_fn(3)
+    expect(p(4)).toBe(7)
+}
+
+test fn genuine_method_call() {
+    let c = Counter(5)
+    expect(c.add(10)).toBe(15)
+}
+
+test fn bound_method_as_value() {
+    let c = Counter(100)
+    let m = c.add
+    expect(m(1)).toBe(101)
+}
+
+test fn bound_method_passed() {
+    let c = Counter(7)
+    expect(apply(c.add, 1)).toBe(8)
+}
+
+test fn fn_typed_field() {
+    let h = Holder(double)
+    expect(use_holder(h, 5)).toBe(10)
+}
+
+test fn fn_in_struct() {
+    let pr = Pair(double, 6)
+    expect(use_pair(pr)).toBe(12)
+}
+
+test fn fn_value_in_list() {
+    let fs = [double, double]
+    expect(fs[0](2)).toBe(4)
+}
