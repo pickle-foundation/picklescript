@@ -325,6 +325,15 @@ impl<'a> Resolver<'a> {
             mk("println", vec![any("args")], Ty::Empty, true),
             mk("len", vec![any("items")], Ty::Int, true),
             mk("abs", vec![any("x")], Ty::Unknown, true),
+            // `range(end)`, `range(start, end)`, `range(start, end, step)`:
+            // typed as `List<int>` by a dedicated checker rule; the loose
+            // declaration just makes the name resolvable and dispatchable.
+            mk(
+                "range",
+                vec![any("bounds")],
+                Ty::List(Box::new(Ty::Int)),
+                true,
+            ),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.

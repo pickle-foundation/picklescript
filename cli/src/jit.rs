@@ -979,6 +979,7 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_list_set" => abi::pickle_list_set as *const () as usize,
         "pickle_list_push" => abi::pickle_list_push as *const () as usize,
         "pickle_list_pop" => abi::pickle_list_pop as *const () as usize,
+        "pickle_range" => abi::pickle_range as *const () as usize,
         "pickle_shadow_push" => abi::pickle_shadow_push as *const () as usize,
         "pickle_shadow_pop" => abi::pickle_shadow_pop as *const () as usize,
         "pickle_shadow_get" => abi::pickle_shadow_get as *const () as usize,

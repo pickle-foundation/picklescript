@@ -146,6 +146,32 @@ pub extern "C" fn pickle_list_pop(list: *mut PickleObject) -> *mut PickleObject 
     list_pop(list)
 }
 
+/// Build a `List<int>` from an arithmetic sequence `[start, end)` with the
+/// given step. A zero step yields an empty list. Bounds are inclusive of
+/// `start`, exclusive of `end`.
+#[no_mangle]
+pub extern "C" fn pickle_range(start: i64, end: i64, step: i64) -> *mut PickleObject {
+    let list = list_new(0, crate::gc::gc_mut());
+    if step == 0 {
+        return list;
+    }
+    let mut v = start;
+    if step > 0 {
+        while v < end {
+            let elem = crate::boxscalar::pickle_box_i64(v);
+            list_push(list, elem);
+            v += step;
+        }
+    } else {
+        while v > end {
+            let elem = crate::boxscalar::pickle_box_i64(v);
+            list_push(list, elem);
+            v += step;
+        }
+    }
+    list
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

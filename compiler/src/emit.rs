@@ -874,7 +874,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -4901,7 +4901,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range") {
                     return false;
                 }
             }
@@ -5715,6 +5715,91 @@ fn build_lambda_body(
                     }
                     _ => self.bad(e.span, "`len` over this type is not lowered yet"),
                 }
+            }
+            "abs" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`abs(x)` takes exactly one argument");
+                }
+                let v = self.expr(&args[0].value)?;
+                let vit = self.irty(args[0].value.span)?;
+                let zero = match vit {
+                    IrTy::Int => {
+                        let t = self.temp();
+                        self.instr(IrInstr::Const { dst: t, c: IrConst::Int(0) });
+                        t
+                    }
+                    IrTy::Float => {
+                        let t = self.temp();
+                        self.instr(IrInstr::Const {
+                            dst: t,
+                            c: IrConst::Float(0.0f64.to_bits()),
+                        });
+                        t
+                    }
+                    _ => {
+                        return self.bad(
+                            args[0].value.span,
+                            "`abs` requires an `int` or `float` argument",
+                        )
+                    }
+                };
+                let is_neg = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: is_neg,
+                    op: IrBinOp::Lt,
+                    a: v,
+                    b: zero,
+                });
+                let neg_v = self.temp();
+                self.instr(IrInstr::UnOp { dst: neg_v, op: IrUnOp::Neg, v });
+                // `is_neg ? -v : v`
+                let res_slot = self.new_slot(vit);
+                let neg_b = self.new_block();
+                let pos_b = self.new_block();
+                let join = self.new_block();
+                self.term(IrTerm::BranchIf {
+                    cond: is_neg,
+                    then: neg_b,
+                    else_: pos_b,
+                });
+                self.cur = neg_b;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v: neg_v });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = pos_b;
+                self.instr(IrInstr::StoreSlot { slot: res_slot, v });
+                self.term(IrTerm::Branch { target: join });
+                self.cur = join;
+                Ok(self.load(res_slot))
+            }
+            "range" => {
+                if args.is_empty() || args.len() > 3 {
+                    return self.bad(
+                        e.span,
+                        "`range(end)`, `range(start, end)`, or `range(start, end, step)` expected",
+                    );
+                }
+                for a in args {
+                    if a.name.is_some() || a.spread {
+                        return self.bad(a.span, "`range` takes only plain positional arguments");
+                    }
+                }
+                let int0 = self.int_const(0);
+                let int1 = self.int_const(1);
+                let (start, end, step) = match args.len() {
+                    1 => (int0, self.expr(&args[0].value)?, int1),
+                    2 => (self.expr(&args[0].value)?, self.expr(&args[1].value)?, int1),
+                    _ => (
+                        self.expr(&args[0].value)?,
+                        self.expr(&args[1].value)?,
+                        self.expr(&args[2].value)?,
+                    ),
+                };
+                self.extern_call_t1(
+                    "pickle_range",
+                    vec![IrTy::Int, IrTy::Int, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![start, end, step],
+                )
             }
             _ => self.bad(e.span, format!("`{name}` is not lowered yet")),
         }

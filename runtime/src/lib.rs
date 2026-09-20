@@ -271,6 +271,7 @@ pub mod abi {
     pub use crate::list::pickle_list_pop;
     pub use crate::list::pickle_list_push;
     pub use crate::list::pickle_list_set;
+    pub use crate::list::pickle_range;
 
     pub use crate::map::pickle_map_get_boxed;
     pub use crate::map::pickle_map_has;

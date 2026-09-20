@@ -1,0 +1,66 @@
+test fn abs_ints() {
+    expect(abs(5)).toBe(5)
+    expect(abs(0)).toBe(0)
+    expect(abs(-5)).toBe(5)
+}
+
+test fn abs_floats() {
+    expect(abs(2.5)).toBe(2.5)
+    expect(abs(-2.5)).toBe(2.5)
+}
+
+test fn range_simple() {
+    let r = range(5)
+    expect(len(r)).toBe(5)
+    expect(r[0]).toBe(0)
+    expect(r[4]).toBe(4)
+}
+
+test fn range_bounds() {
+    let r = range(2, 5)
+    expect(len(r)).toBe(3)
+    expect(r[0]).toBe(2)
+    expect(r[2]).toBe(4)
+}
+
+test fn range_step() {
+    let r = range(1, 7, 2)
+    expect(len(r)).toBe(3)
+    expect(r[0]).toBe(1)
+    expect(r[1]).toBe(3)
+    expect(r[2]).toBe(5)
+}
+
+test fn range_step_negative() {
+    let r = range(5, 0, -2)
+    expect(len(r)).toBe(3)
+    expect(r[0]).toBe(5)
+    expect(r[1]).toBe(3)
+    expect(r[2]).toBe(1)
+}
+
+test fn range_zero_step() {
+    let r = range(0, 10, 0)
+    expect(len(r)).toBe(0)
+}
+
+test fn range_empty() {
+    let r = range(10, 0)
+    expect(len(r)).toBe(0)
+}
+
+test fn for_in_range() {
+    var sum = 0
+    for (x in range(5)) {
+        sum += x
+    }
+    expect(sum).toBe(10)
+}
+
+test fn for_in_range_step() {
+    var sum = 0
+    for (x in range(1, 10, 2)) {
+        sum += x
+    }
+    expect(sum).toBe(25)
+}

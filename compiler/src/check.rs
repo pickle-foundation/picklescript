@@ -2088,6 +2088,14 @@ impl<'a> Checker<'a> {
             if bname == "assert" {
                 return self.check_assert(e, args);
             }
+            // `abs(x)`: numeric unary, result has the argument's type.
+            if bname == "abs" {
+                return self.check_abs(e, args);
+            }
+            // `range(...)`: always a `List<int>`.
+            if bname == "range" {
+                return self.check_range(e, args);
+            }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
                 return self.check_expect(e, args);
@@ -3452,6 +3460,54 @@ impl<'a> Checker<'a> {
         self.pop_scope();
         let _ = e.span;
         Ty::Fn(param_tys, Box::new(ret))
+    }
+
+    /// `abs(x)` over an `int` or `float` argument; the result has the
+    /// argument's type.
+    fn check_abs(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`abs(x)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        match &at {
+            Ty::Int | Ty::Float | Ty::Unknown => at,
+            _ => {
+                self.err(
+                    args[0].value.span,
+                    "`abs` requires an `int` or `float` argument",
+                );
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// `range(end)`, `range(start, end)`, `range(start, end, step)`: integer
+    /// bounds produce a `List<int>`.
+    fn check_range(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.is_empty() || args.len() > 3 {
+            self.err(
+                e.span,
+                "`range(end)`, `range(start, end)`, or `range(start, end, step)` expected",
+            );
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        for a in args {
+            if a.name.is_some() || a.spread {
+                self.err(a.span, "`range` takes only plain positional arguments");
+            }
+            let at = self.check_expr(&a.value);
+            if !matches!(at, Ty::Int | Ty::Unknown) {
+                self.err(a.value.span, "`range` bounds must be integers");
+            }
+        }
+        Ty::List(Box::new(Ty::Int))
     }
 
     fn check_if(
