@@ -51,6 +51,7 @@ pub fn emit_ir(
         fid_list: Vec::new(),
         fsource: HashMap::new(),
         finfo: HashMap::new(),
+        src_param_tys: HashMap::new(),
         classes: Vec::new(),
         class_by_name: HashMap::new(),
         class_decls: HashMap::new(),
@@ -215,6 +216,10 @@ struct Emitter<'a> {
     fid_list: Vec<FuncId>,
     fsource: HashMap<FuncId, FnSource<'a>>,
     finfo: HashMap<FuncId, CallableInfo>,
+    /// Source parameter types of every registered callable, by function id.
+    /// These drive implicit borrows for `&T` reference parameters at callsites
+    /// (the IR `IrFunc.params` are lowered `IrTy`s with no source type).
+    src_param_tys: HashMap<FuncId, Vec<Ty>>,
     /// Registered user classes in id order.
     classes: Vec<ClassPlan>,
     /// Class/struct name -> assigned runtime class id (registered only).
@@ -342,6 +347,10 @@ impl<'a> Emitter<'a> {
         self.fid_list.push(fid);
         self.fsource.insert(fid, FnSource::TopLevel(f));
         self.finfo.insert(fid, info.clone());
+        self.src_param_tys.insert(
+            fid,
+            info.params.iter().map(|p| p.ty.clone()).collect(),
+        );
     }
 
     // ---- class/struct registration ---------------------------------------
@@ -649,6 +658,14 @@ impl<'a> Emitter<'a> {
             },
         );
         self.ctor_ids.insert(cid, ctor_fid);
+        // The primary constructor's source parameter types drive implicit
+        // borrows at Ctor callsites (`f(Value(...))` for `&T` params).
+        let ctor_params = table
+            .ctor
+            .as_ref()
+            .map(|c| c.params.iter().map(|p| p.ty.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        self.src_param_tys.insert(ctor_fid, ctor_params);
 
         // Named constructors: `constructor.NAME(...) { this(...) }`. Each is a
         // static factory `pkl_<Name>_nc_<NAME>` that evaluates the delegation
@@ -667,6 +684,17 @@ impl<'a> Emitter<'a> {
                 },
             );
             self.named_ctor_ids.insert((cid, cname), fid);
+            let ncinfo = table
+                .named_ctors
+                .iter()
+                .find(|(n, _)| cd.name.as_deref() == Some(n.as_str()))
+                .map(|(_, c)| c);
+            self.src_param_tys.insert(
+                fid,
+                ncinfo
+                    .map(|c| c.params.iter().map(|p| p.ty.clone()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            );
         }
 
         // `deinit`: a finalizer `pkl_<Name>_deinit(this)` registered on the
@@ -711,6 +739,10 @@ impl<'a> Emitter<'a> {
                 },
             );
             self.finfo.insert(mid, info.clone());
+            self.src_param_tys.insert(
+                mid,
+                info.params.iter().map(|p| p.ty.clone()).collect(),
+            );
             self.method_ids.insert((cid, md.name.clone()), (mid, info.is_static));
         }
 
@@ -1647,6 +1679,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// `for (x in <seq>)`: slice-1 supports integer range sequences and lists.
+    /// An immutable `&T` borrow iterates through its referent.
     fn for_in(
         &mut self,
         pattern: &Pattern,
@@ -1657,16 +1690,20 @@ impl<'a> Emitter<'a> {
         let Pattern::Binding { name, .. } = pattern else {
             return self.bad(span, "iteration patterns other than a binding are not lowered yet");
         };
-        if let Some(Ty::String) = self.ty_of(&sequence.span) {
+        let seq_ot = match self.ty_of(&sequence.span) {
+            Some(Ty::Ref(inner)) => Some((*inner).clone()),
+            other => other,
+        };
+        if let Some(Ty::String) = &seq_ot {
             let seq_t = self.expr(sequence)?;
             return self.for_in_string(name, seq_t, body);
         }
-        if let Some(Ty::List(inner)) = self.ty_of(&sequence.span) {
+        if let Some(Ty::List(inner)) = &seq_ot {
             let elem = inner.as_ref().clone();
             let seq_t = self.expr(sequence)?;
             return self.for_in_values(name, seq_t, elem, body, span);
         }
-        if let Some(Ty::Map(k, v)) = self.ty_of(&sequence.span) {
+        if let Some(Ty::Map(k, v)) = &seq_ot {
             if k.as_ref() != &Ty::String {
                 return self.bad(sequence.span, "map keys must be `string` values");
             }
@@ -2193,7 +2230,7 @@ impl<'a> Emitter<'a> {
             }
             AstUnOp::Deref => {
                 let scalar = match self.ty_of(&operand.span) {
-                    Some(Ty::Ptr(inner)) => Self::scalar_ir(&inner),
+                    Some(Ty::Ptr(inner) | Ty::Ref(inner)) => Self::scalar_ir(&inner),
                     _ => None,
                 };
                 match scalar {
@@ -2714,6 +2751,10 @@ impl<'a> Emitter<'a> {
             }
             return match pt {
                 Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) => self.assign(e, operand, op, value),
+                Ty::Ref(_) => self.bad(
+                    span,
+                    "cannot write through an immutable reference (`&T`)",
+                ),
                 _ => self.bad(
                     span,
                     "assignment through a raw pointer is only supported for class, struct, pointer, and scalar values",
@@ -3152,6 +3193,12 @@ impl<'a> Emitter<'a> {
             self.instr(IrInstr::StoreRaw { addr, v: dst, ty });
             return Ok(dst);
         }
+        if let Some(Ty::Ref(_)) = &ot {
+            return self.bad(
+                e.span,
+                "cannot write through an immutable reference (`&T`)",
+            );
+        }
         if !matches!(ot, Some(Ty::List(_))) {
             // Maps are handled above; other types are typed but unlowered.
             return self.bad(e.span, "index assignment over this type is not lowered yet");
@@ -3256,7 +3303,8 @@ impl<'a> Emitter<'a> {
     }
 
     /// `xs[i]` element read for a `List<T>` or `Map<string, V>` (and a clear
-    /// error for strings).
+    /// error for strings). Indexing through an immutable `&T` borrow reads
+    /// through the referent.
     fn index_read(&mut self, e: &Expr, object: &Expr, index: &Expr) -> Result<Temp, ()> {
         if let Some(Ty::Map(k, v)) = self.ty_of(&object.span) {
             return self.map_index_read(
@@ -3266,6 +3314,17 @@ impl<'a> Emitter<'a> {
                 k.as_ref().clone(),
                 v.as_ref().clone(),
             );
+        }
+        if let Some(Ty::Ref(inner)) = self.ty_of(&object.span) {
+            if let Ty::Map(k, v) = inner.as_ref() {
+                return self.map_index_read(
+                    e,
+                    object,
+                    index,
+                    k.as_ref().clone(),
+                    v.as_ref().clone(),
+                );
+            }
         }
         let ot = self.ty_of(&object.span);
         let elem = match ot {
@@ -3278,8 +3337,31 @@ impl<'a> Emitter<'a> {
                 self.instr(IrInstr::LoadRaw { dst, addr, ty });
                 return Ok(dst);
             }
+            Some(Ty::Ref(inner)) if Self::scalar_ir(inner.as_ref()).is_some() => {
+                let ty = Self::scalar_ir(inner.as_ref()).unwrap();
+                let base = self.expr(object)?;
+                let idx = self.expr(index)?;
+                let addr = self.ptr_element_addr(base, idx, ty, e.span)?;
+                let dst = self.temp();
+                self.instr(IrInstr::LoadRaw { dst, addr, ty });
+                return Ok(dst);
+            }
             Some(Ty::List(inner)) => inner.as_ref().clone(),
+            Some(Ty::Ref(inner)) if matches!(inner.as_ref(), Ty::List(..)) => match inner.as_ref() {
+                Ty::List(e) => e.as_ref().clone(),
+                _ => unreachable!(),
+            },
             Some(Ty::String) => {
+                let obj = self.expr(object)?;
+                let idx = self.expr(index)?;
+                return self.extern_call_t1(
+                    "pickle_str_get",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Char,
+                    vec![obj, idx],
+                );
+            }
+            Some(Ty::Ref(inner)) if matches!(inner.as_ref(), Ty::String) => {
                 let obj = self.expr(object)?;
                 let idx = self.expr(index)?;
                 return self.extern_call_t1(
@@ -3951,8 +4033,10 @@ impl<'a> Emitter<'a> {
                 if a.spread {
                     return self.bad(a.span, "spread arguments are not lowered yet");
                 }
-                let t = self.expr(&a.value)?;
-                let t = if matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
+                let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+                let t = self.borrow_arg(src.as_ref(), a)?;
+                let t = if !is_ref && matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
                     let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
                     self.option_wrap(t, &vt, a.value.span)?
                 } else {
@@ -3979,8 +4063,10 @@ impl<'a> Emitter<'a> {
                 if a.spread {
                     return self.bad(a.span, "spread arguments are not lowered yet");
                 }
-                let t = self.expr(&a.value)?;
-                let t = if matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
+                let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+                let t = self.borrow_arg(src.as_ref(), a)?;
+                let t = if !is_ref && matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
                     let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
                     self.option_wrap(t, &vt, a.value.span)?
                 } else {
@@ -4221,10 +4307,12 @@ impl<'a> Emitter<'a> {
                 );
             }
         }
-        // `object.field` on a class/struct instance.
+        // `object.field` on a class/struct instance, also through an immutable
+        // `&T` borrow (which reads through the referent).
         let ot = self.ty_of(&object.span);
         let ot = match ot {
             Some(Ty::Ptr(inner)) => Some((*inner).clone()),
+            Some(Ty::Ref(inner)) => Some((*inner).clone()),
             other => other,
         };
         let cid = match ot {
@@ -4390,11 +4478,18 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // `instance.method(...)` on a class/struct instance.
+        // `instance.method(...)` on a class/struct instance, also through an
+        // immutable `&T` borrow (which borrows the receiver).
         if let Some(cid) = match ot {
             Some(Ty::Class(ref cn, _)) | Some(Ty::Struct(ref cn, _)) => {
                 self.class_by_name.get(cn).copied()
             }
+            Some(Ty::Ref(ref inner)) => match inner.as_ref() {
+                Ty::Class(ref cn, _) | Ty::Struct(ref cn, _) => {
+                    self.class_by_name.get(cn).copied()
+                }
+                _ => None,
+            },
             _ => None,
         } {
             if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
@@ -4483,8 +4578,10 @@ impl<'a> Emitter<'a> {
         };
         let base = call_args.len();
         for (i, a) in args.iter().enumerate() {
-            let t = self.expr(&a.value)?;
-            let t = if matches!(fparams.get(base + i).map(|p| p.ty), Some(IrTy::Ptr)) {
+            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(base + i)).cloned();
+            let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+            let t = self.borrow_arg(src.as_ref(), a)?;
+            let t = if !is_ref && matches!(fparams.get(base + i).map(|p| p.ty), Some(IrTy::Ptr)) {
                 let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
                 self.option_wrap(t, &vt, a.value.span)?
             } else {
@@ -4576,6 +4673,7 @@ impl<'a> Emitter<'a> {
             | Ty::Tuple(..)
             | Ty::Range(..)
             | Ty::Ptr(..) => Ok(Ptr),
+            Ty::Ref(..) => self.bad(span, "lists of `&T` references are not supported yet"),
             Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
             Ty::Fn(..) => self.bad(span, "function values are not lowered yet"),
             Ty::Unknown => self.bad(span, "list element type is not statically known"),
@@ -4623,6 +4721,44 @@ impl<'a> Emitter<'a> {
         self.types.get(span).cloned()
     }
 
+    /// Lower one call argument, honoring `&T` reference parameters. Passing a
+    /// `T` value to a `&T` parameter borrows it implicitly: a scalar local is
+    /// passed by address (`LocalAddr`, so the callee reads the same slot and
+    /// no copy is made), a managed value by its identity (shared, non-owning).
+    /// The argument is never moved or freed by the callee. An explicit `&x`
+    /// (already a `*T` address/identity) and a subtype argument are passed
+    /// directly.
+    fn borrow_arg(&mut self, src: Option<&Ty>, a: &CallArg) -> Result<Temp, ()> {
+        if let Some(Ty::Ref(inner)) = src {
+            let at = self.ty_of(&a.value.span);
+            if let Some(at) = at {
+                if at == **inner {
+                    if Self::scalar_ir(inner).is_none() {
+                        // Managed referent: share its identity.
+                        return self.expr(&a.value);
+                    }
+                    // Scalar referent: pass the local's address.
+                    let ExprKind::Ident(name) = &a.value.kind else {
+                        return self.bad(
+                            a.value.span,
+                            "implicitly borrowing a scalar needs a plain local variable",
+                        );
+                    };
+                    let Some(slot) = self.lookup(name) else {
+                        return self.bad(
+                            a.value.span,
+                            format!("cannot borrow unknown `{name}`"),
+                        );
+                    };
+                    let dst = self.temp();
+                    self.instr(IrInstr::LocalAddr { dst, slot });
+                    return Ok(dst);
+                }
+            }
+        }
+        self.expr(&a.value)
+    }
+
     /// The IR scalar type behind a language scalar type, if any.
     fn scalar_ir(t: &Ty) -> Option<IrTy> {
         match t {
@@ -4652,8 +4788,10 @@ impl<'a> Emitter<'a> {
             // A pointer is always carried as a 64-bit address: `Int` for a
             // raw scalar pointee (never GC-tracked, like `StrAddr`/`FuncAddr`)
             // and `Ptr` for a managed pointee, which is the object pointer
-            // itself.
-            Ty::Ptr(inner) => match inner.as_ref() {
+            // itself. An immutable `&T` reference occupies the same bit
+            // layout: a scalar referent is passed as its address (`Int`), a
+            // managed referent as its identity (`Ptr`).
+            Ty::Ptr(inner) | Ty::Ref(inner) => match inner.as_ref() {
                 Ty::Int | Ty::Float | Ty::Bool | Ty::Char => Ok(IrTy::Int),
                 _ => Ok(IrTy::Ptr),
             },

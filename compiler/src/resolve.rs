@@ -442,9 +442,8 @@ impl<'a> TypeCtx<'a> {
                 let _ = is_async;
                 Ty::Fn(ps, Box::new(r))
             }
-            TypeExprKind::Pointer(inner) | TypeExprKind::Ref(inner) => {
-                Ty::Ptr(Box::new(self.resolve_ty(inner, generics)))
-            }
+            TypeExprKind::Pointer(inner) => Ty::Ptr(Box::new(self.resolve_ty(inner, generics))),
+            TypeExprKind::Ref(inner) => Ty::Ref(Box::new(self.resolve_ty(inner, generics))),
             TypeExprKind::Infer => Ty::Unknown,
         }
     }
@@ -508,6 +507,18 @@ impl<'a> TypeCtx<'a> {
     fn instantiate(&self, bare: &Ty, args: &[Ty], span: Span) -> Ty {
         let (name, expected): (String, Vec<String>) = match bare {
             Ty::List(_) => {
+                if let Some(e) = args.first() {
+                    let holds_refs = matches!(e, Ty::Ref(_))
+                        || matches!(e, Ty::Option(inner) if matches!(inner.as_ref(), Ty::Ref(_)));
+                    if holds_refs {
+                        self.diags.emit(
+                            Diagnostic::error_at(
+                                span,
+                                "lists of `&T` references are not supported yet",
+                            ),
+                        );
+                    }
+                }
                 return Ty::List(Box::new(args.first().cloned().unwrap_or(Ty::Unknown)));
             }
             Ty::Map(..) => {

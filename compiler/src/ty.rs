@@ -42,6 +42,10 @@ pub enum Ty {
     Range(Box<Ty>),
     /// `*T` raw pointer (only usable inside `unsafe`).
     Ptr(Box<Ty>),
+    /// `&T` immutable reference: a read-only, non-owning borrow used as a
+    /// function parameter. Passing a `T` value borrows it implicitly; the
+    /// callee may read through it but cannot assign through it.
+    Ref(Box<Ty>),
 }
 
 impl Ty {
@@ -139,6 +143,7 @@ impl Ty {
             Ty::Var(n) => n.clone(),
             Ty::Range(inner) => format!("Range<{}>", inner.bare_name()),
             Ty::Ptr(inner) => format!("*{}", inner.bare_name()),
+            Ty::Ref(inner) => format!("&{}", inner.bare_name()),
         }
     }
 

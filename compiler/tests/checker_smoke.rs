@@ -1881,3 +1881,285 @@ fn rejects_pointer_member_outside_unsafe() {
         "expected a pointer access diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_implicit_borrow_params() {
+    let d = check_str(
+        r#"class Point {
+            x: int
+            y: int
+            hits: List<int>
+
+            constructor(x: int, y: int, hits: List<int>) {
+                this.x = x
+                this.y = y
+                this.hits = hits
+            }
+
+            fn scale(f: int) -> int {
+                return this.x * f
+            }
+        }
+
+        fn prod(total: &int, p: &Point, q: &List<int>) -> int {
+            var n = *total
+            n += total[0]
+            n += p.x + p.y + p.scale(2)
+            for (v in p.hits) {
+                n += v
+            }
+            n += q[0]
+            return n
+        }
+
+        fn main() {
+            let t = 4
+            let pt = Point(1, 2, [3])
+            let l = [9, 8]
+            println(prod(t, pt, l))
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "expected implicit `&T` borrows to type-check, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn accepts_explicit_ampersand_expr_unchanged() {
+    let d = check_str(
+        r#"fn bump(t: *int) -> int {
+            return unsafe { *t }
+        }
+
+        fn main() {
+            var c = 5
+            unsafe {
+                let p: *int = &c
+                println(bump(p))
+            }
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "expected `&expr` raw pointers to keep working, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_ampersand_for_perfect_ptr_param() {
+    let d = check_str(
+        r#"fn bump(p: &int) -> int {
+            return *p
+        }
+
+        fn main() {
+            var c = 5
+            println(bump(&c))
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("expected `&int`, found `*int`"),
+        "expected explicit `&c` to be rejected for an `&T` parameter, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_write_through_deref_borrow() {
+    let d = check_str(
+        r#"fn bad(p: &int) -> int {
+            var v = 2
+            (*p) = v
+            return *p
+        }
+
+        fn main() {
+            var t = 3
+            println(bad(t))
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("cannot write through an immutable reference (`&T`)"),
+        "expected a write-through diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        !msgs.contains("`*` may only be used inside an `unsafe` block"),
+        "a `&T` deref read must not require `unsafe`, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_write_through_index_borrow() {
+    let d = check_str(
+        r#"fn bad(p: &int) -> int {
+            var v = 2
+            p[0] = v
+            return *p
+        }
+
+        fn main() {
+            var t = 3
+            println(bad(t))
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("cannot write through an immutable reference (`&T`)"),
+        "expected a write-through diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_write_through_member_borrow() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        fn bad(n: &Node, v: int) -> int {
+            n.value = v
+            return n.value
+        }
+
+        fn main() {
+            let g = Node(3)
+            println(bad(g, 4))
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("cannot write to a field `value` through an immutable reference (`&T`)"),
+        "expected a field write-through diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_assign_in_unsafe_over_ref_still_errors() {
+    let d = check_str(
+        r#"fn bad(p: &int) -> int {
+            unsafe {
+                (*p) = 2
+            }
+            return *p
+        }
+
+        fn main() {
+            var t = 3
+            println(bad(t))
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("cannot write through an immutable reference (`&T`)"),
+        "expected a write-through diagnostic even inside `unsafe`, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_non_param_ref_positions() {
+    let d = check_str(
+        r#"class Box {
+            b: &int
+        }
+
+        fn badRet() -> &int {
+            return 5
+        }
+
+        fn main() {
+            let x: &int = 5
+            const y: &int = 6
+            var cx: Box = Box()
+            let v: List<&int> = []
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected errors, got none");
+    assert!(
+        msgs.contains("supported only as function parameter types (a field)"),
+        "expected a field diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("supported only as function parameter types (a return type)"),
+        "expected a return-type diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("supported only as function parameter types (a `let` binding)"),
+        "expected a let-binding diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("supported only as function parameter types (a `const` binding)"),
+        "expected a const-binding diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("lists of `&T` references are not supported yet"),
+        "expected a list-of-references diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_method_and_lambda_ref_returns() {
+    let d = check_str(
+        r#"class Point {
+            x: int
+
+            fn badRet() -> &int {
+                return this.x
+            }
+        }
+
+        fn lambdaRet() -> int {
+            let f = fn(p: int) -> &int { return 1 }
+            return 1
+        }
+
+        fn main() {
+            println(3)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected errors, got none");
+    assert!(
+        msgs.contains("supported only as function parameter types (a return type)"),
+        "expected a method return-type diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("supported only as function parameter types (a lambda return type)"),
+        "expected a lambda return-type diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn accepts_borrow_ctor_param() {
+    let d = check_str(
+        r#"class Tagged {
+            tag: int
+            name: string
+
+            constructor(tag: &int, name: string) {
+                this.tag = *tag
+                this.name = name
+            }
+        }
+
+        fn main() {
+            var t = 7
+            let t1 = Tagged(t, "a")
+            println(t1.tag)
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "expected `&T` constructor params to type-check, got:\n{}",
+        error_msgs(&d)
+    );
+}

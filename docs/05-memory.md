@@ -221,16 +221,59 @@ Rules enforced by the type checker:
 - Pointer values are non-owning: they neither keep an object alive nor free
   it. A `#[manualAlloc]` owner still performs the deterministic free.
 
-Planned (not lowered yet): `&T` immutable-reference parameters, raw buffers
-with managed pointees, custom allocators and arenas. The syntax is reserved
-above but those lowering paths return a "not lowered yet" diagnostic rather
-than miscompiling.
+### Immutable references (`&T` parameters)
 
-Rules enforced by the type checker inside `unsafe` (planned):
-- A raw pointer derived from a managed object must not outlive a GC point in
-  a way the compiler can see; the compiler inserts implicit roots for live
-  referents of `&T` params.
-- Casting between pointer kinds is explicit.
+An `&T` parameter is a read-only lens on its argument: the caller borrows the
+value automatically and there is no `&` at the call site. It is not a
+Rust-style borrow — there are no lifetimes, no borrow checker, and a borrow
+never blocks reads, calls, or re-borrows. The only rule is that a `&T` can be
+read through and never written through.
+
+```
+fn receipt(items: &List<int>, total: &int) -> int {
+    var sum = total[0]          // `&int` reads the caller's local in place
+    for (v in items) {          // iteration dereferences the list referent
+        sum = sum + v
+    }
+    return sum
+}
+
+fn main() {
+    var p = 1000
+    var price = [3, 5]
+    println(receipt(price, p))  // implicit borrow, no `&`
+}
+```
+
+When `T` is smaller than a word you don't need to understand the mechanics: a
+`&int` is carried as the address of the argument's storage, so `*p` and
+`p[0]` alias its memory between the call's start and end. Because the borrow
+cannot write, a call cannot observe its own side effect through the alias.
+
+Semantics and rules:
+
+- `&T` is allowed only as a function, method, or constructor parameter type.
+  Uses elsewhere are rejected: `let x: &int`, fields, `const`, return types,
+  lambda return types — all error with "`&T` references are supported only as
+  function parameter types".
+- Callers pass the bare value; the compiler borrows implicitly. An explicit
+  `&c` still yields a raw `*T` (an `unsafe` operation) and is *not* a way to
+  satisfy `&T`.
+- Reading is fully supported through a `&T`: `*p` and `p[0]` for scalars,
+  `p.field`, `p.method(...)`, `p[i]`, and `for (v in p)` — each dereferences
+  the referent. Class/struct referents pass by identity; `&int`-style referents
+  pass by address of a local.
+- Writing is always rejected, inside or outside `unsafe`: `(*p) = v` and
+  `p[i] = v` ("cannot write through an immutable reference (`&T`)"), and
+  `p.field = v` ("cannot write to a field ... through an immutable reference").
+- Borrowing a `#[manualAlloc]` value does not move or free it — the borrowed
+  node can be read through several `&T` parameters and the owner still frees
+  it exactly once (`node.free()`).
+- `List<&T>` is rejected for GC safety ("lists of `&T` references are not
+  supported yet"): a list element cannot be a non-owning reference.
+
+The syntax is reserved for these references only; the pointer operators above
+are unchanged.
 
 ## Custom allocators and arenas
 
@@ -257,6 +300,7 @@ as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
 |-----------------|------------------------------------------|
 | `&expr`         | address of a class/struct/pointer value, or a scalar local |
 | `*T`            | raw pointer type (unsafe only)           |
+| `&T`            | immutable-reference parameter type (implicit borrow) |
 | `*ptr`          | dereference (read a scalar pointee)      |
 | `(*ptr) = v`    | store through a scalar/pointer pointee   |
 | `ptr.field`     | field through a raw pointer (auto-deref) |

@@ -183,6 +183,7 @@ impl<'a> Checker<'a> {
                         .map(|f| f.ty.clone())
                         .unwrap_or(Ty::Unknown);
                     let got = self.check_expr(&c.value);
+                    self.guard_ref_use(&ty, c.span, "a `const` binding");
                     self.check_assignable(&ty, &got, c.span, "const initializer");
                 }
                 ItemKind::Class(c) => self.check_class_bodies(c),
@@ -410,6 +411,13 @@ impl<'a> Checker<'a> {
         if got == want {
             return true;
         }
+        // An `&T` reference parameter accepts the bare value `T` by implicit
+        // borrow: `f(x)` for `f(p: &T)`. Borrowing never moves or owns the
+        // value, so a `#[manualAlloc]` caller keeps ownership. A raw `*T`
+        // argument is NOT accepted (casting between pointer kinds is explicit).
+        if let Ty::Ref(inner) = want {
+            return self.ok_types(inner, got);
+        }
         // none -> T?
         if got.is_none() && want.is_option() {
             return true;
@@ -478,6 +486,20 @@ impl<'a> Checker<'a> {
                 format!(
                     "`{}` does not satisfy `{}`; use `as` for an explicit conversion",
                     got, want
+                ),
+            );
+        }
+    }
+
+    /// `&T` is supported only as a function parameter type. Anywhere else a
+    /// stored or returned `&T` would dangle (its referent is a borrowed local),
+    /// so those uses are rejected up front.
+    fn guard_ref_use(&mut self, ty: &Ty, span: Span, where_: &str) {
+        if matches!(ty, Ty::Ref(_)) {
+            self.err(
+                span,
+                format!(
+                    "`&T` references are supported only as function parameter types ({where_})"
                 ),
             );
         }
@@ -779,6 +801,8 @@ impl<'a> Checker<'a> {
             .and_then(|fns| fns.first())
             .map(|c| c.ret.clone())
             .unwrap_or(Ty::Empty);
+        let ret_ty = self.ret_ty.clone();
+        self.guard_ref_use(&ret_ty, f.span, "a return type");
         self.ret_manual = attrs.iter().any(|a| a.name == "manualAlloc");
         if self.ret_manual && !matches!(self.ret_ty, Ty::Class(..) | Ty::Struct(..)) {
             self.err_note(
@@ -1030,6 +1054,19 @@ impl<'a> Checker<'a> {
                 let annotated = ty
                     .as_ref()
                     .map(|t| self.resolved_fn_ty(t, &self.fn_generics));
+                // The declared type of a `let x: T`/`var x: T` binding lives on
+                // the pattern; `T` may not be an immutable `&T` reference.
+                if let Pattern::Binding {
+                    ty: Some(ann),
+                    ..
+                } = pattern
+                {
+                    let at = self.resolved_fn_ty(ann, &self.fn_generics);
+                    self.guard_ref_use(&at, *span, "a `let` binding");
+                }
+                if let Some(a) = &annotated {
+                    self.guard_ref_use(a, *span, "a `let` binding");
+                }
                 let inferred = init.as_ref().map(|e| self.check_expr(e));
                 let final_ty = match (&annotated, &inferred) {
                     (Some(a), Some(i)) => {
@@ -1080,6 +1117,7 @@ impl<'a> Checker<'a> {
                 let vt = self.check_expr(value);
                 if let Some(t) = ty {
                     let tt = self.resolved_fn_ty(t, &self.fn_generics);
+                    self.guard_ref_use(&tt, *span, "a `const` binding");
                     self.check_assignable(&tt, &vt, *span, "const initializer");
                     self.declare(name, tt, false);
                 } else {
@@ -1166,7 +1204,12 @@ impl<'a> Checker<'a> {
     fn check_for_header(&mut self, header: &ForHeader) {
         match header {
             ForHeader::In { pattern, sequence } => {
+                // Iterating an immutable `&T` borrow iterates its referent.
                 let st = self.check_expr(sequence);
+                let st = match st {
+                    Ty::Ref(inner) => *inner,
+                    other => other,
+                };
                 let elem = match &st {
                     Ty::List(_) | Ty::Map(_, _) | Ty::Range(_) => {
                         st.elem().unwrap_or(Ty::Unknown)
@@ -1306,7 +1349,11 @@ impl<'a> Checker<'a> {
                     let ft = self.check_expr(e);
                     let w = ty
                         .as_ref()
-                        .map(|t| self.resolved_fn_ty(t, &table.generics))
+                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    if let Some(w) = &w {
+                        self.guard_ref_use(w, *span, "a field");
+                    }
+                    let w = w
                         .or_else(|| {
                             self.resolved
                                 .types
@@ -1356,6 +1403,9 @@ impl<'a> Checker<'a> {
                     let w = ty
                         .as_ref()
                         .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    if let Some(w) = &w {
+                        self.guard_ref_use(w, *span, "a field");
+                    }
                     let manual =
                         self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
                     if manual {
@@ -1500,6 +1550,9 @@ impl<'a> Checker<'a> {
                     let w = ty
                         .as_ref()
                         .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    if let Some(w) = &w {
+                        self.guard_ref_use(w, *span, "a field");
+                    }
                     let manual =
                         self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
                     if manual {
@@ -1538,6 +1591,8 @@ impl<'a> Checker<'a> {
                 _ => None,
             })
             .unwrap_or(Ty::Empty);
+        let ret_ty = self.ret_ty.clone();
+        self.guard_ref_use(&ret_ty, md.span, "a return type");
         // Declare `this` in scope.
         if let Some(st) = &self.self_ty {
             self.declare("this", st.clone(), false);
@@ -2325,7 +2380,9 @@ impl<'a> Checker<'a> {
         }
 
         let ot = self.check_expr(object);
-        // Member access through a raw pointer auto-dereferences: `p.field`.
+        // Member access through a raw pointer (`p.field`) auto-dereferences
+        // and needs `unsafe`; through an immutable `&T` borrow it is a safe
+        // read.
         let ot = match ot {
             Ty::Ptr(inner) => {
                 if self.unsafe_depth == 0 {
@@ -2336,6 +2393,7 @@ impl<'a> Checker<'a> {
                 }
                 *inner
             }
+            Ty::Ref(inner) => *inner,
             other => other,
         };
         if let Ty::List(inner) = &ot {
@@ -2462,8 +2520,22 @@ impl<'a> Checker<'a> {
     }
 
     fn check_index(&mut self, e: &Expr, object: &Expr, index: &Expr) -> Ty {
-        let ot = self.check_expr(object);
+        let ot0 = self.check_expr(object);
         let it = self.check_expr(index);
+        // Indexing through an immutable `&T` borrow reads through the
+        // referent: a collection/string referent is indexed exactly like the
+        // value itself, a scalar referent is addressed like a pointer element.
+        let ot = match &ot0 {
+            Ty::Ref(inner)
+                if !matches!(
+                    inner.as_ref(),
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char
+                ) =>
+            {
+                (**inner).clone()
+            }
+            other => other.clone(),
+        };
         match &ot {
             Ty::List(_) | Ty::Range(_) => {
                 if it != Ty::Unknown && it != Ty::Int {
@@ -2506,6 +2578,15 @@ impl<'a> Checker<'a> {
                         Ty::Unknown
                     }
                 }
+            }
+            // Indexing through an immutable `&T` borrow reads the referent
+            // (safe; no `unsafe` needed). Non-scalar referents were
+            // dereferenced above, so only scalar referents reach here.
+            Ty::Ref(inner) => {
+                if it != Ty::Unknown && it != Ty::Int {
+                    self.err(e.span, "pointer index must be an `int`");
+                }
+                (**inner).clone()
             }
             Ty::Unknown => Ty::Unknown,
             other => {
@@ -2644,17 +2725,20 @@ impl<'a> Checker<'a> {
                 }
             }
             UnOp::Deref => {
-                if self.unsafe_depth == 0 {
+                // Raw pointers (`*T`) need `unsafe`; dereferencing a safe
+                // `&T` borrow just reads through it.
+                let borrow = matches!(t, Ty::Ref(_));
+                if self.unsafe_depth == 0 && !borrow {
                     self.err(e.span, "`*` may only be used inside an `unsafe` block");
                 }
                 match t {
-                    Ty::Ptr(inner) => *inner,
+                    Ty::Ptr(inner) | Ty::Ref(inner) => *inner,
                     Ty::Unknown => Ty::Unknown,
                     other => {
                         self.err_note(
                             e.span,
                             format!("cannot dereference a value of type `{other}`"),
-                            "only raw pointers (`*T`) can be dereferenced",
+                            "only pointers (`*T`) and references (`&T`) can be dereferenced",
                         );
                         Ty::Unknown
                     }
@@ -2737,20 +2821,29 @@ impl<'a> Checker<'a> {
                 op: UnOp::Deref,
                 operand,
             } => {
-                if self.unsafe_depth == 0 {
+                // Dereferencing a raw pointer needs `unsafe`; writing
+                // through an immutable `&T` borrow is rejected outright.
+                let pt = self.check_expr(operand);
+                let is_borrow = matches!(pt, Ty::Ref(_));
+                if self.unsafe_depth == 0 && !is_borrow {
                     self.err(target.span, "`*` may only be used inside an `unsafe` block");
                 }
-                let pt = self.check_expr(operand);
                 match pt {
                     Ty::Ptr(inner) => {
                         self.check_assignable(&inner, &vt, target.span, "assignment");
+                    }
+                    Ty::Ref(_) => {
+                        self.err(
+                            target.span,
+                            "cannot write through an immutable reference (`&T`)",
+                        );
                     }
                     Ty::Unknown => {}
                     other => {
                         self.err_note(
                             target.span,
                             format!("cannot dereference a value of type `{other}`"),
-                            "only raw pointers (`*T`) can be dereferenced",
+                            "only pointers (`*T`) and references (`&T`) can be dereferenced",
                         );
                     }
                 }
@@ -2811,6 +2904,15 @@ impl<'a> Checker<'a> {
                             );
                         }
                         *inner
+                    }
+                    Ty::Ref(_) => {
+                        self.err(
+                            target.span,
+                            format!(
+                                "cannot write to a field `{name}` through an immutable reference (`&T`)"
+                            ),
+                        );
+                        Ty::Unknown
                     }
                     other => other,
                 };
@@ -2915,6 +3017,13 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
+                    Ty::Ref(_) => {
+                        self.err(
+                            target.span,
+                            "cannot write through an immutable reference (`&T`)",
+                        );
+                        Ty::Unknown
+                    }
                     _ => {
                         self.err(
                             target.span,
@@ -2951,6 +3060,8 @@ impl<'a> Checker<'a> {
         let saved_ret = self.ret_ty.clone();
         if let Some(ty) = return_ty {
             self.ret_ty = self.resolved_fn_ty(ty, &self.fn_generics);
+            let ret_ty = self.ret_ty.clone();
+            self.guard_ref_use(&ret_ty, e.span, "a lambda return type");
         } else {
             self.ret_ty = Ty::Unknown;
         }

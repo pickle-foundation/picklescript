@@ -1,0 +1,70 @@
+module refParams
+
+// Immutable references: an `&T` parameter reads its argument without owning
+// it, and the caller borrows the value automatically (no `&` at the call
+// site). `&T` is a read-only lens, not a Rust-style borrow: you can read
+// through it (deref, fields, indexing, iteration, methods) but you can never
+// write through it. Reference types in this slice are restricted to function,
+// method, and constructor parameters; `List<&T>` is rejected for GC safety.
+
+class Cart {
+    var total: int
+
+    constructor(total: int) {
+        this.total = total
+    }
+
+    fn premiumMarkup() -> int {
+        return 10
+    }
+}
+
+// `&int` reads the caller's integer in place: `total[0]` is the same value
+// as `*total`.
+fn receipt(items: &List<int>, total: &int) -> int {
+    var sum = total[0]
+    for (v in items) {
+        sum = sum + v
+    }
+    return sum + total[0]
+}
+
+// A class `&T` borrow reads fields and calls methods on the borrowed instance.
+fn cartTotal(c: &Cart) -> int {
+    return c.total + c.premiumMarkup() * 5
+}
+
+// A borrowed value is not moved, so the same `#[manualAlloc]` node can be
+// viewed twice and then freed by its owner.
+class Node {
+    tag: int
+
+    fn label() -> int {
+        return this.tag
+    }
+}
+
+fn describe(n: &Node) -> int {
+    return n.tag + n.label()
+}
+
+fn main() {
+    var p = 1000
+    var q = 2000
+
+    var price = [3, 5]
+    println(receipt(price, p))
+
+    var cart = Cart(4)
+    println(cartTotal(cart))
+
+    println(p + q)
+
+    #[manualAlloc]
+    var node = Node(7)
+    println(describe(node))
+    node.free()
+
+    println("done")
+    print("ok")
+}

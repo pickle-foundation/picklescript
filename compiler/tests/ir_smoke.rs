@@ -1813,4 +1813,98 @@ fn emits_raw_buffer_float_and_char_strides() {
     );
 }
 
+#[test]
+fn emits_scalar_borrow_param_by_address() {
+    let m = emit_str(
+        r#"fn bump(total: &int) -> int {
+            return *total + total[0]
+        }
+
+        fn main() {
+            var t = 4
+            println(bump(t))
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        dump.contains("= addr slot s"),
+        "implicit `&T` borrow of a scalar local must pass its address (`LocalAddr`), got:\n{dump}"
+    );
+    assert!(
+        m.funcs
+            .iter()
+            .any(|f| f.name == "bump" && dump.contains("loadraw.int64")),
+        "`*p` / `p[0]` on a `&int` must lower to a raw int load, got:\n{dump}"
+    );
+}
+
+#[test]
+fn emits_managed_borrow_by_identity() {
+    let m = emit_str(
+        r#"class Point {
+            x: int
+            y: int
+
+            constructor(x: int, y: int) {
+                this.x = x
+                this.y = y
+            }
+        }
+
+        fn origin(p: &Point) -> int {
+            return p.x + p.y
+        }
+
+        fn main() {
+            let pt = Point(2, 3)
+            println(origin(pt))
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        !dump.contains("= addr slot s"),
+        "implicit `&T` borrow of a managed value must pass it by identity, got:\n{dump}"
+    );
+    let origin_id = m.funcs.iter().position(|f| f.name == "origin").unwrap();
+    let main = m.funcs.iter().find(|f| f.name == "main").unwrap();
+    assert!(
+        main.blocks.iter().any(|b| b.instrs.iter().any(|i| matches!(
+            i,
+            IrInstr::Call {
+                callee: Callee::Func(fid),
+                ..
+            } if fid.0 == origin_id
+        ))),
+        "main must call `origin` directly, got:\n{dump}"
+    );
+}
+
+#[test]
+fn emits_borrowed_lists_deref_for_iteration() {
+    let m = emit_str(
+        r#"fn total(q: &List<int>) -> int {
+            var n = 0
+            for (v in q) {
+                n += v
+            }
+            n += q[0]
+            return n
+        }
+
+        fn main() {
+            let l = [1, 2, 3]
+            println(total(l))
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        m.funcs.iter().any(|f| f.name == "total"),
+        "expected `total` to be emitted:\n{dump}"
+    );
+    assert!(
+        dump.contains("load slot s"),
+        "managed `&T` borrows keep the referent in a slot, got:\n{dump}"
+    );
+}
+
 

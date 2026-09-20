@@ -130,8 +130,9 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
 - `is` type test; `in` membership / map key test.
 - `?` postfix on `T?`: `let x = maybe?.field` (short-circuit `none`).
 - `a ?? b`: `a` if present, else `b`.
-- `&expr` address-of (inside `unsafe`), `*T` pointer dereference,
-  `ptr->field` pointer field access, `<-` channel send: `ch <- value`.
+- `&expr` address-of (inside `unsafe`), `*T` raw pointer / `&T` immutable
+  reference param types, `ptr->field` pointer field access, `<-` channel send:
+  `ch <- value`.
 
 ## Modules
 
