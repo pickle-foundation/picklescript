@@ -284,7 +284,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     match self.parse_item() {
-                        Ok(item) => items.push(item),
+                        Ok(more) => items.extend(more),
                         Err(()) => self.recover_to_item(),
                     }
                     self.newlines();
@@ -413,6 +413,94 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_non_nl(1), Some(Tok::Fn))
     }
 
+    /// `test(...)` / `it(...)` followed by a call: the callable test form.
+    fn is_test_call_ahead(&self) -> bool {
+        matches!(self.kind(), Tok::Ident(n) if n == "test" || n == "it")
+            && matches!(self.peek_non_nl(1), Some(Tok::LParen))
+    }
+
+    /// `describe("group", { ... })`: a group of tests/hooks.
+    fn is_describe_call_ahead(&self) -> bool {
+        matches!(self.kind(), Tok::Ident(n) if n == "describe")
+            && matches!(self.peek_non_nl(1), Some(Tok::LParen))
+    }
+
+    /// `beforeAll({ ... })` / `afterAll({ ... })` / `beforeEach` / `afterEach`
+    /// as a top-level (root-group) hook declaration.
+    fn is_hook_call_ahead(&self) -> bool {
+        matches!(
+            self.kind(),
+            Tok::Ident(n) if n == "beforeAll" || n == "afterAll" || n == "beforeEach" || n == "afterEach"
+        ) && matches!(self.peek_non_nl(1), Some(Tok::LParen))
+    }
+
+    /// Parse `("description", { body })` for the `test`/`it` item. The body is
+    /// a block expression which becomes the test's statement block (any
+    /// trailing value is treated as a discarded statement).
+    fn parse_test_call_item(&mut self) -> PResult<ItemKind> {
+        let start = self.span();
+        self.bump(); // `test` / `it`
+        self.expect(&Tok::LParen)?;
+        let desc = self.parse_test_description()?;
+        self.expect(&Tok::Comma)?;
+        self.newlines();
+        let mut block = self.parse_block()?;
+        self.newlines();
+        self.expect(&Tok::RParen)?;
+        if let Some(tail) = block.expr.take() {
+            block.stmts.push(Stmt::Expr(*tail));
+        }
+        let span = start.to(self.prev_span());
+        Ok(ItemKind::Test(FnDecl {
+            name: desc,
+            span,
+            visibility: Visibility::Default,
+            is_async: false,
+            generics: Vec::new(),
+            params: Vec::new(),
+            return_ty: None,
+            body: Some(FnBody::Block(Box::new(block))),
+        }))
+    }
+
+    fn parse_test_description(&mut self) -> PResult<String> {
+        let start = self.span();
+        let lit = match self.kind().clone() {
+            Tok::Str(lit) => {
+                self.bump();
+                lit
+            }
+            other => {
+                self.err_at(
+                    start,
+                    format!(
+                        "test description must be a string literal, found {}",
+                        other.describe()
+                    ),
+                );
+                return Err(());
+            }
+        };
+        let mut out = String::new();
+        let mut interpolated = false;
+        for seg in lit.segments {
+            match seg {
+                StrSeg::Text { text } => out.push_str(&text),
+                StrSeg::Expr { tokens } => {
+                    interpolated = true;
+                    let _ = tokens;
+                }
+            }
+        }
+        if interpolated {
+            self.err_at(
+                start,
+                "interpolation is not allowed in a test description",
+            );
+        }
+        Ok(out)
+    }
+
     // ---------- items ----------
 
     /// Parse zero or more `#[name]` / `#[name(args)]` attributes. Attribute
@@ -454,10 +542,43 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    fn parse_item(&mut self) -> PResult<Item> {
+    fn parse_item(&mut self) -> PResult<Vec<Item>> {
         let doc = Vec::new();
         let start = self.span();
         let attrs = self.parse_attributes()?;
+
+        // `test("description", { ... })` / `it("description", { ... })` as a
+        // top-level test declaration (the primary testing-framework form).
+        if self.is_test_call_ahead() {
+            let kind = self.parse_test_call_item()?;
+            let span = start.to(self.prev_span());
+            return Ok(vec![Item {
+                doc,
+                attrs,
+                span,
+                kind,
+            }]);
+        }
+
+        // `describe("group", { ... })` desugars into the flat set of
+        // prefixed test items and hidden hook functions it contains.
+        if self.is_describe_call_ahead() {
+            let items = self.parse_describe_item()?;
+            return Ok(items);
+        }
+
+        // `beforeEach({ ... })` etc. at top level attach to the root group.
+        if self.is_hook_call_ahead() {
+            let kind = self.parse_hook_item()?;
+            let span = start.to(self.prev_span());
+            return Ok(vec![Item {
+                doc,
+                attrs,
+                span,
+                kind,
+            }]);
+        }
+
         let mut visibility = Visibility::Default;
         let mut is_test = false;
 
@@ -542,12 +663,239 @@ impl<'a> Parser<'a> {
             }
         };
         let span = start.to(self.prev_span());
-        Ok(Item {
+        Ok(vec![Item {
             doc,
             attrs,
             span,
             kind,
-        })
+        }])
+    }
+
+    /// `describe("name", { items })`: parse the header, then desugar the body.
+    /// Returns every test/hook/group item the block expands to.
+    fn parse_describe_item(&mut self) -> PResult<Vec<Item>> {
+        let start = self.span();
+        self.bump(); // `describe`
+        self.expect(&Tok::LParen)?;
+        let desc = self.parse_test_description()?;
+        self.expect(&Tok::Comma)?;
+        self.newlines();
+        let mut block = self.parse_block()?;
+        self.newlines();
+        self.expect(&Tok::RParen)?;
+        if let Some(tail) = block.expr.take() {
+            block.stmts.push(Stmt::Expr(*tail));
+        }
+        let span = start.to(self.prev_span());
+        let mut out = Vec::new();
+        self.desugar_describe_block(0, &[desc], &block, &mut out)?;
+        let _ = span;
+        Ok(out)
+    }
+
+    /// `beforeEach({ ... })` (or `beforeAll`/`afterEach`/`afterAll`) at the
+    /// top level: a hidden hook function attached to the root group.
+    fn parse_hook_item(&mut self) -> PResult<ItemKind> {
+        let start = self.span();
+        let hook = self.expect_ident("hook name")?;
+        self.expect(&Tok::LParen)?;
+        self.newlines();
+        let mut block = self.parse_block()?;
+        self.newlines();
+        self.expect(&Tok::RParen)?;
+        if let Some(tail) = block.expr.take() {
+            block.stmts.push(Stmt::Expr(*tail));
+        }
+        let span = start.to(self.prev_span());
+        let name = format!("__pkl_hook_{}_", hook_kind(&hook).unwrap_or("?"),);
+        Ok(ItemKind::Fn(FnDecl {
+            name,
+            span,
+            visibility: Visibility::Default,
+            is_async: false,
+            generics: Vec::new(),
+            params: Vec::new(),
+            return_ty: None,
+            body: Some(FnBody::Block(Box::new(block))),
+        }))
+    }
+
+    /// Expand a `describe` body into flat items. `depth` is the current nest
+    /// level (each nested describe adds one); `path` is the group name path so
+    /// far, `out` receives tests/hooks in group order.
+    fn desugar_describe_block(
+        &mut self,
+        _depth: usize,
+        path: &[String],
+        block: &Block,
+        out: &mut Vec<Item>,
+    ) -> PResult<()> {
+        for stmt in &block.stmts {
+            let Stmt::Expr(e) = stmt else {
+                self.err_at(
+                    stmt_span(stmt),
+                    "expected `test(...)`, `it(...)`, `describe(...)` or a hook in a describe body",
+                );
+                return Err(());
+            };
+            let Some((callee, args)) = call_parts(e) else {
+                self.err_at(
+                    e.span,
+                    "expected `test(...)`, `it(...)`, `describe(...)` or a hook in a describe body",
+                );
+                return Err(());
+            };
+            match callee {
+                "test" | "it" => {
+                    let desc = self.describe_call_str(e, args, 0)?;
+                    let b = match args.get(1).map(|a| block_of(&a.value)) {
+                        Some(Some(b)) => b.clone(),
+                        _ => {
+                            self.err_at(
+                                e.span,
+                                format!(
+                                    "`{callee}()` needs a `(\"description\", {{ ... }})` body"
+                                ),
+                            );
+                            return Err(());
+                        }
+                    };
+                    let prefix = if path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} > ", path.join(" > "))
+                    };
+                    let full = format!("{prefix}{desc}");
+                    out.push(Item {
+                        doc: Vec::new(),
+                        attrs: Vec::new(),
+                        span: e.span,
+                        kind: ItemKind::Test(FnDecl {
+                            name: full,
+                            span: e.span,
+                            visibility: Visibility::Default,
+                            is_async: false,
+                            generics: Vec::new(),
+                            params: Vec::new(),
+                            return_ty: None,
+                            body: Some(FnBody::Block(Box::new(b))),
+                        }),
+                    });
+                }
+                "describe" => {
+                    let desc = self.describe_call_str(e, args, 0)?;
+                    let mut b = match args.get(1).map(|a| block_of(&a.value)) {
+                        Some(Some(b)) => b.clone(),
+                        _ => {
+                            self.err_at(
+                                e.span,
+                                "`describe()` needs a `(\"name\", {{ ... }})` body",
+                            );
+                            return Err(());
+                        }
+                    };
+                    // The block's final statement is parsed as its tail
+                    // expression; flatten it back so it is desugared too.
+                    if let Some(tail) = b.expr.take() {
+                        b.stmts.push(Stmt::Expr(*tail));
+                    }
+                    let mut nested = Vec::new();
+                    let mut path = path.to_vec();
+                    path.push(desc);
+                    self.desugar_describe_block(0, &path, &b, &mut nested)?;
+                    out.extend(nested);
+                    continue;
+                }
+                "beforeAll" | "beforeEach" | "afterEach" | "afterAll" => {
+                    self.desugar_hook(e, args, path, out)?;
+                }
+                _ => {
+                    self.err_at(
+                        e.span,
+                        format!(
+                            "unsupported statement in a describe body: `{callee}(...)` (expected test/it/describe or a hook)"
+                        ),
+                    );
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Extract a hook call inside a group into a hidden function item whose
+    /// mangled name encodes `(kind, group path)` for the test runner.
+    fn desugar_hook(
+        &mut self,
+        e: &Expr,
+        args: &[CallArg],
+        path: &[String],
+        out: &mut Vec<Item>,
+    ) -> PResult<()> {
+        let hook = match &e.kind {
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Ident(n) => n.clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        let Some(kind) = hook_kind(&hook) else {
+            self.err_at(e.span, format!("unknown hook `{hook}`"));
+            return Err(());
+        };
+        let b = match args.first().map(|a| block_of(&a.value)) {
+            Some(Some(b)) => b.clone(),
+            _ => {
+                self.err_at(
+                    e.span,
+                    format!("`{hook}()` needs a `{{ ... }}` body block"),
+                );
+                return Err(());
+            }
+        };
+        let mut name = format!("__pkl_hook_{kind}_",);
+        name.push_str(&path.join(" > "));
+        out.push(Item {
+            doc: Vec::new(),
+            attrs: Vec::new(),
+            span: e.span,
+            kind: ItemKind::Fn(FnDecl {
+                name,
+                span: e.span,
+                visibility: Visibility::Default,
+                is_async: false,
+                generics: Vec::new(),
+                params: Vec::new(),
+                return_ty: None,
+                body: Some(FnBody::Block(Box::new(b))),
+            }),
+        });
+        Ok(())
+    }
+
+    /// Read the description string literal argument of a nested
+    /// `test`/`it`/`describe` call, rejecting interpolated literals.
+    fn describe_call_str(&mut self, e: &Expr, args: &[CallArg], index: usize) -> PResult<String> {
+        let a = args.get(index);
+        match a.and_then(|a| str_literal_of(&a.value)) {
+            Some(segments) => {
+                let mut out = String::new();
+                for seg in segments {
+                    match seg {
+                        StrPart::Text(text) => out.push_str(text),
+                        StrPart::Expr(_) => {
+                            self.err_at(e.span, "interpolation is not allowed in a test description");
+                            return Err(());
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            None => {
+                self.err_at(e.span, "test description must be a string literal");
+                Err(())
+            }
+        }
     }
 
     fn parse_fn(&mut self) -> PResult<FnDecl> {
@@ -2695,5 +3043,53 @@ impl AssignOp {
             AssignOp::BitOr => Tok::OrEq,
             AssignOp::BitXor => Tok::XorEq,
         }
+    }
+}
+// ---- describe / hook desugar helpers ------------------------------------
+
+fn hook_kind(name: &str) -> Option<&'static str> {
+    match name {
+        "beforeAll" => Some("ba"),
+        "beforeEach" => Some("be"),
+        "afterEach" => Some("ae"),
+        "afterAll" => Some("aa"),
+        _ => None,
+    }
+}
+
+fn call_parts(e: &Expr) -> Option<(&str, &[CallArg])> {
+    if let ExprKind::Call { callee, args } = &e.kind {
+        if let ExprKind::Ident(n) = &callee.kind {
+            return Some((n, args));
+        }
+    }
+    None
+}
+
+fn str_literal_of(e: &Expr) -> Option<&Vec<StrPart>> {
+    if let ExprKind::Lit(Lit::String(parts)) = &e.kind {
+        return Some(parts);
+    }
+    None
+}
+
+fn block_of(e: &Expr) -> Option<&Block> {
+    if let ExprKind::Block(b) = &e.kind {
+        return Some(b);
+    }
+    None
+}
+
+fn stmt_span(s: &Stmt) -> Span {
+    match s {
+        Stmt::Let { span, .. }
+        | Stmt::Const { span, .. }
+        | Stmt::Return { span, .. }
+        | Stmt::Break { span }
+        | Stmt::Continue { span }
+        | Stmt::While { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Empty(span) => *span,
+        Stmt::Expr(e) => e.span,
     }
 }

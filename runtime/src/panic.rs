@@ -39,6 +39,24 @@ fn record_panic(msg: String) {
     LAST_PANIC.with(|c| *c.borrow_mut() = Some(msg));
 }
 
+/// Record a captured failure message (used by the test harness' `assert`
+/// lowering without unwinding through the JIT frame).
+pub(crate) fn record_panic_msg(msg: impl Into<String>) {
+    record_panic(msg.into());
+}
+
+/// Write the fatal banner plus `msg` to stderr and exit 1. Used outside
+/// capture mode by `panic` and failing `assert`s in non-test code.
+pub(crate) fn fatal(msg: &str) -> ! {
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    let _ = lock.write_all(FATAL);
+    let _ = lock.write_all(msg.as_bytes());
+    let _ = lock.write_all(b"\n");
+    let _ = lock.flush();
+    std::process::exit(1);
+}
+
 fn panic_text(info: &std::panic::PanicHookInfo<'_>) -> String {
     if let Some(s) = info.payload().downcast_ref::<&str>() {
         s.to_string()
@@ -66,13 +84,7 @@ pub extern "C" fn pickle_panic_bytes(ptr: *const u8, len: usize) -> ! {
         record_panic(msg);
         std::panic::panic_any("pickle panic");
     }
-    let stderr = std::io::stderr();
-    let mut lock = stderr.lock();
-    let _ = lock.write_all(FATAL);
-    let _ = lock.write_all(msg.as_bytes());
-    let _ = lock.write_all(b"\n");
-    let _ = lock.flush();
-    std::process::exit(1);
+    fatal(&msg);
 }
 
 /// ABI: `panic("...")` from a NUL-terminated C string.

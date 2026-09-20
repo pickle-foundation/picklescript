@@ -544,3 +544,20 @@ pub enum PropertyAccessor {
     /// `{ ... }`
     Block(Block),
 }
+
+/// Assertion methods recognized on an `expect(...)` chain (testing framework).
+pub fn is_expect_method(name: &str) -> bool {
+    matches!(
+        name,
+        "toBe"
+            | "toEqual"
+            | "toBeTruthy"
+            | "toBeFalsy"
+            | "toBeNull"
+            | "toExist"
+            | "toHaveLength"
+            | "toContain"
+            | "toBeGreaterThan"
+            | "toBeLessThan"
+    )
+}

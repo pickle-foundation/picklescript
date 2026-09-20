@@ -39,6 +39,16 @@ fn write_stdout(bytes: &[u8]) {
     let _ = lock.flush();
 }
 
+/// Whether ANSI escapes will be honoured on stdout. Color is enabled for a
+/// real terminal unless `NO_COLOR` (or `PICKLE_NO_COLOR`) is set.
+pub(crate) fn terminal_color_enabled() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("PICKLE_NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
+}
+
 /// Print raw bytes (from a string literal or the contents of a string).
 fn print_raw_bytes(ptr: *const u8, len: usize) {
     if !ptr.is_null() && len > 0 {
@@ -149,6 +159,66 @@ fn print_obj_raw(obj: *mut PickleObject) {
             match name {
                 Some(bytes) => pickle_print_bytes(bytes.as_ptr(), bytes.len()),
                 None => pickle_print_cstr(b"<object>\0".as_ptr()),
+            }
+        }
+    }
+}
+
+/// Format the value of a managed object into `buf` (used by `expect` to build
+/// `Expected:/Received:` lines). Lists are printed element-wise with brackets.
+pub(crate) fn fmt_obj_to(buf: &mut Vec<u8>, obj: *mut PickleObject) {
+    if obj.is_null() {
+        buf.extend_from_slice(b"none");
+        return;
+    }
+    let class_id = unsafe { (*obj).class_id };
+    match class_id {
+        PICKLE_CLASS_STRING => {
+            // SAFETY: pointer/length come straight from the managed string.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(crate::strings::string_bytes_ptr(obj), crate::strings::string_bytes_len(obj))
+            };
+            buf.extend_from_slice(bytes);
+        }
+        PICKLE_CLASS_LIST => {
+            buf.push(b'[');
+            let n = list_len(obj);
+            for i in 0..n {
+                if i > 0 {
+                    buf.extend_from_slice(b", ");
+                }
+                let elem = crate::list::pickle_list_get(obj, i);
+                fmt_obj_to(buf, elem);
+            }
+            buf.push(b']');
+        }
+        PICKLE_CLASS_MAP => {
+            let n = map_len(obj);
+            buf.extend_from_slice(b"Map(");
+            buf.extend_from_slice(n.to_string().as_bytes());
+            buf.push(b')');
+        }
+        PICKLE_CLASS_ENUM => {
+            buf.extend_from_slice(b"Enum(");
+            buf.extend_from_slice(enum_tag(obj).to_string().as_bytes());
+            buf.push(b')');
+        }
+        PICKLE_CLASS_BOX_INT => buf.extend_from_slice(crate::boxscalar::box_bits(obj).to_string().as_bytes()),
+        PICKLE_CLASS_BOX_FLOAT => {
+            let s =
+                crate::strings::float64_to_string(f64::from_bits(crate::boxscalar::box_bits(obj) as u64));
+            let bytes = unsafe {
+                std::slice::from_raw_parts(crate::strings::string_bytes_ptr(s), crate::strings::string_bytes_len(s))
+            };
+            buf.extend_from_slice(bytes);
+        }
+        PICKLE_CLASS_BOX_BOOL => buf.extend_from_slice(if crate::boxscalar::box_bits(obj) != 0 { b"true" } else { b"false" }),
+        PICKLE_CLASS_BOX_CHAR => buf.push(crate::boxscalar::box_bits(obj) as u8),
+        _ => {
+            let gc = crate::gc::gc_mut();
+            match gc.class_name(class_id) {
+                Some(bytes) => buf.extend_from_slice(bytes),
+                None => buf.extend_from_slice(b"<object>"),
             }
         }
     }

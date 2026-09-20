@@ -39,11 +39,13 @@ pickle fmt
 pickle repl
 ```
 
-The `build` and `run` subcommands work today on a single source file:
+The `build` and `run` subcommands work today on a single source file; `test`
+uses a whole directory:
 
 ```
 pickle run  examples/hello-world/src/main.pkl    # JIT-compile and run
 pickle build examples/hello-world/src/main.pkl    # -> main.exe next to the source
+pickle test tests/ # or `src/`                            # run every `*_test.pkl`/`*.test.pkl`
 ```
 
 `pickle build` lowers the module to machine code (Cranelift), emits a

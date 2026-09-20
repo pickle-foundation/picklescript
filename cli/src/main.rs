@@ -73,6 +73,19 @@ enum Command {
         /// Source file to run
         file: PathBuf,
     },
+    /// Run the `test fn` items of one or more modules
+    Test {
+        /// A `*.pkl` file, or a directory of them (defaults to `tests/`).
+        /// Directory targets only pick up `*_test.pkl` / `*.test.pkl` files.
+        target: Option<PathBuf>,
+        /// Run only tests whose name (after `test `) contains this substring
+        #[arg(long, short)]
+        filter: Option<String>,
+        /// Run only tests carrying this tag (accepted for CLI compatibility;
+        /// tag filtering is not implemented yet)
+        #[arg(long)]
+        tag: Option<String>,
+    },
     /// Compile a module to a native executable, linking the runtime
     Build {
         /// Source file to compile
@@ -256,6 +269,165 @@ fn run() -> Result<()> {
             }
             pickle_runtime::abi::pickle_runtime_shutdown();
         }
+        Command::Test {
+            target,
+            filter,
+            tag,
+        } => {
+            if tag.as_deref().map(str::trim).is_some_and(|t| !t.is_empty()) {
+                eprintln!(
+                    "note: `--tag` filtering is not implemented yet; running all matching tests"
+                );
+            }
+            let target = target.clone().unwrap_or_else(|| PathBuf::from("tests"));
+            let files: Vec<PathBuf> = if target.is_dir() {
+                let mut out: Vec<PathBuf> = std::fs::read_dir(&target)
+                    .with_context(|| format!("cannot read {}", target.display()))?
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| is_discoverable_test_file(p))
+                    .collect();
+                out.sort();
+                out
+            } else {
+                vec![target.clone()]
+            };
+            if files.is_empty() {
+                if target.is_dir() {
+                    anyhow::bail!(
+                        "no `*_test.pkl`/`*.test.pkl` files found under {}",
+                        target.display()
+                    );
+                }
+                anyhow::bail!("no tests found at {}", target.display());
+            }
+            // Test bodies call the runtime (strings, GC, ...), so bring it up
+            // once and leave it up until every module has run.
+            pickle_runtime::abi::pickle_runtime_init();
+            let runner = jit::Jit::new().with_context(|| "while setting up the JIT")?;
+            let mut failed = false;
+            for file in &files {
+                let (source, mut map, diags) = load(file)?;
+                let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
+                    .and_then(|out| {
+                        pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags)
+                    });
+                let rendered = diags.render_all(&map, colored);
+                if !rendered.is_empty() {
+                    eprint!("{rendered}");
+                }
+                let Some(module) = module else {
+                    eprintln!("error: {} failed to compile", file.display());
+                    failed = true;
+                    continue;
+                };
+                let test_fns: Vec<&pickle_compiler::ir::IrFunc> =
+                    module.funcs.iter().filter(|f| f.is_test).collect();
+                if test_fns.is_empty() {
+                    eprintln!("note: {} has no tests", file.display());
+                    continue;
+                }
+                let filter = filter.as_deref().filter(|f| !f.is_empty());
+                let tests = if filter.is_some() {
+                    test_fns
+                        .iter()
+                        .copied()
+                        .filter(|f| {
+                            filter.is_some_and(|p| f.name.contains(p))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    test_fns
+                };
+                if tests.is_empty() {
+                    eprintln!("note: {} has no matching tests", file.display());
+                    continue;
+                }
+                // SAFETY: the runtime is initialised and the compiled test
+                // bodies are zero-argument functions with the host calling
+                // convention; `test_fns`/`names` below outlive the run.
+                let program = runner
+                    .compile_no_main(&module)
+                    .with_context(|| format!("while JIT-compiling {}", file.display()))?;
+                // Test modules have no `main`, so class registration + static
+                // init live in the synthesized `pkl_test_setup` (no-op fn when
+                // the module has nothing to set up).
+                if let Some(addr) = program.symbol_addr("pkl_test_setup") {
+                    let setup: unsafe extern "C" fn() =
+                        unsafe { std::mem::transmute::<usize, unsafe extern "C" fn()>(addr) };
+                    unsafe { setup() };
+                }
+                let names: Vec<Vec<u8>> = tests
+                    .iter()
+                    .map(|f| f.name.as_bytes().to_vec())
+                    .collect();
+                let descriptors: Vec<pickle_runtime::abi::PickleTest> = tests
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        let addr = program
+                            .symbol_addr(&f.symbol)
+                            .unwrap_or_else(|| panic!("missing compiled symbol {}", f.symbol));
+                        let body: extern "C" fn() = unsafe {
+                            std::mem::transmute::<usize, extern "C" fn()>(addr)
+                        };
+                        pickle_runtime::abi::PickleTest {
+                            name: names[i].as_ptr(),
+                            name_len: names[i].len() as u32,
+                            body,
+                        }
+                    })
+                    .collect();
+                pickle_runtime::abi::pickle_test_register_table(
+                    descriptors.as_ptr(),
+                    descriptors.len() as u32,
+                );
+                // Hooks are hidden `fn`s whose mangled names encode the hook
+                // kind and the `" > "`-joined group path.
+                let hook_fns: Vec<&pickle_compiler::ir::IrFunc> = module
+                    .funcs
+                    .iter()
+                    .filter(|f| f.name.starts_with("__pkl_hook_"))
+                    .collect();
+                let hook_groups: Vec<Vec<u8>> = hook_fns
+                    .iter()
+                    .map(|f| decode_hook(&f.name).0.into_bytes())
+                    .collect();
+                let hook_descriptors: Vec<pickle_runtime::abi::PickleHook> = hook_fns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        let addr = program
+                            .symbol_addr(&f.symbol)
+                            .unwrap_or_else(|| panic!("missing compiled symbol {}", f.symbol));
+                        let body: extern "C" fn() = unsafe {
+                            std::mem::transmute::<usize, extern "C" fn()>(addr)
+                        };
+                        let (_, kind) = decode_hook(&f.name);
+                        pickle_runtime::abi::PickleHook {
+                            group: hook_groups[i].as_ptr(),
+                            group_len: hook_groups[i].len() as u32,
+                            kind,
+                            body,
+                        }
+                    })
+                    .collect();
+                pickle_runtime::abi::pickle_test_register_hooks(
+                    hook_descriptors.as_ptr(),
+                    hook_descriptors.len() as u32,
+                );
+                println!("running {} test(s) from {}", tests.len(), file.display());
+                let code = pickle_runtime::abi::pickle_runtime_run_tests();
+                pickle_runtime::abi::pickle_test_clear();
+                if code != 0 {
+                    failed = true;
+                }
+            }
+            pickle_runtime::abi::pickle_runtime_shutdown();
+            if failed {
+                std::process::exit(1);
+            }
+        }
         Command::Build { file, output } => {
             let (source, mut map, diags) = load(file)?;
             let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
@@ -288,4 +460,37 @@ fn main() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// True when `p` is a directory-discoverable test file: extension `pkl`
+/// and either `*_test.pkl` or `*.test.pkl` naming. Explicitly-passed files
+/// are never filtered by name.
+fn is_discoverable_test_file(p: &std::path::Path) -> bool {
+    let Some(ext) = p.extension().map(|e| e.to_string_lossy()) else {
+        return false;
+    };
+    if ext != "pkl" {
+        return false;
+    }
+    let Some(stem) = p.file_stem().map(|s| s.to_string_lossy()) else {
+        return false;
+    };
+    stem.ends_with("_test") || stem.ends_with(".test")
+}
+
+/// Decode a hidden hook function name (`__pkl_hook_<kind>_<group path>` or
+/// `__pkl_hook_<kind>_` for the root group) into its (group, kind). `kind`
+/// maps to the runtime's `HOOK_*` constants.
+fn decode_hook(name: &str) -> (String, u8) {
+    let rest = name.strip_prefix("__pkl_hook_").unwrap_or(name);
+    let (kind_bits, rest) = match rest.get(..2) {
+        Some("ba") => (0, &rest[2..]),
+        Some("be") => (1, &rest[2..]),
+        Some("ae") => (2, &rest[2..]),
+        Some("aa") => (3, &rest[2..]),
+        _ => (0, rest),
+    };
+    // Root hooks leave a leading `_` where the group path would be.
+    let group = rest.strip_prefix('_').unwrap_or(rest).to_string();
+    (group, kind_bits)
 }

@@ -81,36 +81,78 @@ the runtime's internals are `extern "C"`.
 
 ## Testing hooks
 
-`pickle test` links the runtime with a test harness: `test fn` bodies are
-discovered via a reflection-less registry. The compiler emits a static table
-of descriptors into the object; the runtime registers and runs it.
+`pickle test` JIT-compiles each discovered module and drives it through the
+runtime's test entry points. Both legacy `test fn name()` bodies and the
+test-suite syntax (`test("desc", { ... })`, `it`, `describe`, the
+`beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks) compile to test and
+hook functions: the parser desugars each test-suite construct into a hidden
+`fn`, the compiler marks test bodies with `is_test`, and the CLI collects
+every such body (a zero-argument `extern "C" fn()`), wraps each name + body
+in a descriptor, registers the table, and runs it. The runtime keeps a single
+global `Mutex<Vec<PickleTest>>` registry, so modules are cleared between files.
 
-Descriptor (`#[repr(C)]`), matching the compiler's emitted layout:
+A Rust panic cannot unwind across a JIT-compiled frame, so test bodies never
+`catch_unwind`. Instead, failure is a *recorded message*: codegen lowers
+`assert(cond, msg?)` and `expect(v).matcher(...)` to a branch that, on
+failure, calls `pickle_test_fail_obj(msg_ptr)`. That call records the failure
+message (in capture mode) or prints a `fatal:` banner and exits nonzero
+(outside a test run); it always returns normally. The harness calls
+`take_captured_panic()` after each body — `None` means pass.
+
+Test modules have no `main`, so the compiler emits a synthesized
+`pkl_test_setup` function (class registration + `pkl_static_init`, the same
+preamble `main` would carry) whenever a module has both tests and classes or
+statics. The CLI calls it once right after loading, before registering hooks
+or running anything, so a hook that touches a class static never reads an
+uninitialized cell.
+
+Hook descriptors (`#[repr(C)]`):
+
+```
+struct PickleHook {
+    group: *const u8,   // group path, "" for the root group
+    group_len: u32,
+    kind: u8,           // 0 beforeAll, 1 beforeEach, 2 afterEach, 3 afterAll
+    body: extern "C" fn(),
+}
+```
+
+Test descriptor (`#[repr(C)]`):
 
 ```
 struct PickleTest {
-    name: *const u8,     // UTF-8, not NUL-terminated
+    name: *const u8,     // UTF-8, not NUL-terminated (kept alive by the CLI)
     name_len: u32,
-    body: extern "C" fn() -> i32,   // 0 = pass, nonzero = fail
+    body: extern "C" fn(),   // the compiled test body
 }
 ```
+
+Test names carry the group path (`math > nested > test name`); the runner
+splits each name, opens/`beforeAll`s groups on entry, closes/`afterAll`s them
+when a later test leaves the group, and runs `beforeEach`/`afterEach`
+(root-first in, leaf-first out) around every body. Printing uses one
+indentation level per open group plus a `describe <group>` header on entry.
 
 ABI:
 
 - `pickle_test_register_table(table, count) -> u32` — takes a copy of the
   descriptors; returns the total registered so far.
+- `pickle_test_register_hooks(table, count) -> u32` — same, for hooks (group
+  bytes are copied out of the caller's buffer).
 - `pickle_runtime_run_tests() -> i32` — runs each body sequentially,
-  reporting `test <name> ... ok` / `test <name> ... FAILED` plus a
+  reporting `test <name> ... ok` / `test <name> ... FAILED (<detail>)` plus a
   `test result: <p> passed; <f> failed` summary, and returns `0` when all
   pass / `1` when any fail.
+- `pickle_test_clear()` — drop all registered tests and hooks (called between
+  modules).
 
-Bodies run under `catch_unwind`, so a panicking body is reported as a failed
-test rather than aborting the harness. For unwinding to cross a compiled
-body's `extern "C"` frame, codegen must emit the `C-unwind` ABI for compiled
-functions (a codegen-level contract). Language-level `panic()` records its
-message to a thread-local captured slot, which the harness prints as the
-failure detail; outside a test run it prints a `fatal:` banner and exits
-nonzero.
+Language-level `panic()` records its message to a thread-local captured slot,
+which the harness prints as the failure detail; outside a test run it prints
+a `fatal:` banner and exits nonzero. Class/struct registration runs once per
+process — in `main` for normal programs, in `pkl_test_setup` for test
+modules — because the runtime appends descriptors without de-duplication,
+and the ids baked into each call site must match the runtime's registration
+order.
 
 ## GC auto-collect
 

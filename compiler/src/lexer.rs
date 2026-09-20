@@ -11,6 +11,13 @@ struct Lexer<'a> {
     bytes: Vec<usize>, // byte offset of each char index
     pos: usize,
     nesting: usize,
+
+    /// Paren/bracket nesting depth at the point each `{` was opened. A newline
+    /// is significant (a statement boundary) at the top level of a block even
+    /// when the block itself sits inside parentheses (e.g. the body of
+    /// `test("...", { ... })`), while newlines inside parentheses/brackets
+    /// *within* the block stay suppressed for line-continuation.
+    block_frames: Vec<usize>,
 // `src` is retained for diagnostics when reporting invalid characters.
     #[allow(dead_code)]
     src: &'a str,
@@ -33,6 +40,7 @@ impl<'a> Lexer<'a> {
             bytes,
             pos: 0,
             nesting: 0,
+            block_frames: Vec::new(),
             src,
             diags,
         }
@@ -124,10 +132,14 @@ impl<'a> Lexer<'a> {
 
         if self.at() == '\n' {
             // Newlines are significant tokens (statement boundaries) unless we
-            // are inside parentheses/brackets.
+            // are inside parentheses/brackets. A block brace re-opens a
+            // statement context, so a newline is suppressed only when an open
+            // paren/bracket sits *within* the innermost block (or there is no
+            // block at all).
             let start = self.pos;
             self.bump();
-            if self.nesting == 0 {
+            let base = self.block_frames.last().copied().unwrap_or(0);
+            if self.nesting <= base {
                 return LexedToken::new(Tok::Newline, self.span(start, self.pos));
             }
             return self.next_token();
@@ -197,8 +209,14 @@ impl<'a> Lexer<'a> {
                 self.nesting = self.nesting.saturating_sub(1);
                 LexedToken::new(Tok::RBracket, self.span(start, start + 1))
             }
-            '{' => LexedToken::new(Tok::LBrace, self.span(start, start + 1)),
-            '}' => LexedToken::new(Tok::RBrace, self.span(start, start + 1)),
+            '{' => {
+                self.block_frames.push(self.nesting);
+                LexedToken::new(Tok::LBrace, self.span(start, start + 1))
+            }
+            '}' => {
+                self.block_frames.pop();
+                LexedToken::new(Tok::RBrace, self.span(start, start + 1))
+            }
             ',' => LexedToken::new(Tok::Comma, self.span(start, start + 1)),
             '.' => {
                 if self.at() == '.' {

@@ -64,6 +64,7 @@ pub fn emit_ir(
         static_property_ids: HashMap::new(),
         static_inits: Vec::new(),
         static_init_id: None,
+        test_setup_id: None,
         owner: None,
         closure_tables: HashMap::new(),
         lambda_fids: HashMap::new(),
@@ -167,6 +168,10 @@ enum FnSource<'a> {
         pty: Vec<Ty>,
         ret: Ty,
     },
+    /// The synthesized `pkl_test_setup` function: registers every user class
+    /// and runs `pkl_static_init` before the test runner starts (test modules
+    /// have no `main`, so the preamble cannot ride on one).
+    TestSetup,
 }
 
 /// A registered, lowerable user class/struct.
@@ -357,6 +362,9 @@ struct Emitter<'a> {
     /// The synthesized static-initializer function, called once at the top of
     /// `main` after class registration.
     static_init_id: Option<FuncId>,
+    /// The synthesized `pkl_test_setup` function, when the module has tests
+    /// (and no `main` to carry the class-registration preamble).
+    test_setup_id: Option<FuncId>,
     /// Class id of the method/ctor currently being built (implicit receiver).
     owner: Option<i64>,
     /// Synthetic `__closure_N` class tables, so field helpers (`table_of`,
@@ -427,6 +435,14 @@ impl<'a> Emitter<'a> {
                 FnSource::StaticInit { inits },
             );
             self.static_init_id = Some(fid);
+        }
+        // Test modules have no `main`, so the class-registration preamble
+        // cannot ride on one. Synthesize a `pkl_test_setup` the runner calls
+        // before executing hooks/tests (only when there is anything to set up).
+        let has_tests = prog.items.iter().any(|i| matches!(i.kind, ItemKind::Test(_)));
+        if has_tests && (!self.classes.is_empty() || self.static_init_id.is_some()) {
+            let fid = self.push_class_func("test.setup", "pkl_test_setup", FnSource::TestSetup);
+            self.test_setup_id = Some(fid);
         }
         self.register_lambdas();
         let fids = self.fid_list.clone();
@@ -858,7 +874,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -1685,6 +1701,14 @@ impl<'a> Emitter<'a> {
                 }
                 self.term(IrTerm::Return { v: None });
             }
+            FnSource::TestSetup => {
+                // Class/struct registration calls run first, before any
+                // statement, so every descriptor exists when the class functions
+                // run. `pkl_static_init` (when present) runs right after.
+                self.fret = IrTy::Unit;
+                self.inject_class_registrations();
+                self.term(IrTerm::Return { v: None });
+            }
         }
         if self.failed {
             return;
@@ -1693,7 +1717,15 @@ impl<'a> Emitter<'a> {
         // Class/struct registration calls run first inside `main`, before any
         // user statement, so every descriptor exists when the class functions
         // are called (the id each call site hardcodes is the runtime's too).
-        if is_main {
+        // The runtime appends descriptors, so registration must happen exactly
+        // once per process: `main` when present, otherwise the dedicated
+        // `pkl_test_setup` function (test modules have no `main`). The first
+        // test only carries the preamble when no setup function was synthesized
+        // (no classes/statics to register, so the call is a no-op anyway).
+        let is_first_test = self.test_setup_id.is_none()
+            && self.module.funcs[fid.0].is_test
+            && !self.module.funcs[..fid.0].iter().any(|f| f.is_test);
+        if is_main || is_first_test {
             self.inject_class_registrations();
         }
 
@@ -3572,6 +3604,24 @@ fn build_lambda_body(
         dst
     }
 
+    fn char_const(&mut self, v: u32) -> Temp {
+        let dst = self.temp();
+        self.instr(IrInstr::Const {
+            dst,
+            c: IrConst::Char(v),
+        });
+        dst
+    }
+
+    fn float_const(&mut self, v: f64) -> Temp {
+        let dst = self.temp();
+        self.instr(IrInstr::Const {
+            dst,
+            c: IrConst::Float(v.to_bits()),
+        });
+        dst
+    }
+
     fn assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Result<Temp, ()> {
         let span = target.span;
         if let ExprKind::Unary {
@@ -4851,7 +4901,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect") {
                     return false;
                 }
             }
@@ -4859,6 +4909,437 @@ fn build_lambda_body(
             _ => {}
         }
         matches!(self.types.get(&callee.span), Some(Ty::Fn(..)))
+    }
+
+    /// The value argument of the outermost `expect(...)` in an assertion chain,
+    /// plus whether a `.not()` flips the expectation.
+    fn peel_expect<'x>(&self, e: &'x Expr) -> Option<(&'x Expr, bool)> {
+        match &e.kind {
+            ExprKind::Call { callee, args }
+                if args.len() == 1 && !args[0].spread && args[0].name.is_none() =>
+            {
+                match &callee.kind {
+                    ExprKind::Ident(n) if n == "expect" => Some((&args[0].value, false)),
+                    _ => None,
+                }
+            }
+            ExprKind::Call { callee, args } if args.is_empty() => {
+                if let ExprKind::Member { object, name } = &callee.kind {
+                    if name == "not" {
+                        return self
+                            .peel_expect(object)
+                            .map(|(v, neg)| (v, !neg));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Lower one `expect(...)` assertion. Only the failure path is real: the
+    /// computed condition branches over a recorded `pickle_test_fail_obj(msg)`
+    /// (fatal in program mode), mirroring `assert`. Polarity of a `.not()`
+    /// chain is folded into the comparison op selection so the condition is
+    /// always a raw `BinOp` result (`b1`), never a `UnOp::Not` of one.
+    fn expect_assert(
+        &mut self,
+        e: &Expr,
+        value: &Expr,
+        method: &str,
+        args: &[CallArg],
+        negated: bool,
+    ) -> Result<Temp, ()> {
+        for a in args {
+            if a.spread || a.name.is_some() {
+                return self.bad(e.span, "expectation methods take plain positional arguments");
+            }
+        }
+        let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+        let it = self.irty(value.span)?;
+        let v = self.expr(value)?;
+
+        let (ok, expected_t, received_t): (Temp, Temp, Temp) = match method {
+            "toBe" | "toEqual" => {
+                let a = self.expect_single_arg(e, method, args)?;
+                let at = self.expr(&a.value)?;
+                let a_it = self.irty(a.value.span)?;
+                let expected = self.expect_str(at, a_it, a.value.span)?;
+                let received = self.expect_str(v, it, value.span)?;
+                let ok = self.expect_eq_cond(v, it, at, a_it, negated, e.span)?;
+                (ok, expected, received)
+            }
+            "toBeTruthy" | "toBeFalsy" => {
+                self.expect_no_args(e, method, args)?;
+                let received = self.expect_str(v, it, value.span)?;
+                let want_truthy = method == "toBeTruthy";
+                let need = want_truthy != negated;
+                let ok = self.expect_truthy(v, it, need, e.span)?;
+                let expected = self.str_const(if want_truthy { "true" } else { "false" })?;
+                (ok, expected, received)
+            }
+            "toBeNull" => {
+                self.expect_no_args(e, method, args)?;
+                let received = self.expect_str(v, it, value.span)?;
+                let null = self.null_temp()?;
+                let res = self.extern_call_t1(
+                    "pickle_expect_obj_eq",
+                    vec![IrTy::Ptr, IrTy::Ptr],
+                    IrTy::Int,
+                    vec![v, null],
+                )?;
+                // null-ness: obj_eq != 0 (flipped by `.not()`).
+                let ok = self.cmp_zero(res, IrBinOp::Ne, negated)?;
+                let expected = self.str_const("none")?;
+                (ok, expected, received)
+            }
+            "toExist" => {
+                self.expect_no_args(e, method, args)?;
+                let received = self.expect_str(v, it, value.span)?;
+                let null = self.null_temp()?;
+                let res = self.extern_call_t1(
+                    "pickle_expect_obj_eq",
+                    vec![IrTy::Ptr, IrTy::Ptr],
+                    IrTy::Int,
+                    vec![v, null],
+                )?;
+                // exists: obj_eq == 0.
+                let ok = self.cmp_zero(res, IrBinOp::Eq, negated)?;
+                let expected = self.str_const("a non-none value")?;
+                (ok, expected, received)
+            }
+            "toHaveLength" => {
+                let a = self.expect_single_arg(e, method, args)?;
+                let n = self.expr(&a.value)?;
+                let n_it = self.irty(a.value.span)?;
+                let len = match &vt {
+                    Ty::String => self.extern_call_t1(
+                        "pickle_str_len",
+                        vec![IrTy::Str],
+                        IrTy::Int,
+                        vec![v],
+                    )?,
+                    Ty::List(_) => self.extern_call_t1(
+                        "pickle_list_len",
+                        vec![IrTy::Ptr],
+                        IrTy::Int,
+                        vec![v],
+                    )?,
+                    Ty::Map(_, _) => self.extern_call_t1(
+                        "pickle_map_len",
+                        vec![IrTy::Ptr],
+                        IrTy::Int,
+                        vec![v],
+                    )?,
+                    _ => {
+                        return self.bad(
+                            value.span,
+                            "`.toHaveLength()` needs a string, list, or map value",
+                        )
+                    }
+                };
+                let eq = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: eq,
+                    op: flip_cmp(IrBinOp::Eq, negated),
+                    a: len,
+                    b: n,
+                });
+                let expected = self.expect_str(n, n_it, a.value.span)?;
+                let received = self.expect_str(len, IrTy::Int, value.span)?;
+                (eq, expected, received)
+            }
+            "toContain" => {
+                let a = self.expect_single_arg(e, method, args)?;
+                let needle = self.expr(&a.value)?;
+                let needle_it = self.irty(a.value.span)?;
+                let res = match &vt {
+                    Ty::String => self.extern_call_t1(
+                        "pickle_expect_str_contains",
+                        vec![IrTy::Ptr, IrTy::Ptr],
+                        IrTy::Int,
+                        vec![v, needle],
+                    )?,
+                    Ty::List(_) => {
+                        let needle_ty = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                        let needle = self.option_wrap(needle, &needle_ty, a.value.span)?;
+                        self.extern_call_t1(
+                            "pickle_expect_list_contains",
+                            vec![IrTy::Ptr, IrTy::Ptr],
+                            IrTy::Int,
+                            vec![v, needle],
+                        )?
+                    }
+                    _ => {
+                        return self.bad(
+                            value.span,
+                            "`.toContain()` needs a string or list value",
+                        )
+                    }
+                };
+                let ok = self.cmp_zero(res, IrBinOp::Ne, negated)?;
+                let expected = self.expect_str(needle, needle_it, a.value.span)?;
+                let received = self.expect_str(v, it, value.span)?;
+                (ok, expected, received)
+            }
+            "toBeGreaterThan" | "toBeLessThan" => {
+                let a = self.expect_single_arg(e, method, args)?;
+                let at = self.expr(&a.value)?;
+                let a_it = self.irty(a.value.span)?;
+                let (vf, af) = self.numeric_unify(v, it, at, a_it, e.span)?;
+                let cmp = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: cmp,
+                    op: if method == "toBeGreaterThan" {
+                        flip_cmp(IrBinOp::Gt, negated)
+                    } else {
+                        flip_cmp(IrBinOp::Lt, negated)
+                    },
+                    a: vf,
+                    b: af,
+                });
+                let op_txt = self.str_const(if method == "toBeGreaterThan" {
+                    "> "
+                } else {
+                    "< "
+                })?;
+                let d = self.expect_str(at, a_it, a.value.span)?;
+                let expected = self.concat_strs(&[op_txt, d])?;
+                let received = self.expect_str(v, it, value.span)?;
+                (cmp, expected, received)
+            }
+            other => return self.bad(e.span, format!("unknown expectation method `.{other}()`")),
+        };
+
+        // "Expected:\n<e>\n\nReceived:\n<r>\n"
+        let head = self.str_const("Expected:\n")?;
+        let mid = self.str_const("\n\nReceived:\n")?;
+        let tail = self.str_const("\n")?;
+        let msg = self.concat_strs(&[head, expected_t, mid, received_t, tail])?;
+
+        let cont = self.new_block();
+        let fail = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: ok,
+            then: cont,
+            else_: fail,
+        });
+        self.cur = fail;
+        self.extern_call_void("pickle_test_fail_obj", vec![IrTy::Ptr], vec![msg]);
+        self.term(IrTerm::Branch { target: cont });
+        self.cur = cont;
+        Ok(self.unit_temp())
+    }
+
+    /// `(res OP 0)` with OP flipped by `.not()`.
+    fn cmp_zero(&mut self, res: Temp, op: IrBinOp, negated: bool) -> Result<Temp, ()> {
+        let dst = self.temp();
+        let zero = self.int_const(0);
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: flip_cmp(op, negated),
+            a: res,
+            b: zero,
+        });
+        Ok(dst)
+    }
+
+    /// Structural/low-level equality condition for `toBe`/`toEqual`.
+    fn expect_eq_cond(
+        &mut self,
+        v: Temp,
+        it: IrTy,
+        w: Temp,
+        wit: IrTy,
+        negated: bool,
+        span: Span,
+    ) -> Result<Temp, ()> {
+        let managed = Self::managed_ir(it) || Self::managed_ir(wit);
+        if managed {
+            let res = self.extern_call_t1(
+                "pickle_expect_obj_eq",
+                vec![IrTy::Ptr, IrTy::Ptr],
+                IrTy::Int,
+                vec![v, w],
+            )?;
+            self.cmp_zero(res, IrBinOp::Ne, negated)
+        } else {
+            let (v, w) = self.numeric_unify(v, it, w, wit, span)?;
+            let dst = self.temp();
+            self.instr(IrInstr::BinOp {
+                dst,
+                op: flip_cmp(IrBinOp::Eq, negated),
+                a: v,
+                b: w,
+            });
+            Ok(dst)
+        }
+    }
+
+    /// Bring two numeric operand temps to one shape (int vs float promoted).
+    fn numeric_unify(
+        &mut self,
+        a: Temp,
+        aty: IrTy,
+        b: Temp,
+        bty: IrTy,
+        _span: Span,
+    ) -> Result<(Temp, Temp), ()> {
+        if matches!(aty, IrTy::Float) || matches!(bty, IrTy::Float) {
+            let a = if matches!(aty, IrTy::Float) {
+                a
+            } else {
+                self.float_cast(a)?
+            };
+            let b = if matches!(bty, IrTy::Float) {
+                b
+            } else {
+                self.float_cast(b)?
+            };
+            Ok((a, b))
+        } else {
+            Ok((a, b))
+        }
+    }
+
+    fn float_cast(&mut self, v: Temp) -> Result<Temp, ()> {
+        let dst = self.temp();
+        self.instr(IrInstr::Itof { dst, v });
+        Ok(dst)
+    }
+
+    /// Truthiness as a branchable condition of a raw value temp. `need` is
+    /// `true` when a truthy value passes (folded through `.not()`).
+    fn expect_truthy(&mut self, v: Temp, it: IrTy, need: bool, _span: Span) -> Result<Temp, ()> {
+        match it {
+            IrTy::Bool => {
+                let dst = self.temp();
+                let z = self.bool_const(false);
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: flip_cmp(IrBinOp::Ne, !need),
+                    a: v,
+                    b: z,
+                });
+                Ok(dst)
+            }
+            IrTy::Char => {
+                let dst = self.temp();
+                let z = self.char_const(0);
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: flip_cmp(IrBinOp::Ne, !need),
+                    a: v,
+                    b: z,
+                });
+                Ok(dst)
+            }
+            IrTy::Int => {
+                let dst = self.temp();
+                let zero = self.int_const(0);
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: flip_cmp(IrBinOp::Ne, !need),
+                    a: v,
+                    b: zero,
+                });
+                Ok(dst)
+            }
+            IrTy::Float => {
+                let dst = self.temp();
+                let z = self.float_const(0.0);
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: flip_cmp(IrBinOp::Ne, !need),
+                    a: v,
+                    b: z,
+                });
+                Ok(dst)
+            }
+            IrTy::Str | IrTy::Ptr => {
+                let len = self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![v])?;
+                self.cmp_zero(len, IrBinOp::Ne, !need)
+            }
+            IrTy::Unit => {
+                let zero = self.int_const(0);
+                self.cmp_zero(zero, IrBinOp::Ne, !need)
+            }
+        }
+    }
+
+    /// Render a value temp as text for an `Expected:/Received:` line.
+    fn expect_str(&mut self, t: Temp, it: IrTy, _span: Span) -> Result<Temp, ()> {
+        match it {
+            IrTy::Int => self.extern_call_t1("pickle_str_from_i64", vec![IrTy::Int], IrTy::Str, vec![t]),
+            IrTy::Float => self.extern_call_t1("pickle_str_from_f64", vec![IrTy::Float], IrTy::Str, vec![t]),
+            IrTy::Bool => self.extern_call_t1("pickle_str_from_bool", vec![IrTy::Bool], IrTy::Str, vec![t]),
+            IrTy::Char => self.extern_call_t1("pickle_str_from_char", vec![IrTy::Char], IrTy::Str, vec![t]),
+            IrTy::Str | IrTy::Ptr => self.extern_call_t1(
+                "pickle_expect_display",
+                vec![IrTy::Ptr],
+                IrTy::Str,
+                vec![t],
+            ),
+            IrTy::Unit => self.str_const("none"),
+        }
+    }
+
+    fn str_const(&mut self, text: &str) -> Result<Temp, ()> {
+        let sid = StrId(self.intern_string(text));
+        let t = self.temp();
+        self.instr(IrInstr::Const {
+            dst: t,
+            c: IrConst::Str(sid),
+        });
+        Ok(t)
+    }
+
+    fn concat_strs(&mut self, parts: &[Temp]) -> Result<Temp, ()> {
+        if parts.is_empty() {
+            return self.str_const("");
+        }
+        let mut acc = parts[0];
+        for p in &parts[1..] {
+            acc = self.extern_call_t1(
+                "pickle_str_concat",
+                vec![IrTy::Str, IrTy::Str],
+                IrTy::Str,
+                vec![acc, *p],
+            )?;
+        }
+        Ok(acc)
+    }
+
+    fn expect_single_arg<'x>(
+        &mut self,
+        e: &Expr,
+        method: &str,
+        args: &'x [CallArg],
+    ) -> Result<&'x CallArg, ()> {
+        if args.len() != 1 {
+            return self.bad(
+                e.span,
+                format!("`.{method}(expected)` takes exactly one argument"),
+            );
+        }
+        if args[0].name.is_some() || args[0].spread {
+            return self.bad(
+                args[0].span,
+                format!("`.{method}()` takes a plain positional argument"),
+            );
+        }
+        Ok(&args[0])
+    }
+
+    fn expect_no_args(&mut self, e: &Expr, method: &str, args: &[CallArg]) -> Result<(), ()> {
+        if args.is_empty() {
+            return Ok(());
+        }
+        self.bad(e.span, format!("`.{method}()` takes no arguments"))
+    }
+
+    fn managed_ir(it: IrTy) -> bool {
+        matches!(it, IrTy::Str | IrTy::Ptr | IrTy::Unit)
     }
 
     /// A closure-valued callee: load its body address out of slot 0 and call it
@@ -4989,6 +5470,13 @@ fn build_lambda_body(
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
         if let ExprKind::Member { object, name } = &callee.kind {
+            // Testing-framework assertions: `expect(v).toBe(w)` and friends,
+            // with an optional `.not()` in between.
+            if is_expect_method(name) {
+                if let Some((value, negated)) = self.peel_expect(object) {
+                    return self.expect_assert(e, value, name, args, negated);
+                }
+            }
             // `.free()` on a `#[manualAlloc]` binding releases the object.
             if name == "free" {
                 if let ExprKind::Ident(id) = &object.kind {
@@ -5084,6 +5572,47 @@ fn build_lambda_body(
         }
         // Builtins.
         match name.as_str() {
+            "assert" => {
+                if args.is_empty() || args.len() > 2 {
+                    return self.bad(
+                        e.span,
+                        "`assert(cond, msg?)` takes a condition and an optional message",
+                    );
+                }
+                let cond = self.expr(&args[0].value)?;
+                // `if !cond { pickle_test_fail_obj(msg); }` -- the failure is
+                // recorded (test mode) or fatal (program mode), never unwound
+                // across the JIT frame.
+                let cont = self.new_block();
+                let fail = self.new_block();
+                self.term(IrTerm::BranchIf {
+                    cond,
+                    then: cont,
+                    else_: fail,
+                });
+                self.cur = fail;
+                let msg = match args.get(1) {
+                    Some(arg) => self.expr(&arg.value)?,
+                    None => {
+                        let t = self.temp();
+                        self.instr(IrInstr::Const {
+                            dst: t,
+                            c: IrConst::Null,
+                        });
+                        t
+                    }
+                };
+                self.extern_call_void("pickle_test_fail_obj", vec![IrTy::Ptr], vec![msg]);
+                self.term(IrTerm::Branch { target: cont });
+                self.cur = cont;
+                Ok(self.unit_temp())
+            }
+            "expect" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`expect(value)` takes exactly one value");
+                }
+                self.expr(&args[0].value)
+            }
             "print" | "println" => {
                 let newline = name == "println";
                 for a in args {
@@ -6022,6 +6551,24 @@ fn assign_opcode(op: AssignOp) -> IrBinOp {
         AssignOp::BitOr => IrBinOp::BitOr,
         AssignOp::BitXor => IrBinOp::BitXor,
         AssignOp::Assign => IrBinOp::Add,
+    }
+}
+
+/// Flip a comparison op under `.not()`. Note `!EQ -> NE`, `!GT -> LE`,
+/// `!LT -> GE` (the non-strict inverse), which is what a "not greater" pass
+/// really means.
+fn flip_cmp(op: IrBinOp, negated: bool) -> IrBinOp {
+    if !negated {
+        return op;
+    }
+    match op {
+        IrBinOp::Eq => IrBinOp::Ne,
+        IrBinOp::Ne => IrBinOp::Eq,
+        IrBinOp::Gt => IrBinOp::Le,
+        IrBinOp::Ge => IrBinOp::Lt,
+        IrBinOp::Lt => IrBinOp::Ge,
+        IrBinOp::Le => IrBinOp::Gt,
+        other => other,
     }
 }
 

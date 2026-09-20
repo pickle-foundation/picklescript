@@ -2085,6 +2085,24 @@ impl<'a> Checker<'a> {
             if bname == "alloc" || bname == "free" {
                 return self.check_raw_builtin(e, bname, args);
             }
+            if bname == "assert" {
+                return self.check_assert(e, args);
+            }
+            // Testing-framework `expect(value)`.
+            if bname == "expect" && !self.resolved.fns.contains_key("expect") {
+                return self.check_expect(e, args);
+            }
+        }
+        // `expect(v).toEqual(w)` / `.not().toBe(w)` / ... chains.
+        if let ExprKind::Member { object, name } = &callee.kind {
+            if name != "not"
+                && is_expect_method(name)
+                && self.expect_chain_depth(object) > 0
+            {
+                if let Some(src) = self.expect_source(object) {
+                    return self.check_expect_method(e, src, name, args);
+                }
+            }
         }
 
         // `.free()` on a `#[manualAlloc]` binding.
@@ -2295,6 +2313,227 @@ impl<'a> Checker<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Validate `assert(cond, msg?)`: the condition must be a `bool`, an
+    /// optional second argument a `string` (only used when it fails).
+    fn check_assert(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.is_empty() || args.len() > 2 {
+            self.err(
+                e.span,
+                "`assert(cond, msg?)` takes a condition and an optional message",
+            );
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Empty;
+        }
+        let cond = self.check_expr(&args[0].value);
+        self.check_assignable(&Ty::Bool, &cond, args[0].value.span, "assert condition");
+        if let Some(arg) = args.get(1) {
+            let mt = self.check_expr(&arg.value);
+            self.check_assignable(&Ty::String, &mt, arg.value.span, "assert message");
+        }
+        Ty::Empty
+    }
+
+    /// `expect(value)` typed as the value's type.
+    fn check_expect(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`expect(value)` takes exactly one value");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        self.check_expr(&args[0].value)
+    }
+
+    /// Statement count of an `expect(...)` / `expect(...).not()` chain.
+    fn expect_chain_depth(&self, e: &Expr) -> usize {
+        match &e.kind {
+            ExprKind::Call { callee, args }
+                if args.len() == 1 && !args[0].spread && args[0].name.is_none() =>
+            {
+                if let ExprKind::Ident(n) = &callee.kind {
+                    if n == "expect" {
+                        return 1;
+                    }
+                }
+                0
+            }
+            ExprKind::Call { callee, args } if args.is_empty() => {
+                if let ExprKind::Member { object, name } = &callee.kind {
+                    if name == "not" {
+                        let d = self.expect_chain_depth(object);
+                        if d > 0 {
+                            return d + 1;
+                        }
+                    }
+                }
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    /// The value argument of the outermost `expect(...)` in an assertion chain.
+    fn expect_source<'x>(&self, e: &'x Expr) -> Option<&'x Expr> {
+        match &e.kind {
+            ExprKind::Call { callee, args }
+                if args.len() == 1 && !args[0].spread && args[0].name.is_none() =>
+            {
+                if let ExprKind::Ident(n) = &callee.kind {
+                    if n == "expect" {
+                        return Some(&args[0].value);
+                    }
+                }
+                None
+            }
+            ExprKind::Call { callee, args } if args.is_empty() => {
+                if let ExprKind::Member { object, name } = &callee.kind {
+                    if name == "not" {
+                        return self.expect_source(object);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Validate an `expect(v).<method>(...)` assertion.
+    fn check_expect_method(
+        &mut self,
+        e: &Expr,
+        src: &Expr,
+        method: &str,
+        args: &[CallArg],
+    ) -> Ty {
+        for a in args {
+            if a.spread {
+                self.err(a.span, "spread arguments are not supported in an expectation");
+                return Ty::Empty;
+            }
+            if a.name.is_some() {
+                self.err(a.span, "named arguments are not supported in an expectation");
+                return Ty::Empty;
+            }
+        }
+        let vt = self.check_expr(src);
+        let is_numeric = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
+        match method {
+            "toBe" | "toEqual" => {
+                if args.len() != 1 {
+                    self.err(
+                        e.span,
+                        format!("`.{method}(expected)` takes one argument"),
+                    );
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Empty;
+                }
+                let at = self.check_expr(&args[0].value);
+                // Cross-numeric (`int` vs `float`) compares are allowed.
+                if !(is_numeric(&vt) && is_numeric(&at)) {
+                    self.check_assignable(&vt, &at, args[0].value.span, "expectation argument");
+                }
+            }
+            "toBeTruthy" | "toBeFalsy" | "toBeNull" | "toExist" => {
+                if !args.is_empty() {
+                    self.err(e.span, format!("`.{method}()` takes no arguments"));
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                }
+            }
+            "toHaveLength" => {
+                if args.len() != 1 {
+                    self.err(e.span, "`.toHaveLength(n)` takes one argument");
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Empty;
+                }
+                match &vt {
+                    Ty::String | Ty::List(_) | Ty::Map(_, _) => {}
+                    Ty::Unknown => {}
+                    other => self.err(
+                        src.span,
+                        format!(
+                            "`.toHaveLength()` needs a string, list, or map value, found `{other}`"
+                        ),
+                    ),
+                }
+                let lt = self.check_expr(&args[0].value);
+                self.check_assignable(&Ty::Int, &lt, args[0].value.span, "`.toHaveLength()` argument");
+            }
+            "toContain" => {
+                if args.len() != 1 {
+                    self.err(e.span, "`.toContain(value)` takes one argument");
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Empty;
+                }
+                let at = self.check_expr(&args[0].value);
+                match &vt {
+                    Ty::String => self.check_assignable(
+                        &Ty::String,
+                        &at,
+                        args[0].value.span,
+                        "`.toContain()` argument",
+                    ),
+                    Ty::List(inner) => self.check_assignable(
+                        inner,
+                        &at,
+                        args[0].value.span,
+                        "`.toContain()` argument",
+                    ),
+                    Ty::Map(k, _) => self.check_assignable(
+                        k,
+                        &at,
+                        args[0].value.span,
+                        "`.toContain()` argument",
+                    ),
+                    Ty::Unknown => {}
+                    other => self.err(
+                        src.span,
+                        format!(
+                            "`.toContain()` needs a string, list, or map value, found `{other}`"
+                        ),
+                    ),
+                }
+            }
+            "toBeGreaterThan" | "toBeLessThan" => {
+                if args.len() != 1 {
+                    self.err(e.span, format!("`.{method}(n)` takes one argument"));
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Empty;
+                }
+                match &vt {
+                    Ty::Int | Ty::Float | Ty::Unknown => {}
+                    other => self.err(
+                        src.span,
+                        format!("`.{method}()` needs a numeric value, found `{other}`"),
+                    ),
+                }
+                let at = self.check_expr(&args[0].value);
+                if !is_numeric(&at) && !matches!(at, Ty::Unknown) {
+                    self.err(
+                        args[0].value.span,
+                        format!("`.{method}()` argument must be numeric, found `{at}`"),
+                    );
+                }
+            }
+            other => {
+                self.err(e.span, format!("unknown expectation method `.{other}()`"));
+            }
+        }
+        Ty::Empty
     }
 
     /// Validate `x.free()` on a `#[manualAlloc]` binding and mark it released.

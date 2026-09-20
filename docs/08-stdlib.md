@@ -83,8 +83,13 @@ later. Math: transcendental + vector/repr helpers.
 
 ## Testing
 
-`test fn name()` in any module; `std.test` provides asserts and timing.
-`pickle test` discovers and runs them, reporting per-module results.
+`test fn name()` or `test("desc", ...)`/`it` suites in any module; `describe`
+groups nest, and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks run
+per group. `expect(value).matcher(...)` (e.g. `.toBe`, `.toEqual`,
+`.toContain`, `.toBeGreaterThan`) gives readable failure output. Assertions:
+`assert(cond, msg?)`; `std.test` provides asserts and timing for longer-term
+plans. `pickle test` discovers `*_test.pkl`/`*.test.pkl` files and runs them,
+reporting per-module, per-group results.
 
 ## Release plan
 

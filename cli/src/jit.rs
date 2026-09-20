@@ -1008,6 +1008,11 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_static_set" => abi::pickle_static_set as *const () as usize,
         "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,
         "pickle_panic_none_unwrap" => abi::pickle_panic_none_unwrap as *const () as usize,
+        "pickle_test_fail_obj" => abi::pickle_test_fail_obj as *const () as usize,
+        "pickle_expect_obj_eq" => abi::pickle_expect_obj_eq as *const () as usize,
+        "pickle_expect_display" => abi::pickle_expect_display as *const () as usize,
+        "pickle_expect_str_contains" => abi::pickle_expect_str_contains as *const () as usize,
+        "pickle_expect_list_contains" => abi::pickle_expect_list_contains as *const () as usize,
         "pickle_fmod" => pickle_fmod as *const () as usize,
         _ => return None,
     };
@@ -1074,6 +1079,7 @@ pub struct JitProgram {
     base: *mut u8,
     len: usize,
     entry: usize,
+    symbols: HashMap<String, usize>,
 }
 
 impl Drop for JitProgram {
@@ -1101,6 +1107,12 @@ impl JitProgram {
             f();
         }
     }
+
+    /// Absolute address of a compiled symbol (a `pickle_*` function or a
+    /// string data blob), if present in this module.
+    pub fn symbol_addr(&self, name: &str) -> Option<usize> {
+        self.symbols.get(name).copied()
+    }
 }
 
 impl Jit {
@@ -1108,6 +1120,12 @@ impl Jit {
     /// executable mapping, and patch every relocation.
     pub fn compile(&self, module: &IrModule) -> Result<JitProgram> {
         self.compile_expect_main(module, true)
+    }
+
+    /// Compile with no `main` required (test modules). The returned program
+    /// exposes `symbol_addr` for the `pickle_test_<name>` descriptors.
+    pub fn compile_no_main(&self, module: &IrModule) -> Result<JitProgram> {
+        self.compile_expect_main(module, false)
     }
 
     /// Shared implementation of [`Jit::compile`], optionally requiring a
@@ -1188,13 +1206,14 @@ impl Jit {
             }
         }
 
-        let entry = *symbols
-            .get("pickle_main")
-            .context("expected pickle_main entry symbol")?;
+        // The entry symbol is required for `main`-centric use but not for the
+        // test runner, which addresses each test directly by symbol.
+        let entry = symbols.get("pickle_main").copied().unwrap_or(0);
         Ok(JitProgram {
             base,
             len: total,
             entry,
+            symbols,
         })
     }
 }

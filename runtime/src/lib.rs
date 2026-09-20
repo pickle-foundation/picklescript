@@ -287,6 +287,18 @@ pub mod abi {
     pub use crate::strings::pickle_str_from_i64;
     pub use crate::strings::pickle_str_get;
     pub use crate::strings::pickle_str_len;
+
+    pub use crate::test::pickle_expect_display;
+    pub use crate::test::pickle_expect_obj_eq;
+    pub use crate::test::pickle_expect_str_contains;
+    pub use crate::test::pickle_expect_list_contains;
+    pub use crate::test::pickle_runtime_run_tests;
+    pub use crate::test::pickle_test_clear;
+    pub use crate::test::pickle_test_fail_obj;
+    pub use crate::test::pickle_test_register_hooks;
+    pub use crate::test::pickle_test_register_table;
+    pub use crate::test::PickleHook;
+    pub use crate::test::PickleTest;
 }
 
 #[cfg(test)]

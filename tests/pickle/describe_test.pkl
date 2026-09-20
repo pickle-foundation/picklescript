@@ -1,0 +1,84 @@
+class GroupCounter {
+    static var checks: int = 0
+}
+
+fn square(n: int) -> int {
+    n * n
+}
+
+fn concat(a: string, b: string) -> string {
+    a + b
+}
+
+beforeAll({
+    GroupCounter.checks = GroupCounter.checks + 1
+})
+
+beforeEach({
+    GroupCounter.checks = GroupCounter.checks + 1
+})
+
+afterEach({
+    GroupCounter.checks = GroupCounter.checks + 1
+})
+
+afterAll({
+    GroupCounter.checks = GroupCounter.checks + 1
+})
+
+describe("math", {
+    test("square of 4", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect(square(4)).toBe(16)
+    })
+
+    test("square of -3", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect(square(-3)).toBe(9)
+    })
+
+    describe("nested", {
+        beforeEach({
+            GroupCounter.checks = GroupCounter.checks + 1
+        })
+
+        test("nested truthiness", {
+            GroupCounter.checks = GroupCounter.checks + 1
+            expect(square(2)).toBeTruthy()
+        })
+    })
+})
+
+describe("strings", {
+    test("concat joins", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect(concat("pi", "ckle")).toEqual("pickle")
+    })
+
+    test("has length", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect("pickle").toHaveLength(6)
+    })
+
+    test("contains substring", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect("picklescript").toContain("script")
+    })
+})
+
+describe("ordering", {
+    test("greater and less", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect(square(5)).toBeGreaterThan(20)
+        expect(square(5)).toBeLessThan(30)
+    })
+
+    test("null check", {
+        GroupCounter.checks = GroupCounter.checks + 1
+        expect(GroupCounter.checks).toExist()
+    })
+})
+
+test("counter incremented by hooks", {
+    expect(GroupCounter.checks >= 13).toBeTruthy()
+})

@@ -325,6 +325,10 @@ impl<'a> Resolver<'a> {
             mk("println", vec![any("args")], Ty::Empty, true),
             mk("len", vec![any("items")], Ty::Int, true),
             mk("abs", vec![any("x")], Ty::Unknown, true),
+            // `assert(cond, msg?)` is checked strictly (`bool`, optional
+            // `string`) by a dedicated rule; the loose declaration just makes
+            // the name resolvable and dispatchable.
+            mk("assert", vec![any("args")], Ty::Empty, true),
         ];
         for c in builtins {
             self.fns.entry(c.name.clone()).or_default().push(c);

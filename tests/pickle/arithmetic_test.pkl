@@ -1,0 +1,16 @@
+fn add(a: int, b: int) -> int {
+    a + b
+}
+
+test fn add_commutes() {
+    assert(add(2, 3) == add(3, 2))
+}
+
+test fn add_known_value() {
+    assert(add(4, 5) == 9, "expected 9")
+}
+
+test fn strings_are_utf8() {
+    let s = "hello, world"
+    assert(len(s) == 12, "wrong length")
+}
