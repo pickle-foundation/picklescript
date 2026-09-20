@@ -332,6 +332,20 @@ fn named_ctor_delegation(body: &Block) -> Option<&Expr> {
     }
 }
 
+/// The leading `super(...)` delegation expression of a primary-constructor
+/// body, when it is the first statement. The call's arguments are evaluated
+/// in the current function's scope and fed to the parent constructor.
+fn ctor_super_delegation(body: &Block) -> Option<&Expr> {
+    let e = match body.stmts.first() {
+        Some(Stmt::Expr(e)) => e,
+        _ => return None,
+    };
+    match &e.kind {
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Super) => Some(e),
+        _ => None,
+    }
+}
+
 /// Static slot number of static field `name` (its position among static
 /// fields).
 fn static_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
@@ -1664,39 +1678,50 @@ impl<'a> Emitter<'a> {
             },
             None => None,
         };
-        // Explicit constructors plus inheritance need `super(...)` chaining,
-        // which is not lowered yet: require the whole hierarchy to use the
-        // synthesized constructor.
-        if let Some(p) = &parent {
-            let ancestor_has_ctor = self
-                .table_of(p)
-                .map(|pt| pt.ctor.is_some() || !pt.named_ctors.is_empty())
-                .unwrap_or(false);
-            if ancestor_has_ctor {
-                let _: Result<(), ()> = self.bad(
-                    span,
-                    format!(
-                        "`{name}` cannot extend `{p}` while it declares explicit constructors (not lowered yet)"
-                    ),
-                );
-                return;
-            }
-        }
         let ctor_decl = members.iter().find_map(|m| match m {
             ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
             _ => None,
         });
-        let has_named_ctor = members
-            .iter()
-            .any(|m| matches!(m, ClassMember::Constructor(cd) if cd.name.is_some()));
-        if parent.is_some() && (ctor_decl.is_some() || has_named_ctor) {
-            let _: Result<(), ()> = self.bad(
-                span,
-                format!(
-                    "`{name}` cannot declare an explicit constructor in a hierarchy (not lowered yet)"
-                ),
-            );
-            return;
+        // Explicit constructors in a hierarchy need `super(...)` chaining:
+        // a class with a constructor whose parent declares an explicit
+        // constructor must open its body with a `super(...)` delegation, and a
+        // class that relies on the synthesized constructor cannot sit below a
+        // class that declares an explicit constructor (its body would never
+        // run). Named constructors delegate through their class's primary
+        // constructor, so they are fine wherever the primary is.
+        let parent_explicit = parent
+            .as_ref()
+            .map(|p| self.table_of(p).map(|pt| pt.ctor.is_some()).unwrap_or(false))
+            .unwrap_or(false);
+        if let Some(cd) = ctor_decl {
+            if parent_explicit && ctor_super_delegation(&cd.body).is_none() {
+                let _: Result<(), ()> = self.bad(
+                    cd.span,
+                    format!(
+                        "`{name}` constructor must call `super(...)` first to chain into `{}`",
+                        parent.as_deref().unwrap_or("")
+                    ),
+                );
+                return;
+            }
+        } else if parent.is_some() {
+            // Synthesized constructor below an explicit-constructor ancestor
+            // would silently skip that ancestor's constructor body.
+            let ancestry = self.ancestry(name);
+            let explicit_ancestor = ancestry.iter().rev().skip(1).find(|a| {
+                self.table_of(a)
+                    .map(|t| t.ctor.is_some() || !t.named_ctors.is_empty())
+                    .unwrap_or(false)
+            });
+            if explicit_ancestor.is_some() {
+                let _: Result<(), ()> = self.bad(
+                    span,
+                    format!(
+                        "`{name}` cannot use the synthesized constructor below a class that declares explicit constructors (not lowered yet)"
+                    ),
+                );
+                return;
+            }
         }
         // Instance-field initializers across the whole hierarchy, root first,
         // at absolute (parent-first) slot numbers.
@@ -2700,9 +2725,17 @@ fn build_lambda_body(
             }
         }
 
-        // Explicit constructor body, then any `init` blocks.
+        // Explicit constructor body, then any `init` blocks. A leading
+        // `super(...)` runs the parent's constructor chain inlined first
+        // (field initializers across the ancestry already ran above, and
+        // `init` blocks for the whole hierarchy run below).
         if let Some(cd) = ctor {
-            self.emit_ctor_block(&cd.body)?;
+            if let Some(delegation) = ctor_super_delegation(&cd.body) {
+                self.emit_super_chain(&table.name, delegation)?;
+                self.emit_ctor_block_from(&cd.body, 1)?;
+            } else {
+                self.emit_ctor_block(&cd.body)?;
+            }
         }
         for b in init_blocks {
             self.emit_ctor_block(b)?;
@@ -2718,8 +2751,14 @@ fn build_lambda_body(
     /// return value (used for constructor bodies and `init` blocks, where the
     /// constructor always returns `this`).
     fn emit_ctor_block(&mut self, b: &Block) -> Result<(), ()> {
+        self.emit_ctor_block_from(b, 0)
+    }
+
+    /// Run a constructor `Block` starting at statement `from`, skipping the
+    /// leading statements (i.e. the consumed `super(...)` delegation).
+    fn emit_ctor_block_from(&mut self, b: &Block, from: usize) -> Result<(), ()> {
         self.push_scope();
-        for s in &b.stmts {
+        for s in &b.stmts[from..] {
             if self.stmt(s).is_err() {
                 self.pop_scope();
                 return Err(());
@@ -2727,6 +2766,142 @@ fn build_lambda_body(
         }
         if let Some(e) = &b.expr {
             let _ = self.expr(e);
+        }
+        self.pop_scope();
+        Ok(())
+    }
+
+    /// Lower a `super(...)` delegation at the front of a primary constructor
+    /// body: evaluate the arguments in the current scope, then inline the
+    /// parent's constructor chain.
+    fn emit_super_chain(
+        &mut self,
+        owner_name: &str,
+        delegation: &Expr,
+    ) -> Result<(), ()> {
+        let ExprKind::Call { callee: _super, args } = &delegation.kind else {
+            return self.bad(delegation.span, "`super(...)` delegation is malformed");
+        };
+        let Some(parent) = self
+            .table_of(owner_name)
+            .and_then(|t| t.extends.as_ref().and_then(|e| e.named().map(str::to_string)))
+        else {
+            return self.bad(delegation.span, "`super(...)` requires a superclass");
+        };
+        let Some(pt) = self.table_of(&parent) else {
+            return self.bad(delegation.span, format!("`{parent}` is not a class"));
+        };
+        let mut vals = Vec::new();
+        for a in args {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            let v = self.expr(&a.value)?;
+            let ty = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+            vals.push((v, ty, a.value.span));
+        }
+        self.emit_ctor_chain(&parent, &pt, &vals, delegation.span)
+    }
+
+    /// Run the constructor chain for class `cname`, whose constructor receives
+    /// the already-evaluated `vals`. An explicit constructor has its
+    /// parameters bound to the values (option-wrapped where the parameter is a
+    /// pointer) and its body emitted, recursing on a leading `super(...)`. A
+    /// synthesized constructor stores the values into its uninitialized
+    /// instance-field slots. `this` stays live in the current scope because
+    /// the chain is inlined into the leaf constructor. Field initializers and
+    /// `init` blocks for the whole hierarchy are run by the leaf constructor,
+    /// so they are not repeated here.
+    fn emit_ctor_chain(
+        &mut self,
+        cname: &str,
+        ct: &ClassTable,
+        vals: &[(Temp, Ty, Span)],
+        span: Span,
+    ) -> Result<(), ()> {
+        self.push_scope();
+        let cd = self.class_decls.get(cname).and_then(|d| {
+            d.members.iter().find_map(|m| match m {
+                ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
+                _ => None,
+            })
+        });
+        if ct.ctor.is_some() {
+            let Some(cd) = cd else {
+                self.pop_scope();
+                return self.bad(span, format!("`{cname}` primary constructor is missing"));
+            };
+            let cparams = ct
+                .ctor
+                .as_ref()
+                .map(|c| c.params.clone())
+                .unwrap_or_default();
+            if cparams.len() != vals.len() {
+                self.pop_scope();
+                return self.bad(
+                    span,
+                    format!(
+                        "`super(...)` passes {} argument(s) but `{cname}` expects {}",
+                        vals.len(),
+                        cparams.len()
+                    ),
+                );
+            }
+            for (p, (v, ty, vspan)) in cparams.iter().zip(vals.iter()) {
+                let ir = self.map_ty(&p.ty, p.span).unwrap_or(IrTy::Ptr);
+                let slot = self.new_slot(ir);
+                let stored = if matches!(ir, IrTy::Ptr) {
+                    self.option_wrap(*v, ty, *vspan)?
+                } else {
+                    *v
+                };
+                self.instr(IrInstr::StoreSlot { slot, v: stored });
+                self.declare(&p.name, slot);
+            }
+            if let Some(delegation) = ctor_super_delegation(&cd.body) {
+                self.emit_super_chain(cname, delegation)?;
+            }
+            if ctor_super_delegation(&cd.body).is_some() {
+                self.emit_ctor_block_from(&cd.body, 1)?;
+            } else {
+                self.emit_ctor_block(&cd.body)?;
+            }
+        } else {
+            // Synthesized parent: store the arguments into its uninitialized
+            // instance fields, in absolute (parent-first) slot order.
+            let ifields = self.all_instance_fields(cname);
+            let initialized: Vec<usize> = self
+                .collect_instance_inits(cname)
+                .iter()
+                .map(|(i, _)| *i)
+                .collect();
+            let uninit: Vec<(usize, &FieldInfo)> = ifields
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !initialized.contains(i))
+                .collect();
+            if uninit.len() != vals.len() {
+                self.pop_scope();
+                return self.bad(
+                    span,
+                    format!(
+                        "`super(...)` passes {} argument(s) but `{cname}` expects {}",
+                        vals.len(),
+                        uninit.len()
+                    ),
+                );
+            }
+            let Some(this_slot) = self.lookup("this") else {
+                self.pop_scope();
+                return self.bad(span, "`this` is not available in the constructor chain");
+            };
+            let this = self.load(this_slot);
+            for ((i, f), (v, ty, vspan)) in uninit.iter().zip(vals.iter()) {
+                let rep = self.elem_rep(&f.ty, f.span)?;
+                let packed = self.pack_for_pointer_boundary(&rep, *v, ty, *vspan)?;
+                let boxed = self.box_for_store(&rep, packed, elem_ir(&f.ty))?;
+                self.field_store(this, *i as i64, &f.ty, boxed);
+            }
         }
         self.pop_scope();
         Ok(())

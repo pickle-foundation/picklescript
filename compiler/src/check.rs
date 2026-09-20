@@ -224,6 +224,11 @@ struct Checker<'a> {
     named_ctor_params: Option<Vec<Ty>>,
     /// Whether the current named constructor body has delegated via `this`.
     named_ctor_delegated: bool,
+    /// While checking a primary constructor body: the parent class's
+    /// constructor parameter types that a `super(...)` delegation must match.
+    /// `None` outside a primary constructor body (or when the class has no
+    /// parent).
+    super_ctor_params: Option<Vec<Ty>>,
     /// Loop depth for `break`/`continue` validation.
     loop_depth: usize,
     /// Whether the current function is `#[manualAlloc]`, i.e. returns ownership
@@ -261,6 +266,7 @@ impl<'a> Checker<'a> {
             fn_generics: Vec::new(),
             named_ctor_params: None,
             named_ctor_delegated: false,
+            super_ctor_params: None,
             loop_depth: 0,
             ret_manual: false,
             manual_ret_fns,
@@ -1544,7 +1550,16 @@ impl<'a> Checker<'a> {
                     if cd.name.is_some() {
                         self.check_named_ctor_body(cd, &table);
                     } else {
+                        // A `super(...)` delegation is only valid inside a
+                        // primary constructor body of a class with a parent.
+                        self.super_ctor_params = table.extends.as_ref().map(|p| {
+                            let parent = self.class_table(&p.named().map(str::to_string).unwrap_or_default());
+                            parent
+                                .map(|pt| self.primary_ctor_param_tys(&pt))
+                                .unwrap_or_default()
+                        });
                         self.check_block(&cd.body);
+                        self.super_ctor_params = None;
                     }
                     self.pop_scope();
                 }
@@ -2038,6 +2053,21 @@ impl<'a> Checker<'a> {
     }
 
     fn check_call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Ty {
+        // `super(...)` inside a primary constructor body delegates to the
+        // parent constructor; its arguments are checked against the parent's
+        // constructor parameters.
+        if matches!(&callee.kind, ExprKind::Super) {
+            let Some(params) = self.super_ctor_params.clone() else {
+                self.err(
+                    e.span,
+                    "`super(...)` can only be used as a constructor delegation",
+                );
+                return Ty::Unknown;
+            };
+            self.check_args(e, &params, args);
+            return Ty::Empty;
+        }
+
         // `this(...)` inside a named constructor delegates to the primary
         // constructor; its arguments are checked against that signature.
         if matches!(&callee.kind, ExprKind::This) {

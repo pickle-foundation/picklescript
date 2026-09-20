@@ -1,0 +1,136 @@
+class BaseBox {
+    var g: int = 100
+
+    constructor(g: int) {
+        this.g = this.g + g
+    }
+}
+
+class MidBox extends BaseBox {
+    var m: int
+
+    constructor(m: int) {
+        super(m * 2)
+        this.m = m
+    }
+}
+
+class LeafBox extends MidBox {
+    var l: int
+
+    constructor(l: int) {
+        super(l + 1)
+        this.l = l * 3
+    }
+
+    fn total() -> int {
+        this.g + this.m + this.l
+    }
+}
+
+class SynthBase {
+    var s1: int
+    var s2: int
+}
+
+class SynthChild extends SynthBase {
+    var c: int
+
+    constructor(c: int) {
+        super(c, c * 10)
+        this.c = c
+    }
+}
+
+class StrBase {
+    var name: string
+
+    constructor(name: string) {
+        this.name = name
+    }
+}
+
+class StrChild extends StrBase {
+    var n: int
+    var extra: string = "!"
+
+    constructor(name: string, n: int) {
+        super(name)
+        this.n = n
+    }
+}
+
+class UnitBase {
+    var ready: bool = true
+}
+
+class UnitChild extends UnitBase {
+    var tag: int
+
+    constructor(tag: int) {
+        super()
+        this.tag = tag
+    }
+}
+
+class NamedBox {
+    var x: int
+    var y: int
+
+    constructor(x: int, y: int) {
+        this.x = x
+        this.y = y
+    }
+
+    constructor.side(n: int) {
+        this(n, n)
+    }
+}
+
+class NamedLeaf extends NamedBox {
+    var z: int
+
+    constructor(z: int) {
+        super(z, z * 2)
+        this.z = z
+    }
+}
+
+describe("constructor super chaining", {
+    test("three-level explicit ctor chain inlines in order", {
+        let b = LeafBox(5)
+        expect(b.g).toBe(112)
+        expect(b.m).toBe(6)
+        expect(b.l).toBe(15)
+        expect(b.total()).toBe(133)
+    })
+
+    test("explicit child ctor super-delegates into a synthesized parent", {
+        let s = SynthChild(3)
+        expect(s.s1).toBe(3)
+        expect(s.s2).toBe(30)
+        expect(s.c).toBe(3)
+    })
+
+    test("pointer (string) parent param survives the chain", {
+        let sc = StrChild("hi", 9)
+        expect(sc.name).toBe("hi")
+        expect(sc.n).toBe(9)
+        expect(sc.extra).toBe("!")
+    })
+
+    test("zero-arg super() into a synthesized parent", {
+        let u = UnitChild(4)
+        expect(u.ready).toBe(true)
+        expect(u.tag).toBe(4)
+    })
+
+    test("named ctor delegates through the primary and into the chain", {
+        expect(NamedBox.side(5).x).toBe(5)
+        expect(NamedBox.side(5).y).toBe(5)
+        let nc = NamedLeaf(6)
+        expect(nc.x).toBe(6)
+        expect(nc.y).toBe(12)
+        expect(nc.z).toBe(6)
+    })
+})
