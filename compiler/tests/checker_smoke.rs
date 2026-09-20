@@ -271,6 +271,23 @@ fn rejects_bad_lambda_call() {
 }
 
 #[test]
+fn accepts_capturing_lambda() {
+    let d = check_str(
+        r#"fn counter() -> fn (int) -> int {
+            let base = 3
+            return (n) => n + base
+        }
+
+        fn main() {
+            let f = counter()
+            let r = f(4)
+            print(r)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn accepts_is_as_casts() {
     let d = check_str(
         r#"class Shape {

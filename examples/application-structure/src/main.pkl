@@ -1,0 +1,78 @@
+// The Application Structure Standard (docs/10) in code, for the subset that
+// is lowered today:
+//   - bare and payload enums + match
+//   - classes with an explicit constructor and named constructors (static
+//     factories that delegate via `this(...)`)
+//   - class constants, `static fn` members, module-level `private fn`
+//   - interfaces as declarations (nothing implements one yet -- `implements`
+//     is not lowered, and generic classes are not either; both are rejected
+//     with a clear diagnostic at the class declaration).
+// Expected output:
+//   adaanon
+//   10001000
+//   truefalse
+//   109
+
+enum WalletStatus {
+    Active
+    Frozen
+    Closed
+}
+
+enum Money {
+    Pln(v: int)
+    Eur(v: int)
+}
+
+interface Account {
+    fn label() -> string
+}
+
+class Wallet {
+    const MAX: int = 1000
+
+    name: string
+    balance: int
+
+    constructor(name: string, balance: int) {
+        this.name = name
+        this.balance = balance
+    }
+
+    constructor.empty() {
+        this("anon", 0)
+    }
+
+    static fn topLimit() -> int {
+        return Wallet.MAX
+    }
+
+    fn label() -> string {
+        return this.name
+    }
+}
+
+private fn isOpen(status: WalletStatus) -> bool {
+    match (status) {
+        case WalletStatus.Active -> true
+        case WalletStatus.Frozen -> false
+        case WalletStatus.Closed -> false
+    }
+}
+
+fn toEuros(m: Money) -> int {
+    match (m) {
+        case Money.Pln(v) -> v / 4
+        case Money.Eur(v) -> v
+    }
+}
+
+fn main() {
+    let a = Wallet("ada", 120)
+    let b = Wallet.empty()
+
+    println(a.label(), b.label())
+    println(Wallet.topLimit(), Wallet.MAX)
+    println(isOpen(WalletStatus.Active), isOpen(WalletStatus.Closed))
+    println(toEuros(Money.Pln(40)), toEuros(Money.Eur(9)))
+}

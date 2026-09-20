@@ -180,6 +180,16 @@ pub enum IrInstr {
     StoreRaw { addr: Temp, v: Temp, ty: IrTy },
     /// Call a user function or runtime symbol. `dst` absent for void calls.
     Call { dst: Option<Temp>, callee: Callee, args: Vec<Temp> },
+    /// Call a closure value: a function pointer (`Int`) over an explicit
+    /// signature. `fn_addr` is the raw code address of the closure's body
+    /// entry or of a top-level function used as a value.
+    CallInd {
+        dst: Option<Temp>,
+        fn_addr: Temp,
+        params: Vec<IrTy>,
+        ret: IrTy,
+        args: Vec<Temp>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +330,33 @@ impl fmt::Display for IrInstr {
                 match dst {
                     Some(d) => write!(f, "{} = call {}({})", temp_name(*d), callee, args),
                     None => write!(f, "call {}({})", callee, args),
+                }
+            }
+            IrInstr::CallInd { dst, fn_addr, params, ret, args } => {
+                let sig = params
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let args = args.iter().map(|a| temp_name(*a)).collect::<Vec<_>>().join(", ");
+                match dst {
+                    Some(d) => write!(
+                        f,
+                        "{} = callind [{}] -> {} ({}) via {}",
+                        temp_name(*d),
+                        sig,
+                        ret,
+                        args,
+                        temp_name(*fn_addr)
+                    ),
+                    None => write!(
+                        f,
+                        "callind [{}] -> {} ({}) via {}",
+                        sig,
+                        ret,
+                        args,
+                        temp_name(*fn_addr)
+                    ),
                 }
             }
         }

@@ -65,6 +65,12 @@ pub fn emit_ir(
         static_inits: Vec::new(),
         static_init_id: None,
         owner: None,
+        closure_tables: HashMap::new(),
+        lambda_fids: HashMap::new(),
+        lambda_caps: HashMap::new(),
+        next_closure: 0,
+        tramp_fids: HashMap::new(),
+        fn_tramp: HashMap::new(),
         fname: String::new(),
         symbol: String::new(),
         fparams: Vec::new(),
@@ -98,6 +104,15 @@ struct LoopCtx {
 enum FnSource<'a> {
     /// Top-level `fn` (or `test`) declaration.
     TopLevel(&'a FnDecl),
+    /// A lambda expression's hoisted body: slot 0 is the closure object, whose
+    /// slots 1..N hold the captured values copied in at entry; the lambda's own
+    /// parameters come after the closure object.
+    Lambda {
+        lambda: &'a Expr,
+        captures: Vec<Capture>,
+        ret: Ty,
+        owner: Option<i64>,
+    },
     /// The constructor of a class/struct: synthesized from the fields unless an
     /// explicit `constructor(...)` body is present.
     Ctor {
@@ -140,6 +155,18 @@ enum FnSource<'a> {
     StaticInit {
         inits: Vec<(u32, usize, Option<&'a Expr>)>,
     },
+    /// A dynamically-callable forwarder for a top-level function used as a
+    /// value. Slot 0 is the closure object (ignored; module functions capture
+    /// nothing), the real arguments occupy slots 1..N, and the body calls
+    /// `target` and returns its result. This gives a module function the same
+    /// `(env, ...)` ABI as a hoisted lambda body, so `fn_value_call` can
+    /// dispatch to it uniformly through a zero-capture closure object.
+    Trampoline {
+        span: Span,
+        target: FuncId,
+        pty: Vec<Ty>,
+        ret: Ty,
+    },
 }
 
 /// A registered, lowerable user class/struct.
@@ -149,6 +176,87 @@ struct ClassPlan {
     /// Superclass id for a class that `extends` another, else `None`.
     parent: Option<u32>,
     table: ClassTable,
+}
+
+/// One value a lambda body reads from its creating scope. Captures are copied
+/// (snapshotted) into the closure object at creation time and are read-only
+/// inside the hoisted body.
+#[derive(Clone)]
+struct Capture {
+    name: String,
+    ty: Ty,
+    span: Span,
+}
+
+/// Closures may capture up to this many values; beyond it the synthetic
+/// `__closure_N` layout (one slot per capture) is rejected loudly.
+const MAX_LAMBDA_CAPTURES: usize = 8;
+
+/// Runtime symbol names used to build and call closure values.
+const CLOSURE_CLASS_PREFIX: &str = "__closure_";
+
+/// The slot holding the hoisted body's code address inside a closure object.
+const CLOSURE_FN_SLOT: usize = 0;
+
+/// The number of parameters on a lambda expression.
+fn params_len(lambda: &Expr) -> usize {
+    if let ExprKind::Lambda { params, .. } = &lambda.kind {
+        params.len()
+    } else {
+        0
+    }
+}
+
+/// A lambda parameter list's bound names.
+fn bound_params(params: &[Param]) -> HashSet<String> {
+    params.iter().map(|p| p.name.clone()).collect()
+}
+
+/// Is `name` bound in one of the open lexical scopes at or above `from`?
+/// Scopes below `from` belong to the enclosing function and are invisible to
+/// a hoisted lambda body, so they are NOT treated as bound here (they must be
+/// captured instead).
+fn scope_contains_from(scope: &[HashSet<String>], from: usize, name: &str) -> bool {
+    for (i, s) in scope.iter().enumerate().rev() {
+        if i < from {
+            break;
+        }
+        if s.contains(name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Bind `name` in the innermost open scope.
+fn scope_bind(scope: &mut [HashSet<String>], name: &str) {
+    if let Some(top) = scope.last_mut() {
+        top.insert(name.to_string());
+    }
+}
+
+/// The names a pattern binds (only `Pattern::Binding` introduces names).
+fn pattern_binds(p: &Pattern) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_binds(p, &mut out);
+    out
+}
+
+fn collect_binds(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Binding { name, .. } => out.push(name.clone()),
+        Pattern::Tuple(xs) | Pattern::Or(xs) => {
+            for x in xs {
+                collect_binds(x, out);
+            }
+        }
+        Pattern::Variant { payloads, .. } => {
+            for x in payloads {
+                collect_binds(x, out);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
 }
 
 /// The single `this(...)` delegation expression of a named-constructor body, or
@@ -251,6 +359,24 @@ struct Emitter<'a> {
     static_init_id: Option<FuncId>,
     /// Class id of the method/ctor currently being built (implicit receiver).
     owner: Option<i64>,
+    /// Synthetic `__closure_N` class tables, so field helpers (`table_of`,
+    /// `all_instance_fields`, ...) resolve them exactly like user classes.
+    closure_tables: HashMap<String, ClassTable>,
+    /// The lambda expression's span -> its hoisted body function, assigned
+    /// during pre-registration.
+    lambda_fids: HashMap<Span, FuncId>,
+    /// The lambda expression's span -> the captured values its closure object
+    /// must load (parallel to `lambda_fids`).
+    lambda_caps: HashMap<Span, Vec<Capture>>,
+    /// Monotonic id for hoisted lambda body names (`pkl_closure_<n>`).
+    next_closure: u32,
+    /// Top-level function id -> its value-use trampoline (`FnSource::Trampoline`),
+    /// so a function referenced as a value is wrapped once regardless of how many
+    /// sites reference it.
+    tramp_fids: HashMap<FuncId, FuncId>,
+    /// Span of a module-fn value reference -> its trampoline function, assigned
+    /// during pre-registration (parallel to `lambda_fids`).
+    fn_tramp: HashMap<Span, FuncId>,
 
     // ---- per-function state ----
     fname: String,
@@ -302,9 +428,491 @@ impl<'a> Emitter<'a> {
             );
             self.static_init_id = Some(fid);
         }
+        self.register_lambdas();
         let fids = self.fid_list.clone();
         for fid in fids {
             self.build_func(fid);
+        }
+    }
+
+    // ---- lambda pre-registration ----------------------------------------
+
+    /// Collect every lambda in the program and register its hoisted body and
+    /// closure class BEFORE the build loop, so a `Const(FuncAddr)` for a
+    /// hoisted body and a `pickle_class_new` for its closure object can always
+    /// reference ids that already exist. Runs after every class/function is
+    /// registered (class ids drive owner-scoped capture decisions).
+    fn register_lambdas(&mut self) {
+        for item in &self.prog.items {
+            match &item.kind {
+                ItemKind::Fn(f) | ItemKind::Test(f) => {
+                    let mut scope = Vec::new();
+                    let mut acc = Vec::new();
+                    if let Some(b) = &f.body {
+                        self.walk_fn_body(b, None, None, 0, &mut scope, &mut acc);
+                    }
+                }
+                ItemKind::Class(c) => self.walk_class_members(&c.members, &c.name),
+                ItemKind::Struct(s) => self.walk_class_members(&s.members, &s.name),
+                ItemKind::Const(c) => {
+                    let mut scope = Vec::new();
+                    let mut acc = Vec::new();
+                    self.walk_expr(&c.value, None, None, 0, &mut scope, &mut acc);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn walk_class_members(&mut self, members: &'a [ClassMember], cls: &str) {
+        let owner_cid = self.class_by_name.get(cls).copied().map(|x| x as i64);
+        for m in members {
+            let mut scope = Vec::new();
+            let mut acc = Vec::new();
+            match m {
+                ClassMember::Field { init: Some(e), .. } => {
+                    self.walk_expr(e, owner_cid, Some(cls), 0, &mut scope, &mut acc)
+                }
+                ClassMember::Field { .. } | ClassMember::Constructor(_) => {}
+                ClassMember::Method(md) => {
+                    if let Some(b) = &md.body {
+                        self.walk_fn_body(b, owner_cid, Some(cls), 0, &mut scope, &mut acc);
+                    }
+                }
+                ClassMember::Property(pd) => {
+                    if let Some(a) = &pd.get {
+                        self.walk_accessor(a, owner_cid, Some(cls));
+                    }
+                    if let Some(a) = &pd.set {
+                        self.walk_accessor(a, owner_cid, Some(cls));
+                    }
+                }
+                ClassMember::Init(b) | ClassMember::Deinit(b) => {
+                    self.walk_block(b, owner_cid, Some(cls), 0, &mut scope, &mut acc)
+                }
+                ClassMember::Const { value, .. } => {
+                    self.walk_expr(value, owner_cid, Some(cls), 0, &mut scope, &mut acc)
+                }
+            }
+        }
+        // Explicit constructor bodies carry lambdas too (initializer-only ctors
+        // have none).
+        for m in members {
+            if let ClassMember::Constructor(cd) = m {
+                let mut scope = Vec::new();
+                let mut acc = Vec::new();
+                self.walk_block(&cd.body, owner_cid, Some(cls), 0, &mut scope, &mut acc);
+            }
+        }
+    }
+
+    fn walk_accessor(&mut self, a: &'a PropertyAccessor, owner_cid: Option<i64>, owner_name: Option<&str>) {
+        let mut scope = Vec::new();
+        let mut acc = Vec::new();
+        match a {
+            PropertyAccessor::Expr(e) => self.walk_expr(e, owner_cid, owner_name, 0, &mut scope, &mut acc),
+            PropertyAccessor::Block(b) => self.walk_block(b, owner_cid, owner_name, 0, &mut scope, &mut acc),
+        }
+    }
+
+    fn walk_fn_body(
+        &mut self,
+        fb: &'a FnBody,
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+        lmark: usize,
+        scope: &mut Vec<HashSet<String>>,
+        acc: &mut Vec<(String, Span)>,
+    ) {
+        match fb {
+            FnBody::Block(b) => self.walk_block(b, owner_cid, owner_name, lmark, scope, acc),
+            FnBody::Expr(e) => self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc),
+        }
+    }
+
+    fn walk_block(
+        &mut self,
+        b: &'a Block,
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+        lmark: usize,
+        scope: &mut Vec<HashSet<String>>,
+        acc: &mut Vec<(String, Span)>,
+    ) {
+        for s in &b.stmts {
+            self.walk_stmt(s, owner_cid, owner_name, lmark, scope, acc);
+        }
+        if let Some(e) = &b.expr {
+            self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc);
+        }
+    }
+
+    fn walk_stmt(
+        &mut self,
+        s: &'a Stmt,
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+        lmark: usize,
+        scope: &mut Vec<HashSet<String>>,
+        acc: &mut Vec<(String, Span)>,
+    ) {
+        match s {
+            Stmt::Let { pattern, init: Some(e), .. } => {
+                self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc);
+                for n in pattern_binds(pattern) {
+                    scope_bind(scope, &n);
+                }
+            }
+            Stmt::Let { .. } => {}
+            Stmt::Const { value, name, .. } => {
+                self.walk_expr(value, owner_cid, owner_name, lmark, scope, acc);
+                scope_bind(scope, name);
+            }
+            Stmt::Return { value: Some(e), .. } => {
+                self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc)
+            }
+            Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Empty(_) => {}
+            Stmt::Expr(e) => self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc),
+            Stmt::While { cond, body, .. } => {
+                self.walk_expr(cond, owner_cid, owner_name, lmark, scope, acc);
+                scope.push(HashSet::new());
+                self.walk_block(body, owner_cid, owner_name, lmark, scope, acc);
+                scope.pop();
+            }
+            Stmt::For { header, body, .. } => match header {
+                ForHeader::In { sequence, pattern } => {
+                    self.walk_expr(sequence, owner_cid, owner_name, lmark, scope, acc);
+                    scope.push(HashSet::new());
+                    for n in pattern_binds(pattern) {
+                        scope_bind(scope, &n);
+                    }
+                    self.walk_block(body, owner_cid, owner_name, lmark, scope, acc);
+                    scope.pop();
+                }
+                ForHeader::Range { init, cond, step } => {
+                    scope.push(HashSet::new());
+                    self.walk_stmt(init, owner_cid, owner_name, lmark, scope, acc);
+                    self.walk_expr(cond, owner_cid, owner_name, lmark, scope, acc);
+                    self.walk_expr(step, owner_cid, owner_name, lmark, scope, acc);
+                    self.walk_block(body, owner_cid, owner_name, lmark, scope, acc);
+                    scope.pop();
+                }
+            },
+        }
+    }
+
+    fn walk_expr(
+        &mut self,
+        e: &'a Expr,
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+        lmark: usize,
+        scope: &mut Vec<HashSet<String>>,
+        acc: &mut Vec<(String, Span)>,
+    ) {
+        match &e.kind {
+            ExprKind::Ident(name) => {
+                if !scope_contains_from(scope, lmark, name) {
+                    acc.push((name.clone(), e.span));
+                }
+                // A module function used as a value needs a dynamic-call
+                // trampoline: the hoisted lambda bodies accept `(env, ...)`,
+                // but a bare top-level function does not. Register it now so the
+                // build loop (which runs after registration) compiles its body.
+                let shadowed = scope
+                    .last()
+                    .map(|s| s.contains(name))
+                    .unwrap_or(false);
+                if !shadowed
+                    && self.module.funcs_by_name.contains_key(name)
+                    && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
+                {
+                    self.register_trampoline(e.span, name);
+                }
+            }
+            ExprKind::This => acc.push(("this".to_string(), e.span)),
+            ExprKind::Super => acc.push(("__super".to_string(), e.span)),
+            ExprKind::Lit(_) | ExprKind::GenericCall { .. } => {}
+            ExprKind::Call { callee, args } => {
+                self.walk_expr(callee, owner_cid, owner_name, lmark, scope, acc);
+                for a in args {
+                    self.walk_expr(&a.value, owner_cid, owner_name, lmark, scope, acc);
+                }
+            }
+            ExprKind::Member { object, .. } => {
+                self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc)
+            }
+            ExprKind::Index { object, index } => {
+                self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc);
+                self.walk_expr(index, owner_cid, owner_name, lmark, scope, acc);
+            }
+            ExprKind::Binary { lhs, rhs, .. } => {
+                self.walk_expr(lhs, owner_cid, owner_name, lmark, scope, acc);
+                self.walk_expr(rhs, owner_cid, owner_name, lmark, scope, acc);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.walk_expr(operand, owner_cid, owner_name, lmark, scope, acc)
+            }
+            ExprKind::Assign { target, value, .. } => {
+                self.walk_expr(target, owner_cid, owner_name, lmark, scope, acc);
+                self.walk_expr(value, owner_cid, owner_name, lmark, scope, acc);
+            }
+            ExprKind::Lambda {
+                params,
+                is_async,
+                body,
+                ..
+            } => {
+                if *is_async {
+                    let _ = self.bad::<()>(e.span, "async lambdas are not lowered yet");
+                    return;
+                }
+                for p in params {
+                    if p.rest || p.default.is_some() {
+                        let _ = self.bad::<()>(
+                            p.span,
+                            "lambda parameters cannot have defaults or rest markers",
+                        );
+                        return;
+                    }
+                }
+                // Free names are collected against THIS lambda's own binding
+                // boundary: its parameter scope (and anything it binds below)
+                // is not captured, while every enclosing name — including the
+                // enclosing function's locals/params AND enclosing lambda
+                // internals — must be captured, because a hoisted body is a
+                // separate function that only sees its own closure slots.
+                let child_marker = scope.len();
+                let before = acc.len();
+                scope.push(bound_params(params));
+                self.walk_fn_body(body, owner_cid, owner_name, child_marker, scope, acc);
+                scope.pop();
+                let mut mine = acc.split_off(before);
+                let free_names = std::mem::take(&mut mine);
+                let captures =
+                    self.decide_captures(&free_names, owner_cid, owner_name, e.span);
+                let captures = match captures {
+                    Ok(c) => c,
+                    Err(()) => return,
+                };
+                self.register_lambda(e, captures, owner_cid);
+                // Propagate to the parent only the names the parent must also
+                // capture: those it cannot already see in ITS own scopes. A
+                // name bound in the parent-lambda's internals lives in the
+                // parent hoisted body's env at our creation site, so the
+                // parent must NOT re-capture it.
+                for (n, s) in &free_names {
+                    if !scope_contains_from(scope, lmark, n) {
+                        acc.push((n.clone(), *s));
+                    }
+                }
+            }
+            ExprKind::If { cond, then, else_else } => {
+                match cond {
+                    IfCond::Cond(c) => self.walk_expr(c, owner_cid, owner_name, lmark, scope, acc),
+                    IfCond::Binding { pattern, value } => {
+                        self.walk_expr(value, owner_cid, owner_name, lmark, scope, acc);
+                        scope.push(HashSet::new());
+                        for n in pattern_binds(pattern) {
+                            scope_bind(scope, &n);
+                        }
+                        self.walk_block(then, owner_cid, owner_name, lmark, scope, acc);
+                        scope.pop();
+                    }
+                }
+                if let Some(ee) = else_else {
+                    self.walk_expr(ee, owner_cid, owner_name, lmark, scope, acc);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee, owner_cid, owner_name, lmark, scope, acc);
+                for arm in arms {
+                    scope.push(HashSet::new());
+                    for n in pattern_binds(&arm.pattern) {
+                        scope_bind(scope, &n);
+                    }
+                    if let Some(g) = &arm.guard {
+                        self.walk_expr(g, owner_cid, owner_name, lmark, scope, acc);
+                    }
+                    self.walk_expr(&arm.body, owner_cid, owner_name, lmark, scope, acc);
+                    scope.pop();
+                }
+            }
+            ExprKind::Await(x) => self.walk_expr(x, owner_cid, owner_name, lmark, scope, acc),
+            ExprKind::Cast { expr, .. } => self.walk_expr(expr, owner_cid, owner_name, lmark, scope, acc),
+            ExprKind::Unsafe(b) => {
+                scope.push(HashSet::new());
+                self.walk_block(b, owner_cid, owner_name, lmark, scope, acc);
+                scope.pop();
+            }
+            ExprKind::Block(b) => {
+                scope.push(HashSet::new());
+                self.walk_block(b, owner_cid, owner_name, lmark, scope, acc);
+                scope.pop();
+            }
+            ExprKind::Tuple(xs) | ExprKind::Array(xs) => {
+                for x in xs {
+                    self.walk_expr(x, owner_cid, owner_name, lmark, scope, acc);
+                }
+            }
+            ExprKind::Map(kvs) => {
+                for (k, v) in kvs {
+                    self.walk_expr(k, owner_cid, owner_name, lmark, scope, acc);
+                    self.walk_expr(v, owner_cid, owner_name, lmark, scope, acc);
+                }
+            }
+            ExprKind::OptAccess { object, .. } => {
+                self.walk_expr(object, owner_cid, owner_name, lmark, scope, acc)
+            }
+            ExprKind::OptUnwrap(inner) => {
+                self.walk_expr(inner, owner_cid, owner_name, lmark, scope, acc)
+            }
+            ExprKind::Range { start, end, .. } => {
+                self.walk_expr(start, owner_cid, owner_name, lmark, scope, acc);
+                self.walk_expr(end, owner_cid, owner_name, lmark, scope, acc);
+            }
+        }
+    }
+
+    /// Decide which free names are truly captured (globals and the enclosing
+    /// class's statics/consts resolve statically), the capture's type, and
+    /// whether the implicit `this` must ride along.
+    fn decide_captures(
+        &mut self,
+        free: &[(String, Span)],
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+        span: Span,
+    ) -> Result<Vec<Capture>, ()> {
+        let mut seen = HashSet::new();
+        let mut caps: Vec<Capture> = Vec::new();
+        let mut needs_this = false;
+        for (name, refs) in free {
+            if name == "__super" {
+                return self.bad(*refs, "`super` inside a lambda is not lowered yet");
+            }
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if self.is_enclosing_global(name) {
+                continue;
+            }
+            if let Some(cid) = owner_cid {
+                // Instance members resolve through the receiver; the lambda
+                // needs the object (captured as `this`).
+                if self.instance_field_index(cid, name).is_some()
+                    || self
+                        .property_ids
+                        .contains_key(&(cid as u32, name.to_string(), false))
+                {
+                    needs_this = true;
+                    continue;
+                }
+                // Statics/consts resolve by the declaring class alone.
+                if self.static_field(cid, name).is_some()
+                    || self
+                        .class_consts
+                        .contains_key(&(cid as u32, name.to_string()))
+                {
+                    continue;
+                }
+            }
+            let ty = match self.types.get(refs) {
+                Some(t) => t.clone(),
+                None => {
+                    return self.bad(*refs, format!("cannot infer the type of captured `{name}`"))
+                }
+            };
+            caps.push(Capture {
+                name: name.clone(),
+                ty,
+                span: *refs,
+            });
+        }
+        if needs_this {
+            let Some(oname) = owner_name else {
+                unreachable!("owner member with no owner name");
+            };
+            caps.push(Capture {
+                name: "this".to_string(),
+                ty: Ty::Class(oname.to_string(), Vec::new()),
+                span,
+            });
+        }
+        // Deterministic extraction order (slot assignment order) regardless of
+        // the walk's traversal order.
+        caps.sort_by(|a, b| a.name.cmp(&b.name));
+        if caps.len() > MAX_LAMBDA_CAPTURES {
+            return self.bad(
+                span,
+                format!(
+                    "this lambda captures {} values, more than the supported limit of {MAX_LAMBDA_CAPTURES}",
+                    caps.len()
+                ),
+            );
+        }
+        Ok(caps)
+    }
+
+    fn is_enclosing_global(&self, name: &str) -> bool {
+        self.module.funcs_by_name.contains_key(name)
+            || self.class_decls.contains_key(name)
+            || self.consts_inits.contains_key(name)
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free")
+    }
+
+    /// Register a lambda's hoisted body and its closure class.
+    fn register_lambda(&mut self, lambda: &'a Expr, captures: Vec<Capture>, owner_cid: Option<i64>) {
+        let ExprKind::Lambda { body, .. } = &lambda.kind else {
+            return;
+        };
+        let _ = self.register_closure_class(captures.len(), lambda.span);
+        let fnty = self.types.get(&lambda.span).cloned().unwrap_or(Ty::Unknown);
+        // Only lambdas with a fully-resolved checker signature are registered;
+        // otherwise leave it unregistered and bail loudly when it is lowered.
+        let Ty::Fn(pts, _) = &fnty else {
+            return;
+        };
+        if params_len(lambda) != pts.len() {
+            return;
+        }
+        if pts.iter().any(|t| self.map_ty(t, lambda.span).is_err()) {
+            return;
+        }
+        let mut ret = match &fnty {
+            Ty::Fn(_, r) if !matches!(r.as_ref(), Ty::Unknown) => (**r).clone(),
+            _ => self.infer_lambda_ret(body),
+        };
+        if matches!(ret, Ty::Unknown) {
+            ret = self.infer_lambda_ret(body);
+        }
+        if self.map_ty(&ret, lambda.span).is_err() {
+            return;
+        }
+        let fid = self.push_class_func(
+            "lambda",
+            &format!("pkl_closure_{}", self.next_closure),
+            FnSource::Lambda {
+                lambda,
+                captures: captures.clone(),
+                ret,
+                owner: owner_cid,
+            },
+        );
+        self.next_closure += 1;
+        self.lambda_fids.insert(lambda.span, fid);
+        self.lambda_caps.insert(lambda.span, captures);
+    }
+
+    /// A lambda body's inferred return type: its trailing expression, or unit
+    /// when none (checked annotations win first, in `register_lambda`).
+    fn infer_lambda_ret(&self, body: &FnBody) -> Ty {
+        match body {
+            FnBody::Expr(e) => self.types.get(&e.span).cloned().unwrap_or(Ty::Unknown),
+            FnBody::Block(b) => match &b.expr {
+                Some(e) => self.types.get(&e.span).cloned().unwrap_or(Ty::Empty),
+                None => Ty::Empty,
+            },
         }
     }
 
@@ -390,13 +998,113 @@ impl<'a> Emitter<'a> {
         self.maybe_register_class(&s.name, &s.members, table, s.span);
     }
 
+    /// Register the synthetic `__closure_N` class (or return its id). Slot 0
+    /// holds the hoisted body's code address (a boxed int); slots 1..N hold the
+    /// captured values, boxed exactly like list elements. Every slot is traced
+    /// by the GC, so a closure keeps its captures alive. Kept on the emitter's
+    /// own tables so the normal field-layout helpers resolve them.
+    fn register_closure_class(&mut self, capture_count: usize, span: Span) -> Result<u32, ()> {
+        if capture_count > MAX_LAMBDA_CAPTURES {
+            return self.bad(
+                span,
+                format!(
+                    "this lambda captures {capture_count} values, more than the supported limit of {MAX_LAMBDA_CAPTURES}"
+                ),
+            );
+        }
+        let name = format!("{CLOSURE_CLASS_PREFIX}{capture_count}");
+        if let Some(&cid) = self.class_by_name.get(&name) {
+            return Ok(cid);
+        }
+        let mut fields = Vec::with_capacity(capture_count + 1);
+        for i in 0..=capture_count {
+            fields.push(FieldInfo {
+                name: if i == CLOSURE_FN_SLOT {
+                    "__fn".to_string()
+                } else {
+                    format!("__c{}", i - 1)
+                },
+                visibility: Visibility::Private,
+                is_static: false,
+                mutable: false,
+                const_: false,
+                manual: false,
+                ty: Ty::Int,
+                span,
+            });
+        }
+        let table = ClassTable {
+            name: name.clone(),
+            span,
+            visibility: Visibility::Private,
+            generics: Vec::new(),
+            extends: None,
+            implements: Vec::new(),
+            fields,
+            methods: Vec::new(),
+            properties: Vec::new(),
+            ctor: None,
+            named_ctors: Vec::new(),
+            consts: Vec::new(),
+        };
+        let cid = (PICKLE_CLASS_USER_BASE + self.classes.len() as i64) as u32;
+        self.closure_tables.insert(name.clone(), table.clone());
+        self.class_by_name.insert(name.clone(), cid);
+        self.classes.push(ClassPlan {
+            name,
+            class_id: cid,
+            parent: None,
+            table,
+        });
+        Ok(cid)
+    }
+
+    /// Register the forwarder (`FnSource::Trampoline`) that lets a top-level
+    /// function be called through a closure object: it accepts the closure as
+    /// slot 0, forwards the real arguments to the target, and returns its
+    /// result. One trampoline per target function; every value-reference site
+    /// of that function is mapped to it in `fn_tramp`.
+    fn register_trampoline(&mut self, span: Span, fn_name: &str) {
+        let Some(&fid) = self.module.funcs_by_name.get(fn_name) else {
+            return;
+        };
+        let Some(Ty::Fn(pty, ret)) = self.types.get(&span).cloned() else {
+            return;
+        };
+        if pty.iter().any(|t| self.map_ty(t, span).is_err()) {
+            return;
+        }
+        if self.map_ty(&ret, span).is_err() {
+            return;
+        }
+        let tramp = match self.tramp_fids.get(&fid) {
+            Some(&t) => t,
+            None => {
+                let t = self.push_class_func(
+                    "fn.value",
+                    &format!("pkl_tramp_{}", fid.0),
+                    FnSource::Trampoline {
+                        span,
+                        target: fid,
+                        pty,
+                        ret: *ret,
+                    },
+                );
+                self.tramp_fids.insert(fid, t);
+                t
+            }
+        };
+        self.fn_tramp.insert(span, tramp);
+    }
+
     // ---- inheritance layout helpers ---------------------------------------
 
-    /// The class/struct table for `name`, from the resolver.
+    /// The class/struct table for `name`, from the resolver (or, for the
+    /// synthetic closure classes, from the emitter's own tables).
     fn table_of(&self, name: &str) -> Option<ClassTable> {
         match self.resolved.types.get(name) {
             Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => Some(t.clone()),
-            _ => None,
+            _ => self.closure_tables.get(name).cloned(),
         }
     }
 
@@ -534,7 +1242,18 @@ impl<'a> Emitter<'a> {
         table: ClassTable,
         span: Span,
     ) {
-        if !table.generics.is_empty() || !table.implements.is_empty() {
+        if !table.generics.is_empty() {
+            let _: Result<(), ()> = self.bad(
+                span,
+                format!("`{name}` has type parameters, which are not lowered yet"),
+            );
+            return;
+        }
+        if !table.implements.is_empty() {
+            let _: Result<(), ()> = self.bad(
+                span,
+                format!("`{name}` implements interfaces, which are not lowered yet"),
+            );
             return;
         }
         if members
@@ -904,6 +1623,16 @@ impl<'a> Emitter<'a> {
                 self.fret = self.map_ty(&info.ret, f.span).unwrap_or(IrTy::Unit);
                 self.emit_body(&f.body);
             }
+            FnSource::Lambda {
+                lambda,
+                captures,
+                ret,
+                owner,
+            } => self.build_lambda_body(lambda, &captures, &ret, owner, fid),
+            FnSource::Trampoline { span, target, pty, ret } => {
+                self.owner = None;
+                self.build_trampoline(span, target, &pty, &ret);
+            }
             FnSource::Ctor {
                 table,
                 inits,
@@ -981,6 +1710,73 @@ impl<'a> Emitter<'a> {
         };
     }
 
+    /// Build the hoisted body of a lambda. Slot 0 is the closure object; the
+    /// captured values are copied out of it into fresh locals before the body
+    /// runs (read-only snapshots), and the lambda's own parameters follow.
+fn build_lambda_body(
+        &mut self,
+        lambda: &'a Expr,
+        captures: &[Capture],
+        ret: &Ty,
+        owner: Option<i64>,
+        _fid: FuncId,
+    ) {
+        let ExprKind::Lambda { params, body, .. } = &lambda.kind else {
+            let _ = self.bad::<()>(lambda.span, "lambda lost its body");
+            return;
+        };
+        let Some(Ty::Fn(pty, _)) = self.types.get(&lambda.span).cloned() else {
+            let _ = self.bad::<()>(lambda.span, "lambda parameter types are not statically known");
+            return;
+        };
+        let _ = self.map_ty(ret, lambda.span).map(|ir| self.fret = ir);
+        self.owner = owner;
+
+        // Slot 0 is the closure object (storage managed by the caller). It must
+        // stay at fparam index 0 so the JIT hands the closure to slot 0.
+        let env_ir = IrTy::Ptr;
+        let env_slot = self.new_slot(env_ir);
+        self.fparams.push(IrParam {
+            name: "env".to_string(),
+            ty: env_ir,
+        });
+        self.declare("env", env_slot);
+        let env_obj = self.load(env_slot);
+
+        // The lambda's own parameters, typed from the checker's Fn signature.
+        // These occupy slots 1..=n, matching their argument order, because the
+        // JIT delivers call arguments by fparam index.
+        for (i, p) in params.iter().enumerate() {
+            let t = pty.get(i).cloned().unwrap_or(Ty::Unknown);
+            let ir = self.map_ty(&t, p.span).unwrap_or(IrTy::Ptr);
+            let slot = self.new_slot(ir);
+            self.fparams.push(IrParam {
+                name: p.name.clone(),
+                ty: ir,
+            });
+            self.declare(&p.name, slot);
+        }
+
+        // Captured values go into fresh slots after every parameter; a capture
+        // whose name a parameter shadows is skipped (`declare` would otherwise
+        // clobber the parameter binding).
+        for (i, cap) in captures.iter().enumerate() {
+            let v = match self.field_read(cap.span, env_obj, &cap.ty, 1 + i) {
+                Ok(v) => v,
+                Err(()) => return,
+            };
+            let ir = self.map_ty(&cap.ty, cap.span).unwrap_or(IrTy::Ptr);
+            let slot = self.new_slot(ir);
+            self.instr(IrInstr::StoreSlot { slot, v });
+            let shadowed = self.env.is_empty() || params.iter().any(|p| p.name == cap.name);
+            if !shadowed {
+                self.declare(&cap.name, slot);
+            }
+        }
+
+        let _ = self.emit_body(&Some(body.clone()));
+    }
+
     /// Declare function parameters as slots 0..n (used by top-level fns).
     fn declare_params(&mut self, params: &[ParamInfo]) {
         for (i, p) in params.iter().enumerate() {
@@ -992,6 +1788,49 @@ impl<'a> Emitter<'a> {
                 ty: ir,
             });
             self.declare(&p.name, slot);
+        }
+    }
+
+    /// Build the body of a function-value trampoline: a forwarder with the
+    /// hoisted-lambda signature `(env, args...) -> ret` whose body simply calls
+    /// the wrapped top-level function and returns its result. The closure
+    /// object (slot 0) is unused: module functions capture nothing.
+    fn build_trampoline(&mut self, span: Span, target: FuncId, pty: &[Ty], ret: &Ty) {
+        let _ = self.map_ty(ret, span).map(|ir| self.fret = ir);
+        let env_ir = IrTy::Ptr;
+        let env_slot = self.new_slot(env_ir);
+        self.fparams.push(IrParam {
+            name: "env".to_string(),
+            ty: env_ir,
+        });
+        self.declare("env", env_slot);
+        let mut args = Vec::with_capacity(pty.len());
+        for (i, t) in pty.iter().enumerate() {
+            let ir = self.map_ty(t, span).unwrap_or(IrTy::Ptr);
+            let slot = self.new_slot(ir);
+            let pname = format!("arg{i}");
+            self.fparams.push(IrParam {
+                name: pname.clone(),
+                ty: ir,
+            });
+            self.declare(&pname, slot);
+            args.push(self.load(slot));
+        }
+        if matches!(self.fret, IrTy::Unit) {
+            self.instr(IrInstr::Call {
+                dst: None,
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: None });
+        } else {
+            let dst = self.temp();
+            self.instr(IrInstr::Call {
+                dst: Some(dst),
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: Some(dst) });
         }
     }
 
@@ -2015,7 +2854,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Index { object, index } => self.index_read(e, object, index),
             ExprKind::OptAccess { object, name } => self.opt_access(e, object, name),
             ExprKind::OptUnwrap(inner) => self.opt_unwrap(e, inner),
-            ExprKind::Lambda { .. } => self.bad(e.span, "lambda values are not lowered yet"),
+            ExprKind::Lambda { .. } => self.lambda_value(e),
             ExprKind::Match {
                 scrutinee,
                 arms,
@@ -2191,6 +3030,12 @@ impl<'a> Emitter<'a> {
             if let Some(r) = self.read_class_const(e.span, cid, name) {
                 return r;
             }
+        }
+        // A bare module function used as a value: wrap it in a zero-capture
+        // closure whose slot 0 holds its address (the same shape a lambda
+        // body gets).
+        if let Some(&fid) = self.module.funcs_by_name.get(name) {
+            return self.fn_value_closure(e, fid);
         }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
     }
@@ -3995,6 +4840,153 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// Is `callee` a general function-typed expression (as opposed to a plain
+    /// named user/ctor/builtin call, which has its own static paths)?
+    fn is_fn_dispatchable(&self, callee: &Expr) -> bool {
+        match &callee.kind {
+            ExprKind::Ident(name) => {
+                if self.module.funcs_by_name.contains_key(name) {
+                    return false;
+                }
+                if self.class_by_name.contains_key(name) {
+                    return false;
+                }
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free") {
+                    return false;
+                }
+            }
+            ExprKind::GenericCall { .. } => return false,
+            _ => {}
+        }
+        matches!(self.types.get(&callee.span), Some(Ty::Fn(..)))
+    }
+
+    /// A closure-valued callee: load its body address out of slot 0 and call it
+    /// indirectly. The first argument is the closure object itself, so the
+    /// hoisted body can copy its captures out, mirroring the static-call arg
+    /// handling for the remaining arguments.
+    fn fn_value_call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
+        let Some(Ty::Fn(pty, prt)) = self.types.get(&callee.span).cloned() else {
+            return self.bad(callee.span, "function-valued call has no signature");
+        };
+        let obj = self.expr(callee)?;
+        let zero = self.int_const(0);
+        let addr_boxed = self.extern_call_t1(
+            "pickle_obj_slot_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![obj, zero],
+        )?;
+        let fn_addr =
+            self.extern_call_t1("pickle_unbox_i64", vec![IrTy::Ptr], IrTy::Int, vec![addr_boxed])?;
+        let mut ir_params = vec![IrTy::Ptr];
+        let mut iargs = vec![obj];
+        for (i, a) in args.iter().enumerate() {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            let src = pty.get(i).cloned();
+            let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+            let t = self.borrow_arg(src.as_ref(), a)?;
+            let maps_ptr = match src.as_ref() {
+                Some(st) => matches!(self.map_ty(st, a.span), Ok(IrTy::Ptr)),
+                None => false,
+            };
+            let t = if !is_ref && maps_ptr {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(t, &vt, a.value.span)?
+            } else {
+                t
+            };
+            let ir = match src.as_ref() {
+                Some(st) => self.map_ty(st, a.span).unwrap_or(IrTy::Ptr),
+                None => IrTy::Ptr,
+            };
+            ir_params.push(ir);
+            iargs.push(t);
+        }
+        let ir_ret = self.map_ty(&prt, e.span).unwrap_or(IrTy::Unit);
+        let dst = self.temp();
+        self.instr(IrInstr::CallInd {
+            dst: Some(dst),
+            fn_addr,
+            params: ir_params,
+            ret: ir_ret,
+            args: iargs,
+        });
+        Ok(dst)
+    }
+
+    /// A closure object holding `fid`'s code address (boxed) in slot 0 and the
+    /// given captures (boxed like list elements) in slots 1..N. The slot layout
+    /// must match the hoisted body's reads in `build_lambda_body`.
+    fn closure_obj(&mut self, e: &Expr, fid: FuncId, captures: &[Capture]) -> Result<Temp, ()> {
+        let cid = self.register_closure_class(captures.len(), e.span)?;
+        let cid_t = self.int_const(cid as i64);
+        let n_t = self.int_const((captures.len() + 1) as i64);
+        let obj = self.extern_call_t1(
+            "pickle_class_new",
+            vec![IrTy::Int, IrTy::Int],
+            IrTy::Ptr,
+            vec![cid_t, n_t],
+        )?;
+        let addr = self.temp();
+        self.instr(IrInstr::Const {
+            dst: addr,
+            c: IrConst::FuncAddr(fid),
+        });
+        let boxed =
+            self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![addr])?;
+        let zero = self.int_const(0);
+        self.extern_call_void(
+            "pickle_obj_slot_set",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+            vec![obj, zero, boxed],
+        );
+        for (i, cap) in captures.iter().enumerate() {
+            let Some(slot) = self.lookup(&cap.name) else {
+                return self.bad(
+                    cap.span,
+                    format!("cannot capture `{}` (not in scope here)", cap.name),
+                );
+            };
+            let v = self.load(slot);
+            let vt = self.ty_of(&cap.span).unwrap_or_else(|| cap.ty.clone());
+            let rep = self.elem_rep(&cap.ty, cap.span)?;
+            let packed = self.pack_for_pointer_boundary(&rep, v, &vt, cap.span)?;
+            let boxed = self.box_for_store(&rep, packed, elem_ir(&cap.ty))?;
+            let idx = self.int_const((1 + i) as i64);
+            self.extern_call_void(
+                "pickle_obj_slot_set",
+                vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+                vec![obj, idx, boxed],
+            );
+        }
+        Ok(obj)
+    }
+
+    /// Lower a lambda expression to a closure object whose slot 0 holds the
+    /// address of its pre-registered hoisted body.
+    fn lambda_value(&mut self, e: &Expr) -> Result<Temp, ()> {
+        let Some(&fid) = self.lambda_fids.get(&e.span) else {
+            return self.bad(e.span, "this lambda was not registered for lowering");
+        };
+        let caps = self.lambda_caps.get(&e.span).cloned().unwrap_or_default();
+        self.closure_obj(e, fid, &caps)
+    }
+
+    /// A top-level function referenced as a value: wrap its forwarder trampoline
+    /// (not the function itself) in a zero-capture closure object, so the
+    /// dynamic-call convention -- closure object first, then the real
+    /// arguments -- applies to module functions exactly as to hoisted lambda
+    /// bodies.
+    fn fn_value_closure(&mut self, e: &Expr, _fid: FuncId) -> Result<Temp, ()> {
+        let Some(&tramp) = self.fn_tramp.get(&e.span) else {
+            return self.bad(e.span, "function value was not registered for dynamic dispatch");
+        };
+        self.closure_obj(e, tramp, &[])
+    }
+
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
         if let ExprKind::Member { object, name } = &callee.kind {
             // `.free()` on a `#[manualAlloc]` binding releases the object.
@@ -4021,6 +5013,14 @@ impl<'a> Emitter<'a> {
                 }
             }
             return self.method_call(e, object, name, args);
+        }
+        // A function-valued callee that is not a plain named call (a closure
+        // variable, a function-typed parameter, a call result, ...) dispatches
+        // dynamically through the closure's stored address. Member callees and
+        // statically-resolvable name calls were handled above, so this branch
+        // only ever sees values of `fn` type.
+        if self.is_fn_dispatchable(callee) {
+            return self.fn_value_call(e, callee, args);
         }
         let ExprKind::Ident(name) = &callee.kind else {
             return self.bad(e.span, "only plain function calls are lowered yet");
@@ -4807,7 +5807,10 @@ impl<'a> Emitter<'a> {
                 let _ = span;
                 Ok(IrTy::Ptr)
             }
-            Ty::Fn(..) => self.bad(span, "function values are not lowered yet"),
+            Ty::Fn(..) => {
+                let _ = span;
+                Ok(IrTy::Ptr)
+            }
             Ty::Unknown => self.bad(span, "untyped expression cannot be lowered"),
             Ty::Var(_) => self.bad(span, "generic functions are not lowered yet"),
         }
@@ -5011,3 +6014,18 @@ fn assign_opcode(op: AssignOp) -> IrBinOp {
         AssignOp::Assign => IrBinOp::Add,
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

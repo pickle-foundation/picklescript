@@ -3069,7 +3069,18 @@ impl<'a> Checker<'a> {
         let ret = if let Some(ty) = return_ty {
             self.resolved_fn_ty(ty, &self.fn_generics)
         } else {
-            Ty::Unknown
+            // No annotation: infer the return type from the body tail, exactly
+            // like the emitter's pre-pass will for the hoisted function.
+            match body {
+                FnBody::Expr(be) => self.types.get(&be.span).cloned().unwrap_or(Ty::Empty),
+                FnBody::Block(bb) => {
+                    if let Some(be) = &bb.expr {
+                        self.types.get(&be.span).cloned().unwrap_or(Ty::Empty)
+                    } else {
+                        Ty::Empty
+                    }
+                }
+            }
         };
         self.ret_ty = saved_ret;
         self.pop_scope();

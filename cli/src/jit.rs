@@ -307,6 +307,11 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                         tt.insert(d.0, ret);
                     }
                 }
+                IrInstr::CallInd { dst, ret, .. } => {
+                    if let Some(d) = dst {
+                        tt.insert(d.0, *ret);
+                    }
+                }
             }
         }
     }
@@ -809,6 +814,26 @@ fn lower_instr(
                 }
             }
         }
+        IrInstr::CallInd { dst, fn_addr, params, ret, args } => {
+            let mut iargs: Vec<Value> = Vec::with_capacity(args.len());
+            for a in args {
+                iargs.push(*values.get(&a.0).context("callind arg")?);
+            }
+            let addr = *values.get(&fn_addr.0).context("callind address")?;
+            let s = builder.import_signature(extern_signature(params.as_slice(), *ret));
+            let inst = builder.ins().call_indirect(s, addr, &iargs);
+            if let Some(d) = dst {
+                let v = builder
+                    .inst_results(inst)
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| unit_value(builder));
+                values.insert(d.0, v);
+                if is_managed(*ret) {
+                    write_through(builder, plan, frame, d.0, v);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1177,7 +1202,38 @@ impl Jit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pickle_compiler::diag::{DiagnosticSink, SourceMap};
+    use pickle_compiler::front::frontend;
     use pickle_compiler::ir::{BlockId, ExternId, IrBlock, IrExtern, StrId, Temp};
+    use std::sync::Once;
+
+    /// The test binary spins tests up on several threads, and the runtime is a
+    /// process global -- so bring it up exactly once and leave it up.
+    static RUNTIME_ONCE: Once = Once::new();
+
+    fn bring_up_runtime() {
+        RUNTIME_ONCE.call_once(|| {
+            abi::pickle_runtime_init();
+        });
+    }
+
+    /// Compile a source module (front-end + check + lower) and run it through
+    /// the JIT with a live runtime. Returns the module so tests can assert on
+    /// the lowered shape after the fact.
+    fn run_source(src: &str) -> IrModule {
+        let mut map = SourceMap::default();
+        let diags = DiagnosticSink::new();
+        let module = frontend("test.pkl", src, &mut map, &diags)
+            .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags))
+            .unwrap_or_else(|| panic!("front-end failed:\n{}", diags.render_all(&map, false)));
+        bring_up_runtime();
+        let jit = Jit::new().expect("jit");
+        let prog = jit.compile(&module).expect("jit compile");
+        unsafe {
+            prog.run();
+        }
+        module
+    }
 
     fn trivial_module() -> IrModule {
         let mut module = IrModule::default();
@@ -1258,9 +1314,54 @@ mod tests {
         });
 
         // The collectable runner does its own bring-up like the binary.
-        abi::pickle_runtime_init();
+        bring_up_runtime();
         let prog = jit.compile(&module).expect("compile");
         unsafe { prog.run() };
-        abi::pickle_runtime_shutdown();
+    }
+
+    /// End-to-end: a program using zero-capture lambdas, capturing closures,
+    /// returned closures, and a module function used as a value runs correctly
+    /// through the whole supply chain (front-end, checker, emitter, JIT,
+    /// runtime). Expected prints appear on stdout (canonical output is asserted
+    /// manually/at the integration level); here we assert the lowered shape
+    /// that makes the closed-over captures and function values dispatch
+    /// dynamically.
+    #[test]
+    fn run_closures_end_to_end() {
+        let m = run_source(
+            r#"fn base(x: int) -> int {
+                x * 10
+            }
+
+            fn wrap(f: fn (int) -> int, n: int) -> int {
+                return f(n) + 1
+            }
+
+            fn main() {
+                let same = (x: int) => x
+                println(same(21))
+                let by = base
+                println(by(4))
+                let k = 3
+                let mul = (n: int) => n * k
+                println(mul(6))
+                let b = 100
+                let add = (n: int) => n + b
+                println(wrap(add, 1))
+                println(same(21))
+            }"#,
+        );
+        let dump = format!("{m}");
+        let callinds = m
+            .funcs
+            .iter()
+            .filter(|f| f.name == "main")
+            .flat_map(|f| &f.blocks)
+            .flat_map(|b| &b.instrs)
+            .filter(|i| matches!(i, IrInstr::CallInd { .. }))
+            .count();
+        assert_eq!(callinds, 4, "4 dynamic calls (same, by, mul, add via wrap):\n{dump}");
+        let tramps = m.funcs.iter().filter(|f| f.symbol.starts_with("pkl_tramp_")).count();
+        assert_eq!(tramps, 1, "one fn-value trampoline for `base`:\n{dump}");
     }
 }

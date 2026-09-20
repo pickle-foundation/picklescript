@@ -106,8 +106,19 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
   `greet("Sam")`, `greet(name: "Sam")`, `moveTo(x: 10, y: 20)`.
 - Overloads resolved by argument types (arity + types). Default arguments
   fill the tail.
-- Lambda: `(x) -> x * 2`, `(x, y) -> x + y`, and block form
-  `fn (x: int) -> int { x * x }`.
+- Lambda (expression body): `(x) => x * 2`, `(x, y) => x + y`.
+- Lambda (block body, explicit return type): `(x: int) -> int { x * x }`.
+- Lambda parameters can be annotated individually: `(x: int) => x`. Type
+  annotations are required when the checker has no other context to infer
+  from; an untyped `(x) => x` with no expected type is an error.
+- Closures capture their free variables by value. A capturing lambda is
+  lowered to a hoisted body of the form `fn (env: ptr, args...)` plus an
+  object holding the capture; a module-level function used as a value
+  (`let by = add`) gets a generated forwarder so the same calling convention
+  applies in both cases. See `examples/closures`.
+- Calling through `fn`-typed values (lambda variables, function parameters,
+  call results) is a dynamic call; it works under both `pickle run` (JIT) and
+  `pickle build` (AOT).
 
 ## Operators
 

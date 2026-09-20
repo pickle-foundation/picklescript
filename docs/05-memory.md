@@ -323,6 +323,17 @@ The runtime exports a C ABI (`extern "C"`) surface:
 The compiler generates code against this ABI; a future FFI layer reuses the
 same surface.
 
+## Closures
+
+A closure value is a managed object of a synthetic per-capture-count class
+(`__closure_N`, one class for every supported number of captures). Its slot 0
+holds the hoisted body's code address; slots 1..N hold the captured values,
+boxed like list elements and marked as traced fields. Because the captures
+live in a traced object, a closure keeps them alive as long as the closure
+itself is reachable, and a closure returned from a function (or stored in
+another object) behaves like any other value. See `docs/02-syntax.md` for the
+source-level rules and `examples/closures`.
+
 ## Object layout
 
 ```

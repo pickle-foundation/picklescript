@@ -1907,4 +1907,103 @@ fn emits_borrowed_lists_deref_for_iteration() {
     );
 }
 
+#[test]
+fn emits_zero_capture_lambda_and_fn_value_trampoline() {
+    let m = emit_str(
+        r#"fn add(a: int, b: int) -> int {
+            a + b
+        }
+
+        fn main() {
+            let id = add
+            let same = (x: int) => x
+            println(same(21))
+            println(id(40, 2))
+        }"#,
+    );
+    let dump = format!("{m}");
+    // Zero-capture lambda -- one hoisted body whose parameters are the closure
+    // object plus the lambda's own argument (nothing else).
+    let same = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol.starts_with("pkl_closure_"))
+        .expect("zero-capture lambda hoist");
+    assert_eq!(same.params.len(), 2, "env + x only, got:\n{dump}");
+    assert_eq!(same.params[0].ty, IrTy::Ptr, "first param is the closure:\n{dump}");
+    // A module function used as a value gets a forwarder trampoline so its ABI
+    // matches a hoisted lambda body (closure first, then the real args).
+    let tramp = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol.starts_with("pkl_tramp_"))
+        .expect("fn-value trampoline");
+    assert_eq!(tramp.params.len(), 3, "env + a + b, got:\n{dump}");
+    let add_fid = add_id(&m);
+    assert!(
+        tramp
+            .blocks
+            .iter()
+            .any(|b| b.instrs.iter().any(|i| matches!(
+                i,
+                IrInstr::Call { callee: Callee::Func(f), .. } if f.0 == add_fid
+            ))),
+        "trampoline must call `add`:\n{dump}"
+    );
+    // Dynamic dispatch for the lambda and the fn value.
+    let main = m.funcs.iter().find(|f| f.is_main).expect("main");
+    assert!(
+        main.blocks
+            .iter()
+            .any(|b| b.instrs.iter().any(|i| matches!(i, IrInstr::CallInd { .. }))),
+        "main must dispatch closures dynamically:\n{dump}"
+    );
+    assert!(
+        m.externs.iter().any(|e| e.symbol == "pickle_class_new"),
+        "closure objects are allocated via the runtime:\n{}",
+        dump
+    );
+}
+
+#[test]
+fn emits_capturing_lambda_closure() {
+    let m = emit_str(
+        r#"fn make(base: int) -> fn (int) -> int {
+            return (x: int) => x + base
+        }
+
+        fn main() {
+            let f = make(7)
+            println(f(1))
+        }"#,
+    );
+    let dump = format!("{m}");
+    // env at slot 0, the lambda's own parameter next (it is delivered by
+    // argument order), and the capture read into a slot after every parameter.
+    let body = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol.starts_with("pkl_closure_"))
+        .expect("capturing closure hoist");
+    assert_eq!(body.slots.len(), 3, "env + x + capture:\n{dump}");
+    assert!(
+        body.blocks.iter().any(|b| b.instrs.iter().any(|i| matches!(
+            i,
+            IrInstr::Call { callee: Callee::Extern(e), args, .. }
+                if m.externs[e.0].symbol == "pickle_obj_slot_get" && args.len() == 2
+        ))),
+        "hoist must read the capture out of the closure object:\n{dump}"
+    );
+    // The factory stores the boxed capture into slot 1 of the closure object.
+    let make = m.funcs.iter().find(|f| f.name == "make").expect("make");
+    assert!(
+        make.blocks.iter().flat_map(|b| &b.instrs).any(|i| matches!(
+            i,
+            IrInstr::Call { callee: Callee::Extern(e), args, .. }
+                if m.externs[e.0].symbol == "pickle_obj_slot_set" && args.len() == 3
+        )),
+        "the factory must store the capture into the closure object:\n{dump}"
+    );
+}
+
 

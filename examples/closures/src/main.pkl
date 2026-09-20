@@ -1,0 +1,27 @@
+// Closures: zero-capture lambdas, captured values, a closure returned from a
+// function, and a module function used as a value. All four dispatch through
+// the same dynamic-call ABI, so they behave identically under `pickle run`
+// (JIT) and `pickle build` (native).
+
+fn apply_twice(f: fn (int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+
+fn make_adder(base: int) -> fn (int) -> int {
+    return (x: int) => x + base
+}
+
+fn main() {
+    let same = (x: int) => x
+    println(apply_twice(same, 21))
+
+    let by = add
+    println(by(40, 2))
+
+    let add10 = make_adder(10)
+    println(apply_twice(add10, 1))
+}
