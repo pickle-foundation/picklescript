@@ -820,6 +820,67 @@ impl<'a> Checker<'a> {
         self.pop_scope();
     }
 
+    /// Validate `#[...]` field attributes and report whether the field is
+    /// `#[manualAlloc]` (owned, freed recursively with its object).
+    fn check_field_attributes(
+        &mut self,
+        attrs: &[Attribute],
+        ty: Option<&Ty>,
+        is_static: bool,
+        is_const: bool,
+        span: Span,
+    ) -> bool {
+        let mut manual = false;
+        for a in attrs {
+            match a.name.as_str() {
+                "manualAlloc" => {
+                    if !a.args.is_empty() {
+                        self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                    }
+                    if manual {
+                        self.err(a.span, "duplicate `#[manualAlloc]` attribute");
+                    }
+                    manual = true;
+                }
+                other => self.err(a.span, format!("unknown attribute `#[{other}]`")),
+            }
+        }
+        if manual {
+            if is_static {
+                self.err(span, "`#[manualAlloc]` is not supported on static fields");
+            }
+            if is_const {
+                self.err(span, "`#[manualAlloc]` is not supported on constants");
+            }
+            if let Some(t) = ty {
+                if !matches!(t, Ty::Class(..) | Ty::Struct(..)) {
+                    self.err_note(
+                        span,
+                        format!("`#[manualAlloc]` field must be a class or struct type, found `{t}`"),
+                        "ownership applies to class/struct instances",
+                    );
+                }
+            }
+        }
+        manual
+    }
+
+    /// Treat `value` as an owned position: move a manual binding, accept a fresh
+    /// allocation, or reject anything else. `what` names the destination.
+    fn consume_into_owned(&mut self, value: &Expr, span: Span, what: &str) {
+        if let Some(src) = self.manual_move_source(value) {
+            self.mark_moved(&src);
+        } else if self.is_fresh_allocation(value) {
+            self.consume_owned(value);
+        } else {
+            self.err_note(
+                span,
+                format!("{what} takes ownership of its value"),
+                "assign a `#[manualAlloc]` binding or a fresh allocation",
+            );
+        }
+    }
+
     /// Validate `#[...]` attributes on a parameter and report whether it is
     /// `#[manualAlloc]` (the function takes ownership of the argument).
     fn check_param_attributes(&mut self, p: &Param) -> bool {
@@ -1230,7 +1291,15 @@ impl<'a> Checker<'a> {
 
         for m in &c.members {
             match m {
-                ClassMember::Field { init: Some(e), ty, span, .. } => {
+                ClassMember::Field {
+                    attrs,
+                    init: Some(e),
+                    ty,
+                    span,
+                    is_static,
+                    const_,
+                    ..
+                } => {
                     let ft = self.check_expr(e);
                     let w = ty
                         .as_ref()
@@ -1250,11 +1319,53 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                         });
+                    let w = match w {
+                        Some(t) if !matches!(t, Ty::Unknown) => Some(t),
+                        _ => Some(ft.clone()),
+                    };
+                    let manual =
+                        self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
+                    if manual && ty.is_none() {
+                        self.err(
+                            *span,
+                            format!(
+                                "owned field `{}` needs an explicit type annotation",
+                                m.name()
+                            ),
+                        );
+                    }
                     if let Some(w) = w {
                         self.check_assignable(&w, &ft, *span, "field initializer");
                     }
+                    if manual {
+                        self.consume_into_owned(e, *span, "owned field");
+                    }
                 }
-                ClassMember::Field { init: None, .. } => {}
+                ClassMember::Field {
+                    attrs,
+                    init: None,
+                    ty,
+                    span,
+                    is_static,
+                    const_,
+                    ..
+                } => {
+                    let w = ty
+                        .as_ref()
+                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    let manual =
+                        self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
+                    if manual {
+                        self.err_note(
+                            *span,
+                            format!(
+                                "owned field `{}` must be initialized where it is declared",
+                                m.name()
+                            ),
+                            "give it an initializer such as `= Node(...)`",
+                        );
+                    }
+                }
                 ClassMember::Const { value, ty, span, .. } => {
                     let vt = self.check_expr(value);
                     if let Some(t) = ty {
@@ -1326,7 +1437,15 @@ impl<'a> Checker<'a> {
             .collect();
         for m in &s.members {
             match m {
-                ClassMember::Field { init: Some(e), ty, span, .. } => {
+                ClassMember::Field {
+                    attrs,
+                    init: Some(e),
+                    ty,
+                    span,
+                    is_static,
+                    const_,
+                    ..
+                } => {
                     let ft = self.check_expr(e);
                     let w = ty
                         .as_ref()
@@ -1344,11 +1463,53 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                         });
+                    let w = match w {
+                        Some(t) if !matches!(t, Ty::Unknown) => Some(t),
+                        _ => Some(ft.clone()),
+                    };
+                    let manual =
+                        self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
+                    if manual && ty.is_none() {
+                        self.err(
+                            *span,
+                            format!(
+                                "owned field `{}` needs an explicit type annotation",
+                                m.name()
+                            ),
+                        );
+                    }
                     if let Some(w) = w {
                         self.check_assignable(&w, &ft, *span, "field initializer");
                     }
+                    if manual {
+                        self.consume_into_owned(e, *span, "owned field");
+                    }
                 }
-                ClassMember::Field { init: None, .. } => {}
+                ClassMember::Field {
+                    attrs,
+                    init: None,
+                    ty,
+                    span,
+                    is_static,
+                    const_,
+                    ..
+                } => {
+                    let w = ty
+                        .as_ref()
+                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    let manual =
+                        self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
+                    if manual {
+                        self.err_note(
+                            *span,
+                            format!(
+                                "owned field `{}` must be initialized where it is declared",
+                                m.name()
+                            ),
+                            "give it an initializer such as `= Node(...)`",
+                        );
+                    }
+                }
                 ClassMember::Method(md) => self.check_method_body(md, &table),
                 ClassMember::Property(p) => self.check_property_bodies(p, &table.generics),
                 _ => {}
@@ -2369,7 +2530,13 @@ impl<'a> Checker<'a> {
                                             format!("cannot assign to immutable field `{name}`"),
                                         );
                                     }
-                                    if let Some(src) = &moved_from {
+                                    if f.0.manual {
+                                        self.consume_into_owned(
+                                            value,
+                                            target.span,
+                                            &format!("owned field `{name}`"),
+                                        );
+                                    } else if let Some(src) = &moved_from {
                                         self.err_note(
                                             target.span,
                                             format!(
@@ -2391,15 +2558,6 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Member { object, name } => {
-                if let Some(src) = &moved_from {
-                    self.err_note(
-                        target.span,
-                        format!(
-                            "cannot store `#[manualAlloc]` value `{src}` in managed field `{name}`"
-                        ),
-                        "an owned value must stay in an owned position",
-                    );
-                }
     // Type-qualified static property assignment: `Type.prop = v`.
     if let ExprKind::Ident(tname) = &object.kind {
         if let Some(entry) = self.resolved.types.get(tname) {
@@ -2459,6 +2617,20 @@ impl<'a> Checker<'a> {
                             self.err(
                                 target.span,
                                 format!("cannot assign to immutable field `{name}`"),
+                            );
+                        } else if f.0.manual {
+                            self.consume_into_owned(
+                                value,
+                                target.span,
+                                &format!("owned field `{name}`"),
+                            );
+                        } else if let Some(src) = &moved_from {
+                            self.err_note(
+                                target.span,
+                                format!(
+                                    "cannot store `#[manualAlloc]` value `{src}` in managed field `{name}`"
+                                ),
+                                "an owned value must stay in an owned position",
                             );
                         }
                         self.check_assignable(&f.0.ty, &vt, target.span, "assignment");

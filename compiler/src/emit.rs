@@ -1030,7 +1030,18 @@ impl<'a> Emitter<'a> {
         // fields through `this`.
         for &(slot, init) in inits {
             let ty = ifields[slot].ty.clone();
+            let manual = ifields[slot].manual;
             let v = self.expr(init)?;
+            let v = if manual {
+                self.extern_call_t1(
+                    "pickle_manual_adopt",
+                    vec![IrTy::Ptr],
+                    IrTy::Ptr,
+                    vec![v],
+                )?
+            } else {
+                v
+            };
             let rep = self.elem_rep(&ty, table.span)?;
             let vt = self.ty_of(&init.span).unwrap_or(Ty::Unknown);
             let packed = self.pack_for_pointer_boundary(&rep, v, &vt, init.span)?;
@@ -1256,8 +1267,8 @@ impl<'a> Emitter<'a> {
 
     /// Register every user class descriptor at the top of `main`'s entry block.
     /// Each is a
-    /// `pickle_class_register(name_ptr, name_len, slot_count, mask, finalizer,
-    /// parent)` void call; the returned id is discarded (call sites hardcode
+    /// `pickle_class_register(name_ptr, name_len, slot_count, mask, owned_mask,
+    /// finalizer, parent)` void call; the returned id is discarded (call sites hardcode
     /// it). `finalizer` is the address of the class's `pkl_<Name>_deinit`
     /// function, or 0 when it has no `deinit` block; `parent` is the
     /// superclass id, or 0 for a root class.
@@ -1265,20 +1276,28 @@ impl<'a> Emitter<'a> {
         if self.classes.is_empty() {
             return;
         }
-        let plans: Vec<(String, usize, u32, u32)> = self
+        let plans: Vec<(String, usize, u32, u32, u64)> = self
             .classes
             .iter()
             .map(|p| {
+                let fields = self.all_instance_fields(&p.name);
+                let mut owned: u64 = 0;
+                for (i, f) in fields.iter().enumerate() {
+                    if f.manual && i < 64 {
+                        owned |= 1u64 << i;
+                    }
+                }
                 (
                     p.name.clone(),
                     self.total_instance_slot_count(&p.name),
                     p.class_id,
                     p.parent.unwrap_or(0),
+                    owned,
                 )
             })
             .collect();
         let mut instrs: Vec<IrInstr> = Vec::new();
-        for (name, field_count, cid, parent) in plans {
+        for (name, field_count, cid, parent, owned) in plans {
             let sid = StrId(self.intern_string(&name));
             let addr = self.temp();
             instrs.push(IrInstr::Const {
@@ -1301,6 +1320,11 @@ impl<'a> Emitter<'a> {
                 dst: mask,
                 c: IrConst::Int(m as i64),
             });
+            let owned_mask = self.temp();
+            instrs.push(IrInstr::Const {
+                dst: owned_mask,
+                c: IrConst::Int(owned as i64),
+            });
             let fin = self.temp();
             let c = match self.deinit_ids.get(&cid) {
                 Some(fid) => IrConst::FuncAddr(*fid),
@@ -1321,13 +1345,14 @@ impl<'a> Emitter<'a> {
                     IrTy::Int,
                     IrTy::Int,
                     IrTy::Int,
+                    IrTy::Int,
                 ],
                 ret: IrTy::Unit,
             });
             instrs.push(IrInstr::Call {
                 dst: None,
                 callee: Callee::Extern(ex),
-                args: vec![addr, len, n, mask, fin, par],
+                args: vec![addr, len, n, mask, owned_mask, fin, par],
             });
         }
         if let Some(fid) = self.static_init_id {
@@ -2676,8 +2701,9 @@ impl<'a> Emitter<'a> {
         if let Some(cid) = self.owner {
             if let Some(idx) = self.instance_field_index(cid, name) {
                 let field_ty = self.field_at(cid, idx).ty.clone();
+                let owned = self.field_at(cid, idx).manual;
                 let this = self.this_value(e)?;
-                return self.field_assign(e.span, op, this, &field_ty, idx, v, &vt);
+                return self.field_assign(e.span, op, this, &field_ty, idx, v, &vt, owned);
             }
             // A bare name may also be a static field of the enclosing class.
             if let Some((slot, info)) = self.static_field(cid, name) {
@@ -2791,10 +2817,11 @@ impl<'a> Emitter<'a> {
             );
         };
         let field_ty = self.field_at(cid as i64, idx).ty.clone();
+        let owned = self.field_at(cid as i64, idx).manual;
         let v = self.expr(value)?;
         let vvt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
         let obj = self.expr(object)?;
-        self.field_assign(e.span, op, obj, &field_ty, idx, v, &vvt)
+        self.field_assign(e.span, op, obj, &field_ty, idx, v, &vvt, owned)
     }
 
     /// Read-modify-write/plain store of one field slot.
@@ -2808,9 +2835,31 @@ impl<'a> Emitter<'a> {
         slot: usize,
         v: Temp,
         vt: &Ty,
+        owned: bool,
     ) -> Result<Temp, ()> {
         let rep = self.elem_rep(field_ty, span)?;
         if op == AssignOp::Assign {
+            if owned {
+                // Replacing an owned field releases the value it held.
+                let idx = self.int_const(slot as i64);
+                let old = self.extern_call_t1(
+                    "pickle_obj_slot_get",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![obj, idx],
+                )?;
+                let v = self.extern_call_t1(
+                    "pickle_manual_adopt",
+                    vec![IrTy::Ptr],
+                    IrTy::Ptr,
+                    vec![v],
+                )?;
+                let packed = self.pack_for_pointer_boundary(&rep, v, vt, span)?;
+                let boxed = self.box_for_store(&rep, packed, elem_ir(field_ty))?;
+                self.field_store(obj, slot as i64, field_ty, boxed);
+                self.extern_call_void("pickle_manual_free", vec![IrTy::Ptr], vec![old]);
+                return Ok(v);
+            }
             let packed = self.pack_for_pointer_boundary(&rep, v, vt, span)?;
             let boxed = self.box_for_store(&rep, packed, elem_ir(field_ty))?;
             self.field_store(obj, slot as i64, field_ty, boxed);

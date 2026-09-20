@@ -53,6 +53,10 @@ pub struct Gc {
     /// Objects owned by `#[manualAlloc]` bindings. Always traced as roots and
     /// never swept; released only by `pickle_manual_free`.
     manual_objects: Vec<*mut PickleObject>,
+    /// Owned (`#[manualAlloc]`) field mask per registered class id: bit `i`
+    /// marks payload slot `i` as an owned object freed recursively with its
+    /// holder.
+    class_owned_mask: Vec<u64>,
 }
 
 impl Gc {
@@ -63,6 +67,7 @@ impl Gc {
             class_parents: Vec::new(),
             live_bytes: AtomicU32::new(0),
             manual_objects: Vec::new(),
+            class_owned_mask: Vec::new(),
         }
     }
 
@@ -104,7 +109,60 @@ impl Gc {
     pub fn register_class(&mut self, d: crate::object::ClassDescriptor) -> u32 {
         let id = self.descriptors.register(d);
         self.class_parents.push(0);
+        self.class_owned_mask.push(0);
         id
+    }
+
+    /// Record which payload slots of `class_id` are owned (`#[manualAlloc]`)
+    /// fields, freed recursively with their holder.
+    pub fn set_class_owned_mask(&mut self, class_id: u32, mask: u64) {
+        let idx = class_id as usize;
+        if self.class_owned_mask.len() <= idx {
+            self.class_owned_mask.resize(idx + 1, 0);
+        }
+        self.class_owned_mask[idx] = mask;
+    }
+
+    /// Owned-field mask of `class_id` (0 for builtins / no owned fields).
+    pub fn class_owned_mask(&self, class_id: u32) -> u64 {
+        self.class_owned_mask.get(class_id as usize).copied().unwrap_or(0)
+    }
+
+    /// Non-null owned children of `obj`, in slot order.
+    unsafe fn owned_children(&self, obj: *mut PickleObject) -> Vec<*mut PickleObject> {
+        let mut out = Vec::new();
+        let mask = self.class_owned_mask((*obj).class_id);
+        if mask == 0 {
+            return out;
+        }
+        let slot_ptr = (*obj).payload_mut() as *mut *mut PickleObject;
+        let mut bit = 0;
+        while bit < 64 {
+            if mask & (1u64 << bit) != 0 {
+                let child = slot_ptr.add(bit).read();
+                if !child.is_null() {
+                    out.push(child);
+                }
+            }
+            bit += 1;
+        }
+        out
+    }
+
+    /// Recursively release every owned (`#[manualAlloc]`) field of `obj`.
+    /// Children already released (or involved in an ownership cycle) are
+    /// skipped: `manual_free` deregisters a block before recursing, so a back
+    /// edge can never free the same block twice or loop forever.
+    pub fn free_owned_fields(&mut self, obj: *mut PickleObject) {
+        if obj.is_null() {
+            return;
+        }
+        let children = unsafe { self.owned_children(obj) };
+        for child in children {
+            if self.manual_objects.contains(&child) {
+                self.manual_free(child);
+            }
+        }
     }
 
     /// Record the superclass id of a registered class.
@@ -147,6 +205,7 @@ impl Gc {
         // alias the collector's `&mut Heap`.
         let heap = &mut self.heap;
         let descriptors_sweep = &self.descriptors;
+        let owned_masks = &self.class_owned_mask;
         let mut live: u32 = 0;
         let deferred = heap.sweep(
             |obj| {
@@ -181,6 +240,9 @@ impl Gc {
                 descriptors_sweep
                     .get(class_id)
                     .is_some_and(|d| d.flags & PICKLE_CLASS_FLAG_FINALIZER != 0)
+                    // Objects that own `#[manualAlloc]` fields must be deferred
+                    // so those fields can be released after the heap borrow.
+                    || owned_masks.get(class_id as usize).copied().unwrap_or(0) != 0
             },
         );
         self.live_bytes.store(live, Ordering::Relaxed);
@@ -192,9 +254,12 @@ impl Gc {
             unsafe {
                 let class_id = (**obj).class_id;
                 if let Some(d) = self.descriptors.get(class_id) {
-                    (d.finalizer)(*obj);
+                    if d.flags & PICKLE_CLASS_FLAG_FINALIZER != 0 {
+                        (d.finalizer)(*obj);
+                    }
                 }
             }
+            self.free_owned_fields(*obj);
         }
         for obj in deferred {
             self.heap.free_object(obj);
@@ -246,6 +311,8 @@ impl Gc {
                 (d.finalizer)(obj);
             }
         }
+        // Owned fields follow their holder: release them recursively.
+        self.free_owned_fields(obj);
         unsafe {
             match class_id {
                 PICKLE_CLASS_LIST => {
@@ -703,5 +770,65 @@ mod tests {
         let cls = leaf_class(gc);
         let obj = gc.alloc(48, cls);
         gc.manual_free(obj);
+    }
+
+    /// Registers an unreachable `holder` class with payload slot 0 owned.
+    fn owned_holder_class(gc: &mut Gc) -> u32 {
+        let id = gc.register_class(crate::object::ClassDescriptor {
+            name_ptr: b"holder\0".as_ptr(),
+            name_len: 6,
+            flags: 0,
+            slot_count: 1,
+            mask_words: 0,
+            managed_mask: std::ptr::null(),
+            finalizer: crate::object::builtin_nop_finalizer,
+        });
+        gc.set_class_owned_mask(id, 0b1);
+        id
+    }
+
+    #[test]
+    fn manual_free_releases_owned_fields_recursively() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        let gc = gc_mut();
+        let holder_cls = owned_holder_class(gc);
+        let leaf = leaf_class(gc);
+        let holder = gc.alloc(48, holder_cls);
+        let child = gc.alloc(48, leaf);
+        unsafe {
+            (*holder).set_slot(0, child);
+        }
+        gc.manual_adopt(holder);
+        gc.manual_adopt(child);
+        assert_eq!(gc.manual_objects.len(), 2);
+
+        gc.manual_free(holder);
+        assert!(
+            gc.manual_objects.is_empty(),
+            "freeing a holder must release its owned child"
+        );
+    }
+
+    #[test]
+    fn collector_releases_owned_fields_of_dead_holder() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        let gc = gc_mut();
+        let holder_cls = owned_holder_class(gc);
+        let leaf = leaf_class(gc);
+        let child = gc.alloc(48, leaf);
+        gc.manual_adopt(child);
+        let holder = gc.alloc(48, holder_cls);
+        unsafe {
+            (*holder).set_slot(0, child);
+        }
+        // `holder` is not rooted anywhere: the collector must sweep it and, on
+        // the way out, release the manual child it owns.
+        gc.collect();
+        assert!(
+            gc.manual_objects.is_empty(),
+            "a dead holder must release its owned child"
+        );
     }
 }

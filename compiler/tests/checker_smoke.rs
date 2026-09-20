@@ -1393,6 +1393,181 @@ fn accepts_returning_owned_call_from_manual_fn() {
 }
 
 #[test]
+fn accepts_owned_field_from_fresh_allocation() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] child: Node = Node(1)
+        }
+
+        fn main() {
+            #[manualAlloc] let h = Holder()
+            h.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn accepts_owned_field_from_manual_binding() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] child: Node = Node(0)
+        }
+
+        fn main() {
+            #[manualAlloc] let h = Holder()
+            #[manualAlloc] let n = Node(2)
+            h.child = n
+            h.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_owned_field_from_managed_value() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] child: Node = Node(0)
+        }
+
+        fn main() {
+            #[manualAlloc] let h = Holder()
+            let n = Node(2)
+            h.child = n
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("takes ownership"),
+        "expected an ownership diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_owned_field_without_initializer() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] child: Node
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("must be initialized"),
+        "expected an initializer diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_owned_field_without_type_annotation() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] child = Node(0)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("explicit type annotation"),
+        "expected an annotation diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_owned_field_of_scalar_type() {
+    let d = check_str(
+        r#"class Holder {
+            #[manualAlloc] count: int = 0
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("must be a class or struct type"),
+        "expected a type diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_owned_static_field() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc] static var child: Node = Node(0)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("not supported on static fields"),
+        "expected a static-field diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_owned_field_with_arguments() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[manualAlloc(8)] child: Node = Node(0)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("takes no arguments"),
+        "expected an attribute diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_unknown_field_attribute() {
+    let d = check_str(
+        r#"class Node {
+            value: int
+        }
+
+        class Holder {
+            #[borrowed] child: Node = Node(0)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("unknown attribute"),
+        "expected an attribute diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
 fn rejects_unknown_member_in_subclass() {
     let d = check_str(
         r#"class Animal {

@@ -1511,7 +1511,7 @@ fn emits_deinit_finalizer_and_registration() {
         .iter()
         .find(|e| e.symbol == "pickle_class_register")
         .expect("pickle_class_register extern");
-    assert_eq!(reg.params.len(), 6, "register takes addr,len,fields,mask,finalizer,parent");
+    assert_eq!(reg.params.len(), 7, "register takes addr,len,fields,mask,owned,finalizer,parent");
     assert!(reg.params.iter().all(|t| *t == IrTy::Int));
     assert_eq!(reg.ret, IrTy::Unit);
 
@@ -1532,12 +1532,12 @@ fn emits_deinit_finalizer_and_registration() {
             _ => None,
         })
         .expect("class registration call");
-    assert_eq!(args.len(), 6);
-    let fin = args[4];
+    assert_eq!(args.len(), 7);
+    let fin = args[5];
     let is_addr = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
         matches!(i, IrInstr::Const { dst, c: IrConst::FuncAddr(g) } if *dst == fin && *g == fid)
     });
-    assert!(is_addr, "fifth registration arg must be `addrof pkl_Widget_deinit`");
+    assert!(is_addr, "sixth registration arg must be `addrof pkl_Widget_deinit`");
     assert!(format!("{m}").contains("addrof fn#"), "dump:\n{m}");
 }
 
@@ -1572,8 +1572,8 @@ fn class_without_deinit_registers_a_null_finalizer() {
             _ => None,
         })
         .expect("class registration call");
-    assert_eq!(args.len(), 6);
-    let fin = args[4];
+    assert_eq!(args.len(), 7);
+    let fin = args[5];
     let is_null = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
         matches!(i, IrInstr::Const { dst, c: IrConst::Int(0) } if *dst == fin)
     });
@@ -1613,7 +1613,7 @@ fn emits_inheritance_layout_and_super_call() {
     );
 
     // Both classes register; the superclass is registered first and the
-    // subclass records the superclass id as the sixth argument.
+    // subclass records the superclass id as the last argument.
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
     let regs: Vec<Vec<pickle_compiler::ir::Temp>> = main
         .blocks
@@ -1631,7 +1631,7 @@ fn emits_inheritance_layout_and_super_call() {
         .collect();
     assert_eq!(regs.len(), 2, "one registration per class");
     for r in &regs {
-        assert_eq!(r.len(), 6, "register takes addr,len,fields,mask,finalizer,parent");
+        assert_eq!(r.len(), 7, "register takes addr,len,fields,mask,owned,finalizer,parent");
     }
     let const_int = |t: pickle_compiler::ir::Temp| -> Option<i64> {
         main.blocks.iter().flat_map(|b| b.instrs.iter()).find_map(|i| match i {
@@ -1639,7 +1639,7 @@ fn emits_inheritance_layout_and_super_call() {
             _ => None,
         })
     };
-    let parents: Vec<i64> = regs.iter().filter_map(|r| const_int(r[5])).collect();
+    let parents: Vec<i64> = regs.iter().filter_map(|r| const_int(r[6])).collect();
     // The root has parent 0; the subclass points at the superclass id (8).
     assert!(parents.contains(&0), "root class registers parent 0, got {parents:?}");
     assert!(parents.contains(&8), "subclass registers superclass id 8, got {parents:?}");

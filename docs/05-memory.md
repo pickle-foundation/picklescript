@@ -83,9 +83,38 @@ A `#[manualAlloc]` function result must be consumed into an owned position — a
 reported as a leak. You can call an owned parameter with a fresh allocation
 directly (`consume(Widget(1))`); the callee adopts it at entry.
 
-Owned **fields** (a manual field inside a class, freed recursively) and
-cross-tier transfers into GC graphs are the next step; raw pointers live in
-`unsafe`. There are no lifetimes and no borrow checker: the model is "one
+Owned **fields** make an object responsible for a manual child. Annotate the
+field and give it an explicit type and an initializer:
+
+```
+class Node {
+    value: int
+}
+
+class Tree {
+    #[manualAlloc] root: Node = Node(0)
+}
+
+#[manualAlloc]
+let tree = Tree()
+tree.free()                   // frees `tree`, then `root`, recursively
+```
+
+- An owned field must be a `class`/`struct` type, must be an instance field
+  (not `static`/`const`), and must be assigned an explicit type plus an
+  initializer. Like any other field it can be reassigned later.
+- Assigning to an owned field takes ownership: the value must be a fresh
+  allocation or a moved `#[manualAlloc]` binding. The value the field held is
+  released first, so reassignment never leaks.
+- Freeing the holder — explicitly with `free()`, or implicitly when a
+  GC-managed holder is swept — releases its owned fields recursively. Owned
+  fields follow their holder everywhere, including through inheritance.
+- Cycles between owned fields are rejected at run time rather than looping:
+  each block is released at most once.
+
+Storing a manual value into an ordinary managed field is still a compile
+error: an owned value must stay in an owned position. Raw pointers live in
+`unsafe`; there are no lifetimes and no borrow checker — the model is "one
 owner, free it once".
 
 ## Collector

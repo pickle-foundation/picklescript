@@ -2291,6 +2291,7 @@ ty: ty.unwrap_or(TypeExpr {
 
 fn parse_class_member(&mut self) -> PResult<ClassMember> {
         let start = self.span();
+        let attrs = self.parse_attributes()?;
         let mut visibility = Visibility::Default;
         let mut is_static = false;
         let mut is_override = false;
@@ -2323,6 +2324,19 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     is_const = true;
                 }
                 _ => break,
+            }
+        }
+
+        let field_syntax = !is_const && matches!(self.kind(), Tok::Let | Tok::Var | Tok::Ident(_));
+        if !attrs.is_empty() && !field_syntax {
+            for a in &attrs {
+                self.err_at(
+                    a.span,
+                    format!(
+                        "attribute `#[{}]` is only supported on class/struct fields",
+                        a.name
+                    ),
+                );
             }
         }
 
@@ -2413,6 +2427,7 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     visibility,
                     is_static,
                     const_: false,
+                    attrs: attrs.clone(),
                     span,
                 })
             }
@@ -2439,6 +2454,7 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     visibility,
                     is_static,
                     const_: false,
+                    attrs: attrs.clone(),
                     span,
                 })
             }

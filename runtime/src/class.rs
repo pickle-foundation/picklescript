@@ -82,17 +82,20 @@ pub fn class_set_slot(obj: *mut PickleObject, index: i64, value: *mut PickleObje
 /// heap memory) and return its assigned class id. `finalizer` is the raw
 /// address of the compiled `pkl_<T>_deinit` function, or 0 when the class has
 /// no `deinit` block. `parent` is the superclass id, or 0 when the class has no
-/// superclass (builtins are never a superclass of a user class).
+/// superclass (builtins are never a superclass of a user class). `owned_mask`
+/// marks payload slots holding `#[manualAlloc]` fields, freed recursively with
+/// the object.
 #[no_mangle]
 pub extern "C" fn pickle_class_register(
     name_ptr: *const u8,
     name_len: usize,
     slot_count: usize,
     mask: u64,
+    owned_mask: u64,
     finalizer: usize,
     parent: u32,
 ) -> u32 {
-    class_register(name_ptr, name_len, slot_count, mask, finalizer, parent)
+    class_register(name_ptr, name_len, slot_count, mask, owned_mask, finalizer, parent)
 }
 
 fn class_register(
@@ -100,6 +103,7 @@ fn class_register(
     name_len: usize,
     slot_count: usize,
     mask: u64,
+    owned_mask: u64,
     finalizer: usize,
     parent: u32,
 ) -> u32 {
@@ -142,6 +146,7 @@ fn class_register(
     let g = crate::gc::gc_mut();
     let id = g.register_class(d);
     g.set_class_parent(id, parent);
+    g.set_class_owned_mask(id, owned_mask);
     id
 }
 
@@ -261,7 +266,7 @@ mod tests {
         let _guard = crate::gc::test_begin();
         crate::pickle_runtime_init();
         let name = b"Hero".to_vec();
-        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0, 0);
+        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0, 0, 0);
         assert!(id >= PICKLE_CLASS_USER_BASE, "user classes come after the builtins");
         let g = crate::gc::gc_mut();
         assert_eq!(g.class_name(id).map(|b| b.to_vec()), Some(b"Hero".to_vec()));
@@ -325,8 +330,8 @@ mod tests {
     fn class_is_walks_parent_chain() {
         let _guard = crate::gc::test_begin();
         crate::pickle_runtime_init();
-        let animal = pickle_class_register(b"Animal".as_ptr(), 6, 1, 0b1, 0, 0);
-        let dog = pickle_class_register(b"Dog".as_ptr(), 3, 1, 0b1, 0, animal);
+        let animal = pickle_class_register(b"Animal".as_ptr(), 6, 1, 0b1, 0, 0, 0);
+        let dog = pickle_class_register(b"Dog".as_ptr(), 3, 1, 0b1, 0, 0, animal);
         let gc = crate::gc::gc_mut();
         let d = class_new(dog as u64, 1, gc);
         let a = class_new(animal as u64, 1, gc);

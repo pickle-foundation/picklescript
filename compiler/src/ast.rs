@@ -484,6 +484,7 @@ pub enum ClassMember {
         visibility: Visibility,
         is_static: bool,
         const_: bool,
+        attrs: Vec<Attribute>,
         span: Span,
     },
     Method(MethodDecl),

@@ -36,6 +36,9 @@ pub struct FieldInfo {
     pub is_static: bool,
     pub mutable: bool,
     pub const_: bool,
+    /// Owned (`#[manualAlloc]`) instance field: its value is freed recursively
+    /// when the owning object is freed.
+    pub manual: bool,
     pub ty: Ty,
     pub span: Span,
 }
@@ -331,6 +334,7 @@ impl<'a> Resolver<'a> {
             is_static: true,
             mutable: false,
             const_: true,
+            manual: false,
             ty: c
                 .ty
                 .as_ref()
@@ -762,8 +766,9 @@ impl<'a> Resolver<'a> {
                     visibility,
                     is_static,
                     const_,
+                    attrs,
+                    init: _,
                     span,
-                    ..
                 } => {
                     record(name, *span);
                     fields.push(FieldInfo {
@@ -772,6 +777,7 @@ impl<'a> Resolver<'a> {
                         is_static: *is_static,
                         mutable: !const_,
                         const_: *const_,
+                        manual: attrs.iter().any(|a| a.name == "manualAlloc"),
                         ty: ty
                             .as_ref()
                             .map(|t| self.resolve_ty(t, generics))
@@ -793,6 +799,7 @@ impl<'a> Resolver<'a> {
                         is_static: true,
                         mutable: false,
                         const_: true,
+                        manual: false,
                         ty: ty
                             .as_ref()
                             .map(|t| self.resolve_ty(t, generics))
