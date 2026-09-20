@@ -10,6 +10,10 @@ use std::fmt;
 pub enum Ty {
     Bool,
     Char,
+    /// An unsigned 8-bit byte value (the element type of string indexing and
+    /// iteration). Carried at the ABI as a widened `int`; the checker keeps it
+    /// in 0..=255 so it can never be mistaken for a decoded scalar `char`.
+    Byte,
     Int,
     Float,
     String,
@@ -51,11 +55,11 @@ pub enum Ty {
 
 impl Ty {
     pub fn is_primitive(&self) -> bool {
-        matches!(self, Ty::Bool | Ty::Char | Ty::Int | Ty::Float | Ty::String)
+        matches!(self, Ty::Bool | Ty::Char | Ty::Byte | Ty::Int | Ty::Float | Ty::String)
     }
 
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Ty::Int | Ty::Float)
+        matches!(self, Ty::Int | Ty::Float | Ty::Byte)
     }
 
     /// Element type of a `List<T>`, `Map<K, V>` (value type), or `Range<T>`.
@@ -159,6 +163,7 @@ impl Ty {
         match self {
             Ty::Bool => "bool".into(),
             Ty::Char => "char".into(),
+            Ty::Byte => "byte".into(),
             Ty::Int => "int".into(),
             Ty::Float => "float".into(),
             Ty::String => "string".into(),

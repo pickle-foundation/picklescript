@@ -423,15 +423,22 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
   `char` → `string` lowers to `pickle_str_from_char`, which encodes the scalar
   as UTF-8. An absent map key of type `char` reads back the zero value `'\0'`.
 - `s[i]` on a `string` lowers to `pickle_str_get`: a bounds-checked **byte**
-  read that widens to the `char` `i32` ABI (out-of-range panics). `for (c in s)`
+  read at the **`int` (`i64`) ABI** (out-of-range panics). `for (c in s)`
   iterates a string through the same path (`pickle_str_len` bound +
-  `pickle_str_get` per trip). Whether indexed or looped, non-ASCII text yields
-  the raw UTF-8 byte, never a decoded scalar — strings are byte-addressed by
-  design, matching Rust `s.as_bytes()[i]`. A scalar-exact view is the reserved
-  future `s.chars()`; nothing decodes UTF-8 implicitly today. The checker
-  rejects too-few-argument constructor calls, so a miscounted
-  synthesized-ctor call reports "expected N argument(s), found M" instead of
-  reaching a codegen crash.
+  `pickle_str_get` per trip). Whether indexed or looped, the element's static
+  type is `byte` and non-ASCII text yields the raw UTF-8 byte, never a decoded
+  scalar — strings are byte-addressed by design, matching Rust
+  `s.as_bytes()[i]`. A scalar-exact view is the reserved future `s.chars()`;
+  nothing decodes UTF-8 implicitly today. `pickle_str_get` returns `i64`, so a
+  byte plugs straight into `int` arithmetic and comparisons. A byte that needs
+  to be text again lowers to `pickle_str_from_byte`, which writes that single
+  byte, so `"{b}"` round-trips non-ASCII text; `print` of a `byte` is
+  `pickle_print_byte` (raw byte, reads back both bytes of `"é"` correctly).
+- `char` stays a Unicode scalar at the IR (`i32`) and prints/interpolates as
+  UTF-8, matching byte-level round-trips: `print(c)` lowers to
+  `pickle_print_char`. The checker rejects too-few-argument constructor
+  calls, so a miscounted synthesized-ctor call reports "expected N
+  argument(s), found M" instead of reaching a codegen crash.
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,
   which prints the class name plus `Class` fields when available.
 

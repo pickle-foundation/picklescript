@@ -1,0 +1,15 @@
+fn main() {
+    var out = ""
+    for (c in "é") {
+        out += "{c}"
+    }
+    if (out == "é") {
+        print("roundtrip-ok")
+        print(" ")
+    }
+    print('é')
+    print(" ")
+    println(len("é"))
+    print("é")
+    println("")
+}

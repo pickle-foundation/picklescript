@@ -1326,7 +1326,7 @@ impl<'a> Checker<'a> {
                     Ty::List(_) | Ty::Map(_, _) | Ty::Range(_) => {
                         st.elem().unwrap_or(Ty::Unknown)
                     }
-                    Ty::String => Ty::Char,
+                    Ty::String => Ty::Byte,
                     Ty::Unknown => Ty::Unknown,
                     other => {
                         self.err_note(
@@ -3152,7 +3152,7 @@ impl<'a> Checker<'a> {
                 if it != Ty::Unknown && it != Ty::Int {
                     self.err(e.span, "string index must be an `int`");
                 }
-                Ty::Char
+                Ty::Byte
             }
             Ty::Tuple(items) => Ty::Tuple(items.clone()),
             Ty::Ptr(inner) => {
@@ -3166,7 +3166,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 match inner.as_ref() {
-                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char => (**inner).clone(),
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => (**inner).clone(),
                     other => {
                         self.err(
                             e.span,
@@ -3300,6 +3300,40 @@ impl<'a> Checker<'a> {
         if scalar {
             return;
         }
+        // A `byte` (from string indexing/iteration) compares with an ASCII
+        // `char` literal: the literal slots into the 0..=255 byte domain. Any
+        // other `byte`/`char` mix would compare a raw byte to a decoded scalar,
+        // so it is rejected; a non-ASCII literal has no byte value at all.
+        if matches!((lt, rt), (Ty::Byte, Ty::Char) | (Ty::Char, Ty::Byte)) {
+            let char_part = match &e.kind {
+                ExprKind::Binary { lhs, rhs, .. } if *lt == Ty::Byte => rhs.as_ref(),
+                ExprKind::Binary { lhs, rhs, .. } if *rt == Ty::Byte => lhs.as_ref(),
+                _ => {
+                    self.err(
+                        e.span,
+                        "`byte` values only compare with `int`s or an ASCII `char` literal",
+                    );
+                    return;
+                }
+            };
+            if let ExprKind::Lit(Lit::Char(c)) = &char_part.kind {
+                if *c as u32 <= 0x7F {
+                    return;
+                }
+                self.err(
+                    e.span,
+                    format!(
+                        "a non-ASCII char literal has no `byte` value: `{c}` (its bytes are multi-byte UTF-8)"
+                    ),
+                );
+            } else {
+                self.err(
+                    e.span,
+                    "`byte` values only compare with `int`s or an ASCII `char` literal",
+                );
+            }
+            return;
+        }
         if eq_only && lt == rt {
             return; // identity/equality on identical types (strings, enums, ...)
         }
@@ -3347,7 +3381,7 @@ impl<'a> Checker<'a> {
                     Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) | Ty::String | Ty::Unknown => {
                         Ty::Ptr(Box::new(t))
                     }
-                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char => {
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => {
                         if !matches!(&operand.kind, ExprKind::Ident(_)) {
                             self.err(
                                 e.span,
@@ -3637,7 +3671,7 @@ impl<'a> Checker<'a> {
                 let elem_ty = match &ot {
                     Ty::List(inner) => inner.as_ref().clone(),
                     Ty::Map(_, v) => v.as_ref().clone(),
-                    Ty::String => Ty::Char,
+                    Ty::String => Ty::Byte,
                     Ty::Ptr(inner) => {
                         if it != Ty::Unknown && it != Ty::Int {
                             self.err(target.span, "pointer index must be an `int`");
@@ -3649,7 +3683,7 @@ impl<'a> Checker<'a> {
                             );
                         }
                         match inner.as_ref() {
-                            Ty::Int | Ty::Float | Ty::Bool | Ty::Char => (**inner).clone(),
+                            Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => (**inner).clone(),
                             other => {
                                 self.err(
                                     target.span,

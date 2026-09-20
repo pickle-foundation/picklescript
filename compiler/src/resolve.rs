@@ -509,6 +509,7 @@ impl<'a> TypeCtx<'a> {
         let t = match name {
             "bool" => Ty::Bool,
             "char" => Ty::Char,
+            "byte" => Ty::Byte,
             "int" | "i64" => Ty::Int,
             "float" | "f64" => Ty::Float,
             "string" => Ty::String,

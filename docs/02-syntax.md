@@ -21,7 +21,9 @@ Version 1. Files use the `.pkl` extension.
   - `"""multi\nline\nstring"""` — interpolation allowed.
 - Character literal: `'a'` — a Unicode scalar, type `char`. Strings are
   UTF-8 bytes, not `char` arrays (see the locked string/char model in
-  `04-types.md`).
+  `04-types.md`). In a `byte` comparison, an ASCII `char` literal (like
+  `s[i] == 'a'`) is accepted and lowered as its byte value; a non-ASCII
+  literal such as `'é'` has no byte value and is a compile error there.
 
 ## Statements
 
@@ -147,9 +149,12 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
 - `==` is structural for structs and enums, identity for classes unless
   overridden (`operator == (other) -> bool`).
 - Comparison operators (`==` `!=` `<` `<=` `>` `>=`) are checked against the
-  operand types: numbers (mixed `int`/`float`) and `char` pairs support every
+  operand types: numbers (mixed `int`/`float`), `byte` (treated as an `int`
+  at the ABI), and `char` pairs support every
   operator; `==`/`!=` additionally accept identical types (string, bool, enum,
-  struct, class, option, list, fn). Ordering strings/bools or comparing
+  struct, class, option, list, fn). `byte` compares with `int`/`float` and
+  with ASCII `char` literals (never with a non-ASCII literal or a `char`
+  variable). Ordering strings/bools or comparing
   mismatched types (e.g. `bool > int` from a chained `x < 3 > x / 2`) is a
   checker error.
 - `is` type test; `in` membership / map key test.

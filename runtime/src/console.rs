@@ -112,10 +112,21 @@ pub extern "C" fn pickle_print_bool(v: bool) {
     }
 }
 
-/// Print a single byte (for char).
+/// Print a single raw byte (for `byte` values). Writes the byte verbatim, so a
+/// `byte` mid-copy is preserved even inside multi-byte UTF-8 text.
 #[no_mangle]
-pub extern "C" fn pickle_print_byte(v: u8) {
-    write_to_con(&[v]);
+pub extern "C" fn pickle_print_byte(v: i64) {
+    write_to_con(&[v as u8]);
+}
+
+/// Print a `char` as text, matching `"{c}"`: the code point is lowered to
+/// UTF-8 first (a non-ASCII `char` is multiple bytes, never a single byte).
+#[no_mangle]
+pub extern "C" fn pickle_print_char(v: i32) {
+    let mut buf = [0u8; 4];
+    let s = char::from_u32(v as u32).unwrap_or('\u{FFFD}');
+    let bytes = s.encode_utf8(&mut buf);
+    write_to_con(bytes.as_bytes());
 }
 
 fn emit_string(s: *mut PickleObject) {
@@ -137,22 +148,22 @@ fn print_obj_raw(obj: *mut PickleObject) {
         PICKLE_CLASS_LIST => {
             pickle_print_cstr(b"List(len=\0".as_ptr());
             pickle_print_i64(list_len(obj) as i64);
-            pickle_print_byte(b')');
+            pickle_print_byte(b')' as i64);
         }
         PICKLE_CLASS_MAP => {
             pickle_print_cstr(b"Map(len=\0".as_ptr());
             pickle_print_i64(map_len(obj) as i64);
-            pickle_print_byte(b')');
+            pickle_print_byte(b')' as i64);
         }
         PICKLE_CLASS_ENUM => {
             pickle_print_cstr(b"Enum(tag=\0".as_ptr());
             pickle_print_i64(enum_tag(obj));
-            pickle_print_byte(b')');
+            pickle_print_byte(b')' as i64);
         }
         PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),
         PICKLE_CLASS_BOX_FLOAT => pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64)),
         PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 { b"true\0".as_ptr() } else { b"false\0".as_ptr() }),
-        PICKLE_CLASS_BOX_CHAR => pickle_print_byte(crate::boxscalar::box_bits(obj) as u8),
+        PICKLE_CLASS_BOX_CHAR => pickle_print_char(crate::boxscalar::box_bits(obj) as i32),
         _ => {
             let gc = crate::gc::gc_mut();
             let name = gc.class_name(class_id);

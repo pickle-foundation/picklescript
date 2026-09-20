@@ -377,6 +377,7 @@ fn elem_ir(elem: &Ty) -> IrTy {
         Ty::Int => IrTy::Int,
         Ty::Float => IrTy::Float,
         Ty::Bool => IrTy::Bool,
+        Ty::Byte => IrTy::Int,
         Ty::Char => IrTy::Char,
         Ty::String => IrTy::Str,
         _ => IrTy::Ptr,
@@ -3817,9 +3818,9 @@ fn build_lambda_body(
         Ok(())
     }
 
-    /// `for (c in s)` over a string: iterates byte indices, char-binds the raw
-    /// `i32` from `pickle_str_get` (no unbox). The string lives in a managed
-    /// slot for the whole loop.
+    /// `for (c in s)` over a string: iterates byte indices, binds the raw
+    /// 0..=255 byte from `pickle_str_get` (no unbox) as a `byte` (`int` ABI).
+    /// The string lives in a managed slot for the whole loop.
     fn for_in_string(
         &mut self,
         name: &str,
@@ -3871,10 +3872,10 @@ fn build_lambda_body(
         let v = self.extern_call_t1(
             "pickle_str_get",
             vec![IrTy::Ptr, IrTy::Int],
-            IrTy::Char,
+            IrTy::Int,
             vec![seq_l, cur_i],
         )?;
-        let elem_slot = self.new_slot(IrTy::Char);
+        let elem_slot = self.new_slot(IrTy::Int);
         self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
         self.declare(name, elem_slot);
         self.block_body_only(body)?;
@@ -4022,37 +4023,49 @@ fn build_lambda_body(
                 }
                 StrPart::Expr(e) => {
                     let t = self.expr(e)?;
-                    match self.irty(e.span)? {
-                        IrTy::Str => t,
-                        IrTy::Int => self.extern_call_t1(
-                            "pickle_str_from_i64",
+                    // Keyed on the checker type, not the IR type: a `byte` is an
+                    // `int` at the ABI but must interpolate as one raw byte, not
+                    // as digits (`{c}` in `for (c in "é")` must round-trip).
+                    if self.ty_of(&e.span) == Some(Ty::Byte) {
+                        self.extern_call_t1(
+                            "pickle_str_from_byte",
                             vec![IrTy::Int],
                             IrTy::Str,
                             vec![t],
-                        )?,
-                        IrTy::Float => self.extern_call_t1(
-                            "pickle_str_from_f64",
-                            vec![IrTy::Float],
-                            IrTy::Str,
-                            vec![t],
-                        )?,
-                        IrTy::Bool => self.extern_call_t1(
-                            "pickle_str_from_bool",
-                            vec![IrTy::Bool],
-                            IrTy::Str,
-                            vec![t],
-                        )?,
-                        IrTy::Char => self.extern_call_t1(
-                            "pickle_str_from_char",
-                            vec![IrTy::Char],
-                            IrTy::Str,
-                            vec![t],
-                        )?,
-                        other => {
-                            return self.bad(
-                                e.span,
-                                format!("interpolation of `{other:?}` is not lowered yet"),
-                            )
+                        )?
+                    } else {
+                        match self.irty(e.span)? {
+                            IrTy::Str => t,
+                            IrTy::Int => self.extern_call_t1(
+                                "pickle_str_from_i64",
+                                vec![IrTy::Int],
+                                IrTy::Str,
+                                vec![t],
+                            )?,
+                            IrTy::Float => self.extern_call_t1(
+                                "pickle_str_from_f64",
+                                vec![IrTy::Float],
+                                IrTy::Str,
+                                vec![t],
+                            )?,
+                            IrTy::Bool => self.extern_call_t1(
+                                "pickle_str_from_bool",
+                                vec![IrTy::Bool],
+                                IrTy::Str,
+                                vec![t],
+                            )?,
+                            IrTy::Char => self.extern_call_t1(
+                                "pickle_str_from_char",
+                                vec![IrTy::Char],
+                                IrTy::Str,
+                                vec![t],
+                            )?,
+                            other => {
+                                return self.bad(
+                                    e.span,
+                                    format!("interpolation of `{other:?}` is not lowered yet"),
+                                )
+                            }
                         }
                     }
                 }
@@ -4257,8 +4270,8 @@ fn build_lambda_body(
         }
         let mut a = self.expr(lhs)?;
         let mut b = self.expr(rhs)?;
-        let aty = self.irty(lhs.span).ok();
-        let bty = self.irty(rhs.span).ok();
+        let mut aty = self.irty(lhs.span).ok();
+        let mut bty = self.irty(rhs.span).ok();
         if matches!(aty, Some(IrTy::Float)) && matches!(bty, Some(IrTy::Int)) {
             let t = self.temp();
             self.instr(IrInstr::Itof { dst: t, v: b });
@@ -4267,6 +4280,33 @@ fn build_lambda_body(
             let t = self.temp();
             self.instr(IrInstr::Itof { dst: t, v: a });
             a = t;
+        }
+        // A `byte` compared with an ASCII `char` literal: the checker slots the
+        // literal into the byte domain, so here it is lowered as an `int` const
+        // so both operands share the `i64` ABI.
+        let a_byte = self.ty_of(&lhs.span) == Some(Ty::Byte);
+        let b_byte = self.ty_of(&rhs.span) == Some(Ty::Byte);
+        if a_byte || b_byte {
+            let mut ascii_lit_int = |x: &Expr| -> Option<Temp> {
+                if let ExprKind::Lit(Lit::Char(c)) = &x.kind {
+                    if *c as u32 <= 0x7F {
+                        Some(self.int_const(*c as u8 as i64))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if a_byte {
+                if let Some(t) = ascii_lit_int(rhs) {
+                    b = t;
+                    bty = Some(IrTy::Int);
+                }
+            } else if let Some(t) = ascii_lit_int(lhs) {
+                a = t;
+                aty = Some(IrTy::Int);
+            }
         }
         // Defensive: a comparison whose operand IR types cannot share an
         // `icmp`/`fcmp` (bool vs int, char vs int, ...) must never reach the
@@ -5334,7 +5374,7 @@ fn build_lambda_body(
                 return self.extern_call_t1(
                     "pickle_str_get",
                     vec![IrTy::Ptr, IrTy::Int],
-                    IrTy::Char,
+                    IrTy::Int,
                     vec![obj, idx],
                 );
             }
@@ -5344,7 +5384,7 @@ fn build_lambda_body(
                 return self.extern_call_t1(
                     "pickle_str_get",
                     vec![IrTy::Ptr, IrTy::Int],
-                    IrTy::Char,
+                    IrTy::Int,
                     vec![obj, idx],
                 );
             }
@@ -5583,6 +5623,9 @@ fn build_lambda_body(
             }
             Ty::Bool => {
                 self.extern_call_t1("pickle_box_bool", vec![IrTy::Bool], IrTy::Ptr, vec![v])
+            }
+            Ty::Byte => {
+                self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![v])
             }
             Ty::Char => {
                 self.extern_call_t1("pickle_box_char", vec![IrTy::Char], IrTy::Ptr, vec![v])
@@ -6833,7 +6876,8 @@ fn build_lambda_body(
                         Some(Ty::Int) => "pickle_print_i64",
                         Some(Ty::Float) => "pickle_print_f64",
                         Some(Ty::Bool) => "pickle_print_bool",
-                        Some(Ty::Char) => "pickle_print_byte",
+                        Some(Ty::Byte) => "pickle_print_byte",
+                        Some(Ty::Char) => "pickle_print_char",
                         Some(Ty::String) => "pickle_print_obj",
                         Some(Ty::List(_))
                         | Some(Ty::Map(_, _))
@@ -6853,6 +6897,7 @@ fn build_lambda_body(
                         Some(Ty::Int) => IrTy::Int,
                         Some(Ty::Float) => IrTy::Float,
                         Some(Ty::Bool) => IrTy::Bool,
+                        Some(Ty::Byte) => IrTy::Int,
                         Some(Ty::Char) => IrTy::Char,
                         Some(Ty::String)
                         | Some(Ty::List(_))
@@ -8245,6 +8290,7 @@ fn build_lambda_body(
             Ty::Int => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
             Ty::Float => Ok(Scalar("pickle_box_f64", "pickle_unbox_f64", IrTy::Float)),
             Ty::Bool => Ok(Scalar("pickle_box_bool", "pickle_unbox_bool", IrTy::Bool)),
+            Ty::Byte => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
             Ty::Char => Ok(Scalar("pickle_box_char", "pickle_unbox_char", IrTy::Char)),
             Ty::String
             | Ty::Option(..)
@@ -8367,6 +8413,7 @@ fn build_lambda_body(
             Ty::Float => Some(IrTy::Float),
             Ty::Bool => Some(IrTy::Bool),
             Ty::Char => Some(IrTy::Char),
+            Ty::Byte => Some(IrTy::Int),
             _ => None,
         }
     }
@@ -8382,6 +8429,7 @@ fn build_lambda_body(
         match t {
             Ty::Bool => Ok(IrTy::Bool),
             Ty::Char => Ok(IrTy::Char),
+            Ty::Byte => Ok(IrTy::Int),
             Ty::Int => Ok(IrTy::Int),
             Ty::Float => Ok(IrTy::Float),
             Ty::String => Ok(IrTy::Str),
@@ -8393,7 +8441,7 @@ fn build_lambda_body(
             // layout: a scalar referent is passed as its address (`Int`), a
             // managed referent as its identity (`Ptr`).
             Ty::Ptr(inner) | Ty::Ref(inner) => match inner.as_ref() {
-                Ty::Int | Ty::Float | Ty::Bool | Ty::Char => Ok(IrTy::Int),
+                Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => Ok(IrTy::Int),
                 _ => Ok(IrTy::Ptr),
             },
             Ty::Option(..)

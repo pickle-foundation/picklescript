@@ -37,11 +37,20 @@ bytes**, and a `char` is a **Unicode scalar value** (a single code point,
 never a surrogate half). Strings are *not* arrays of `char`:
 
 - `s[i]` and `for (c in s)` address *bytes*, like Rust `s.as_bytes()[i]`:
-  O(1), bounds-checked, and for non-ASCII text they yield `byte` values
-  (widened to the `char` ABI), never decoded scalars. This keeps indexing and
-  iteration cheap and deterministic.
+  O(1), bounds-checked, and they yield the static type **`byte`** (a raw UTF-8
+  byte, never a decoded scalar — `len("é")` is `2` and `"é"[0]` is byte `195`).
+  This keeps indexing and iteration cheap and deterministic.
+- `byte` is a real primitive but sits at the **`int` ABI**: comparisons and
+  arithmetic are done as 64-bit ints (there is still no implicit `byte ->
+  int` assignment widening). `byte` values compare with `int`s and with ASCII
+  `char` literals; a non-ASCII `char` literal (e.g. `'é'`) has no `byte` value
+  and is a compile error in a byte comparison, and a `byte` can never silently
+  reach a `char` context.
 - Converting a `char` to a `string` encodes the scalar as UTF-8; converting
-  the other way always consumes exactly one scalar.
+  the other way always consumes exactly one scalar. `"{c}"`/`print(c)` on a
+  `char` write the scalar's UTF-8 bytes, so `len("{'é'}")` is `2` and the
+  copy loop `for (c in "é") { out += "{c}" }` round-trips — a `byte`
+  interpolated as `"{b}"` writes that single byte.
 - Scalar/byte *views* (`s.chars()`, `s.bytes()`) are reserved spellings for
   future explicit iteration and are not part of the primitive surface yet.
 

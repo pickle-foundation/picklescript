@@ -63,8 +63,10 @@ and assignments (including `+=`-style compounds), `len(xs)`, `xs.push(v)` /
 strings/lists and other managed values pass through as pointers. Lists of
 `char` and string byte-indexing/iteration are lowered: `List<char>` goes
 through the scalar-list path (see the `char` bullet in `06-compiler.md`), and
-`s[i]` / `for (c in s)` are byte-addressed reads per the locked string model
-(`04-types.md`).
+`s[i]` / `for (c in s)` are byte-addressed reads typed `byte` per the locked
+string model (`04-types.md`). `print(c)` on a `char` writes the scalar as
+UTF-8 and `print(b)` on a `byte` writes the raw byte, so non-ASCII text
+round-trips through the copy loop `for (c in s) { out += "{c}" }`.
 
 ## I/O model
 

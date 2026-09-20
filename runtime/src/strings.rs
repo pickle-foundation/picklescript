@@ -164,15 +164,15 @@ pub extern "C" fn pickle_str_cmp(
     string_cmp(a, b) as i64
 }
 
-/// Byte at `index` of a string, widened to the compiler's `char` ABI (`i32`);
-/// panics on out-of-range.
+/// Byte at `index` of a string, widened to the compiler's `byte` ABI (`i64`,
+/// always 0..=255); panics on out-of-range.
 #[no_mangle]
-pub extern "C" fn pickle_str_get(obj: *const PickleObject, index: i64) -> i32 {
+pub extern "C" fn pickle_str_get(obj: *const PickleObject, index: i64) -> i64 {
     let len = string_bytes_len(obj);
     if index < 0 || index as u64 >= len as u64 {
         panic!("pickle: string index {index} out of range (len {len})");
     }
-    unsafe { *str_bytes(obj).add(index as usize) as i32 }
+    unsafe { *str_bytes(obj).add(index as usize) as i64 }
 }
 
 /// Format an `i64` as a string (string-interpolation helper).
@@ -207,6 +207,16 @@ pub extern "C" fn pickle_str_from_char(v: u32) -> *mut PickleObject {
     let bytes = s.encode_utf8(&mut buf);
     let gc = crate::gc::gc_mut();
     string_from_bytes(bytes.as_ptr(), bytes.len(), gc)
+}
+
+/// Format a `byte` as a one-byte string (string-interpolation helper). The
+/// value is written raw: the checker keeps a `byte` in 0..=255, and a re-encode
+/// would corrupt multi-byte UTF-8 text ("é" must copy back as "é", not "Ã©").
+#[no_mangle]
+pub extern "C" fn pickle_str_from_byte(v: i64) -> *mut PickleObject {
+    let b = v as u8;
+    let gc = crate::gc::gc_mut();
+    string_from_bytes(&b, 1, gc)
 }
 
 #[cfg(test)]
@@ -245,9 +255,9 @@ mod tests {
         let _guard = setup();
         let s = string_from_bytes(b"hello".as_ptr(), 5, crate::gc::gc_mut());
         for (i, expect) in b"hello".iter().enumerate() {
-            assert_eq!(pickle_str_get(s, i as i64), *expect as i32);
+            assert_eq!(pickle_str_get(s, i as i64), *expect as i64);
         }
-        assert_eq!(pickle_str_get(s, 4), b'o' as i32);
+        assert_eq!(pickle_str_get(s, 4), b'o' as i64);
     }
 
     #[test]

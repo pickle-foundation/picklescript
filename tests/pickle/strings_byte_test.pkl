@@ -1,0 +1,58 @@
+test fn len_counts_bytes() {
+    expect(len("é")).toBe(2)
+    expect(len("abc")).toBe(3)
+}
+
+test fn index_yields_utf8_bytes() {
+    expect("é"[0] == 195).toBe(true)
+    expect("é"[1] == 169).toBe(true)
+    expect("abc"[1] == 98).toBe(true)
+    expect("abc"[1] == 'b').toBe(true)
+}
+
+test fn ascii_char_literal_compares_with_byte() {
+    let s = "ab"
+    expect(s[0] == 'a').toBe(true)
+    expect('a' == s[0]).toBe(true)
+}
+
+test fn copy_loop_roundtrips_utf8() {
+    var out = ""
+    for (c in "é") {
+        out += "{c}"
+    }
+    expect(out).toBe("é")
+}
+
+test fn copy_loop_ascii() {
+    var out = ""
+    for (c in "abc") {
+        out += "{c}"
+    }
+    expect(out).toBe("abc")
+}
+
+test fn byte_compare_with_int() {
+    let s = "hello"
+    var n = 0
+    for (b in s) {
+        if (b == 104) {
+            n += 1
+        }
+    }
+    expect(n).toBe(1)
+}
+
+test fn char_interp_is_utf8() {
+    let s = "{'é'}"
+    expect(len(s)).toBe(2)
+    expect(s).toBe("é")
+}
+
+test fn byte_loop_counts_bytes_not_scalars() {
+    var n = 0
+    for (c in "aé") {
+        n += 1
+    }
+    expect(n).toBe(3)
+}

@@ -249,6 +249,7 @@ pub mod abi {
     pub use crate::console::pickle_print_byte;
     pub use crate::console::pickle_print_bytes;
     pub use crate::console::pickle_print_bool;
+    pub use crate::console::pickle_print_char;
     pub use crate::console::pickle_print_cstr;
     pub use crate::console::pickle_print_f64;
     pub use crate::console::pickle_print_i64;
@@ -301,6 +302,7 @@ pub mod abi {
     pub use crate::strings::pickle_str_concat;
     pub use crate::strings::pickle_str_from_bool;
     pub use crate::strings::pickle_str_from_bytes;
+    pub use crate::strings::pickle_str_from_byte;
     pub use crate::strings::pickle_str_from_char;
     pub use crate::strings::pickle_str_from_f64;
     pub use crate::strings::pickle_str_from_i64;

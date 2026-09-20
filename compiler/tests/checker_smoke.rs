@@ -2388,3 +2388,84 @@ fn accepts_borrow_ctor_param() {
         error_msgs(&d)
     );
 }
+
+#[test]
+fn string_index_and_iteration_type_as_byte() {
+    // A `byte` binding accepts the string-index element, and the for-in loop
+    // element compares with `int`s and ASCII `char` literals.
+    let d = check_str(
+        r#"fn main() {
+            var b: byte = "abc"[1]
+            for (c in "abc") {
+                if (c == 98) { print("{c}") }
+            }
+            if ("abc"[2] == 'c') { print("ok") }
+            print("{b}")
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "expected byte-typed string access to type-check, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn byte_cannot_satisfy_char_context() {
+    // "é"[0] is a raw byte (195), never the decoded scalar 'é' (233); a byte
+    // must not silently reach a char context.
+    let d = check_str(
+        r#"fn main() {
+            let c: char = "é"[0]
+        }"#,
+    );
+    assert!(has_errors(&d), "expected a type error, got no diagnostics");
+}
+
+#[test]
+fn byte_vs_non_ascii_char_literal_is_rejected() {
+    let d = check_str(
+        r#"fn main() {
+            let s = "é"
+            if (s[0] == 'é') { print("x") }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got no diagnostics");
+    assert!(
+        msgs.contains("non-ASCII char literal has no `byte` value"),
+        "expected the non-ASCII-literal byte diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn byte_vs_char_variable_is_rejected() {
+    let d = check_str(
+        r#"fn main() {
+            let s = "é"
+            let c = 'é'
+            if (s[0] == c) { print("x") }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got no diagnostics");
+    assert!(
+        msgs.contains("`byte` values only compare with `int`s or an ASCII `char` literal"),
+        "expected the byte-vs-char diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn lexer_rejects_surrogate_escape_in_char_literal() {
+    let d = check_str(
+        r#"fn main() {
+            let c = '\u{D800}'
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected a lexer error, got no diagnostics");
+    assert!(
+        msgs.contains("invalid unicode escape '\\u{D800}'"),
+        "expected the surrogate rejection, got:\n{msgs}"
+    );
+}
