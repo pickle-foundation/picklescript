@@ -67,8 +67,14 @@ compiler is linked against `pickle-runtime`.
 - **Diag**: source files, byte spans, severities; errors annotate code with
   a caret and a hint. Diagnostics stream to a colored reporter (TTY) or
   plain text (CI).
-- **Lexer**: maximal-munch tokenizer, string/triple-string/raw/interpolated
-  fragments, numberization, keyword table. Newlines are significant tokens
+- **Lexer**: maximal-munch tokenizer over `Option<char>` peeked through a
+  byte-indexed source (no `\0` end sentinel; a literal NUL is reported as an
+  error and lexing continues). Raw `r"..."`, triple-quoted `"""..."""`, and
+  interpolated strings share one escape handler (`\n \t \r \\ \" \{ \} \0`,
+  `\u{...}`); interpolation re-enters the full scanner with brace-depth
+  tracking so nested literals/operators lex correctly. Doc comments are
+  trivia attached to the following token. Bad characters are skipped with a
+  diagnostic instead of aborting the stream. Newlines are significant tokens
   (statement boundaries) plus a separate "continues" rule computed in the
   parser, so multi-line expressions still work.
 - **Parser**: recursive descent, precedence climbing for binary operators.

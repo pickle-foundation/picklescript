@@ -1,4 +1,4 @@
-use crate::diag::Span;
+﻿use crate::diag::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrSeg {
@@ -204,58 +204,60 @@ impl Tok {
         }
     }
 
-    #[allow(clippy::unnecessary_sort_by)]
-    pub const fn keyword() -> &'static [(&'static str, Tok)] {
+    /// Look up a keyword by its source text. Compiles to a jump table rather
+    /// than a linear scan.
+    pub fn keyword(s: &str) -> Option<Tok> {
         use Tok::*;
-        &[
-            ("module", Module),
-            ("import", Import),
-            ("use", Use),
-            ("class", Class),
-            ("struct", Struct),
-            ("enum", Enum),
-            ("interface", Interface),
-            ("fn", Fn),
-            ("constructor", Constructor),
-            ("property", Property),
-            ("get", Get),
-            ("set", Set),
-            ("static", Static),
-            ("override", Override),
-            ("let", Let),
-            ("var", Var),
-            ("const", Const),
-            ("public", Public),
-            ("private", Private),
-            ("protected", Protected),
-            ("if", If),
-            ("else", Else),
-            ("while", While),
-            ("for", For),
-            ("in", In),
-            ("break", Break),
-            ("continue", Continue),
-            ("return", Return),
-            ("match", Match),
-            ("case", Case),
-            ("true", True),
-            ("false", False),
-            ("none", None),
-            ("async", Async),
-            ("await", Await),
-            ("task", Task),
-            ("channel", Channel),
-            ("unsafe", Unsafe),
-            ("extends", Extends),
-            ("implements", Implements),
-            ("is", Is),
-            ("as", As),
-            ("this", This),
-            ("super", Super),
-            ("init", Init),
-            ("deinit", Deinit),
-            ("operator", Operator),
-        ]
+        match s {
+            "module" => Some(Module),
+            "import" => Some(Import),
+            "use" => Some(Use),
+            "class" => Some(Class),
+            "struct" => Some(Struct),
+            "enum" => Some(Enum),
+            "interface" => Some(Interface),
+            "fn" => Some(Fn),
+            "constructor" => Some(Constructor),
+            "property" => Some(Property),
+            "get" => Some(Get),
+            "set" => Some(Set),
+            "static" => Some(Static),
+            "override" => Some(Override),
+            "let" => Some(Let),
+            "var" => Some(Var),
+            "const" => Some(Const),
+            "public" => Some(Public),
+            "private" => Some(Private),
+            "protected" => Some(Protected),
+            "if" => Some(If),
+            "else" => Some(Else),
+            "while" => Some(While),
+            "for" => Some(For),
+            "in" => Some(In),
+            "break" => Some(Break),
+            "continue" => Some(Continue),
+            "return" => Some(Return),
+            "match" => Some(Match),
+            "case" => Some(Case),
+            "true" => Some(True),
+            "false" => Some(False),
+            "none" => Some(None),
+            "async" => Some(Async),
+            "await" => Some(Await),
+            "task" => Some(Task),
+            "channel" => Some(Channel),
+            "unsafe" => Some(Unsafe),
+            "extends" => Some(Extends),
+            "implements" => Some(Implements),
+            "is" => Some(Is),
+            "as" => Some(As),
+            "this" => Some(This),
+            "super" => Some(Super),
+            "init" => Some(Init),
+            "deinit" => Some(Deinit),
+            "operator" => Some(Operator),
+            _ => Option::None,
+        }
     }
 }
 
@@ -279,6 +281,7 @@ pub struct TokenData {
     pub float: Option<f64>,
     pub is_float: bool,
     pub suffix: Option<String>,
+    pub doc: Option<String>,
 }
 
 impl PartialEq for TokenData {
@@ -287,6 +290,7 @@ impl PartialEq for TokenData {
             && self.int == other.int
             && self.is_float == other.is_float
             && self.suffix == other.suffix
+            && self.doc == other.doc
             && match (self.float, other.float) {
                 (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
                 (None, None) => true,
@@ -348,4 +352,3 @@ fn parse_int_literal(text: &str) -> Option<i128> {
     }
 }
 
-pub const KEYWORDS: &[(&str, Tok)] = Tok::keyword();

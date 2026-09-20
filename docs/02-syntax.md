@@ -16,9 +16,11 @@ Version 1. Files use the `.pkl` extension.
     `float`)
 - String literals:
   - `"hello"` — interpolated; `{expr}` embeds `expr.toString()`.
-    `"Total: {total}"`. Escapes: `\n \t \\ \" \{ \u{1F600}`.
-  - `r"raw text {not inserted}"` — no interpolation.
-  - `"""multi\nline\nstring"""` — interpolation allowed.
+    `"Total: {total}"`. Escapes: `\n \t \r \\ \" \{ \} \0 \u{1F600}`.
+  - `r"raw text {not inserted}"` — no interpolation, no escapes.
+  - `"""multi\nline\nstring"""` — multiline string, interpolation allowed;
+    interiors may span physical lines and end only at the next `"""`.
+    A literal `{` is written `\{` (as in an interpolated string).
 - Character literal: `'a'` — a Unicode scalar, type `char`. Strings are
   UTF-8 bytes, not `char` arrays (see the locked string/char model in
   `04-types.md`). In a `byte` comparison, an ASCII `char` literal (like
