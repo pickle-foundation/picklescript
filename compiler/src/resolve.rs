@@ -340,6 +340,19 @@ impl<'a> Resolver<'a> {
                 Ty::List(Box::new(Ty::Int)),
                 true,
             ),
+            // `read_file(path)`: whole-file bytes as `string`, or `none` --
+            // checked strictly by a dedicated rule; a loose declaration makes
+            // the name resolvable and dispatchable.
+            mk(
+                "read_file",
+                vec![any("path")],
+                Ty::Option(Box::new(Ty::String)),
+                true,
+            ),
+            // `write_file(path, text)`: overwrite; `bool` success.
+            mk("write_file", vec![any("path"), any("text")], Ty::Bool, true),
+            // `file_exists(path)`: `bool`.
+            mk("file_exists", vec![any("path")], Ty::Bool, true),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.

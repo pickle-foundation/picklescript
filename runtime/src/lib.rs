@@ -15,6 +15,7 @@ pub(crate) mod console;
 mod boxscalar;
 mod class;
 mod r#enum;
+mod fs;
 mod gc;
 mod heap;
 mod layout;
@@ -286,6 +287,10 @@ pub mod abi {
     pub use crate::r#enum::pickle_enum_new;
     pub use crate::r#enum::pickle_enum_set_field;
     pub use crate::r#enum::pickle_enum_tag;
+
+    pub use crate::fs::pickle_file_exists;
+    pub use crate::fs::pickle_read_file;
+    pub use crate::fs::pickle_write_file;
 
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;

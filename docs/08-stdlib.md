@@ -39,6 +39,41 @@ use std.test        assert, assertEqual, assertThrows, bench
 5. Collections: uniform interpolation, slicing, and iteration protocol
    (interface `Iterable<T>` -> `Iterator<T>` with `next()`).
 
+## What ships in `std` (self-hosting-driven split)
+
+A lot of the primitive surface already lives below `std` in the runtime
+`pickle_*` ABI + compiler intrinsics (`print`/`println`/`flush`, `str()`
+conversions, `min`/`max`/`clamp`/`abs`/`range`, box/unbox for `T?`, list
+push/pop, map has/keys/values, string cmp/len, `pickle_runtime_reset`).
+`std` itself is the **PickleScript-written layer on top of that ABI** — the
+modules the self-hosted compiler will actually import.
+
+**Must-have (blocks rewriting the compiler in Pickle):**
+- `std.text` — mutable string/byte builder, UTF-8 helpers, `format`, and a
+  bytes↔string bridge. A compiler reads source text and emits source text.
+- `std.collections` — `List`/`Map` (largely present) plus `remove`/`insert`,
+  a hash `Set`, and string interning for symbol tables.
+- `std.fs` — `readFile`/`writeFile`/`exists` (file I/O). The whole-file
+  intrinsics (`read_file`/`write_file`/`file_exists`) shipped first; streams
+  and directory listing remain.
+- `std.os` — `args`, `exit`, env for the `pickle` driver.
+- `std.math` — `pow`/`floor`/`ceil`/`sin`/`cos`/`sqrt`, `PI`/`E`/`TAU`.
+- `std.test` — the `expect`/hooks/`bench` layer already steer the `.pkl`
+  suites; `std.test` gave them a home.
+- `std.time` — `now`/`Instant`/`Duration` for `analyzing N files`-style
+  diagnostics.
+
+**Coverage (the real-workload clause of 01-philosophy; often 1.x):**
+- `std.json` (parse/serialize — first-class for tooling / a language server).
+- `std.net` + `std.http` — typed client/server, streaming bodies.
+- `std.process` / `std.thread` — run/spawn/capture, channels, mutexes.
+- `std.crypto` — pure-Rust, no OpenSSL (SHA/HMAC/AES/ChaCha20 + base64/hex).
+- `std.gc` — stats/collect; arenas are the optional self-host memory answer.
+
+**Deliberately not in `std`:** reflexive sugar owned by the intrinsic/runtime
+layer (`print` family), and compiler-internal machinery that belongs in the
+compiler itself rather than the standard library.
+
 ## Collections quick view
 
 - `List<T>` — resizeable array, indexing, `add/remove/insert`, slicing.
@@ -73,6 +108,19 @@ round-trips through the copy loop `for (c in s) { out += "{c}" }`.
 File/streams expose `read(n)? -> bytes`, `write(bytes)`, `flush()`,
 `close()`. Bytes are `List<byte>` in v1 with a `string` conversion builtin
 for text. Stdout/stderr are `Stream` values; `print` routes to stdout.
+
+The whole-file layer of `std.fs` is already shipped as intrinsics on the
+string (opaque-byte) ABI, the first runtime piece the self-hosted compiler
+needs to load source:
+
+- `read_file(path) -> string?` — reads a whole file byte-exact as `string`,
+  or `none` when the file cannot be read.
+- `write_file(path, text) -> bool` — overwrites `path` with `text`'s bytes.
+- `file_exists(path) -> bool` — metadata probe (works for directories too).
+
+Round-trips are byte-exact (no UTF-8 re-validation). Missing so far are the
+buffered `Stream` model, byte-list (`List<byte>`) reads, `delete`, and
+directory listing — those wait on a `List<byte>`↔`string` bridge.
 
 ## Networking & HTTP
 

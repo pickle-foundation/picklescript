@@ -1,0 +1,17 @@
+fn main() {
+    let path = "tests/pickle/__fs_main.tmp"
+    write_file(path, "main: hello fs")
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        print(txt)
+        println("")
+    } else {
+        println("main: read failed")
+    }
+    print(file_exists("tests/pickle/fs_test.pkl"))
+    println("")
+    print(file_exists("tests/pickle/__fs_main_missing.tmp"))
+    println("")
+    print(read_file("tests/pickle/__fs_main_missing.tmp") ?? "fallback:none")
+    println("")
+}

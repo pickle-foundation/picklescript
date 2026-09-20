@@ -1,0 +1,59 @@
+test fn fs_write_read_roundtrip() {
+    let path = "tests/pickle/__fs_roundtrip.tmp"
+    let ok = write_file(path, "hello fs\nsecond line")
+    expect(ok).toBe(true)
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("hello fs\nsecond line")
+    } else {
+        expect("unexpected").toBe("roundtrip: read_file returned none after a successful write")
+    }
+}
+
+test fn fs_utf8_bytes_roundtrip() {
+    // Non-ASCII text must round-trip byte-exact through the opaque string model.
+    let path = "tests/pickle/__fs_utf8.tmp"
+    let ok = write_file(path, "h\u{e9}llo \u{2192} done")
+    expect(ok).toBe(true)
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("h\u{e9}llo \u{2192} done")
+    } else {
+        expect("unexpected").toBe("utf8: read_file returned none after a successful write")
+    }
+}
+
+test fn fs_read_missing_is_none() {
+    let data = read_file("tests/pickle/__fs_does_not_exist.tmp")
+    if (let some(_t) = data) {
+        expect("unexpected").toBe("missing file read returned some")
+    } else {
+        expect(true).toBe(true)
+    }
+}
+
+test fn fs_file_exists() {
+    expect(file_exists("tests/pickle/fs_test.pkl")).toBe(true)
+    expect(file_exists("tests/pickle/__fs_does_not_exist_2.tmp")).toBe(false)
+    expect(file_exists("tests/pickle")).toBe(true)
+}
+
+test fn fs_overwrite_existing() {
+    let path = "tests/pickle/__fs_overwrite.tmp"
+    expect(write_file(path, "first")).toBe(true)
+    expect(write_file(path, "second")).toBe(true)
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("second")
+    } else {
+        expect("unexpected").toBe("overwrite: read_file returned none after a successful write")
+    }
+}
+
+test fn fs_match_over_option() {
+    let data = read_file("tests/pickle/fs_test.pkl")
+    match (data) {
+        case some(_t) -> expect(true).toBe(true)
+        case none -> expect("unexpected").toBe("match: existing file read as none")
+    }
+}

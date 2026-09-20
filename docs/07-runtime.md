@@ -70,6 +70,9 @@ operations (places compiled code already spills), plus an explicit
   interpolation helpers exported for codegen.
 - **Numbers-to-text**: fast int/float to string for interpolation.
 - **Console**: `print`, `println`, `print(..)`, ANSI if TTY.
+- **File I/O**: `read_file(path)` returns the whole file as a `string` or
+  `none`; `write_file(path, text)` overwrites, returning success as a `bool`;
+  `file_exists(path)` probes the filesystem. Errors are values, never raised.
 - **Error bridge**: `panic(msg)` -> unwind banner + nonzero exit; call-stack
   capture is a debug-mode feature (frame pointers).
 

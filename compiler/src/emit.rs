@@ -1150,7 +1150,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "read_file" | "write_file" | "file_exists")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -6466,7 +6466,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "read_file" | "write_file" | "file_exists") {
                     return false;
                 }
             }
@@ -7629,6 +7629,38 @@ fn build_lambda_body(
                     IrTy::Ptr,
                     vec![start, end, step],
                 )
+            }
+            "read_file" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`read_file(path)` takes exactly one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                // Returns the whole file as a `string` object, or `null`
+                // (`none`) when the file cannot be read.
+                self.extern_call_t1("pickle_read_file", vec![IrTy::Str], IrTy::Ptr, vec![p])
+            }
+            "write_file" => {
+                if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
+                    return self.bad(
+                        e.span,
+                        "`write_file(path, text)` takes exactly two arguments",
+                    );
+                }
+                let p = self.expr(&args[0].value)?;
+                let t = self.expr(&args[1].value)?;
+                self.extern_call_t1(
+                    "pickle_write_file",
+                    vec![IrTy::Str, IrTy::Str],
+                    IrTy::Bool,
+                    vec![p, t],
+                )
+            }
+            "file_exists" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`file_exists(path)` takes exactly one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                self.extern_call_t1("pickle_file_exists", vec![IrTy::Str], IrTy::Bool, vec![p])
             }
             _ if self.generic_user_fn(name) => self.bad(
                 e.span,

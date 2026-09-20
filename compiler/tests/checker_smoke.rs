@@ -2539,3 +2539,47 @@ fn lexer_rejects_surrogate_escape_in_char_literal() {
         "expected the surrogate rejection, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_fs_builtins() {
+    let d = check_str(
+        r#"fn main() {
+            let path = "tests/pickle/x.txt"
+            write_file(path, "hello")
+            let r = read_file(path)
+            if (let some(t) = r) {
+                println(t)
+            }
+            println(file_exists(path))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_write_file_non_string_arg() {
+    let d = check_str(
+        r#"fn main() {
+            write_file("path", 3)
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `write_file` argument-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_read_file_wrong_arity() {
+    let d = check_str(
+        r#"fn main() {
+            let r = read_file("a", "b")
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `read_file` arity error, got:\n{}",
+        error_msgs(&d)
+    );
+}

@@ -2126,6 +2126,18 @@ impl<'a> Checker<'a> {
             if bname == "range" {
                 return self.check_range(e, args);
             }
+            // `read_file(path)`: whole-file bytes as `string`, or `none`.
+            if bname == "read_file" {
+                return self.check_read_file(e, args);
+            }
+            // `write_file(path, text)`: overwrite, reporting a `bool`.
+            if bname == "write_file" {
+                return self.check_write_file(e, args);
+            }
+            // `file_exists(path)`: `bool`.
+            if bname == "file_exists" {
+                return self.check_file_exists(e, args);
+            }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
                 return self.check_expect(e, args);
@@ -3895,6 +3907,67 @@ impl<'a> Checker<'a> {
             }
         }
         Ty::List(Box::new(Ty::Int))
+    }
+
+    /// `read_file(path)`: reads a whole file as `string`, or `none` when the
+    /// file cannot be read. Errors are values (no exceptions).
+    fn check_read_file(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`read_file(path)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`read_file` requires a `string` path");
+            return Ty::Unknown;
+        }
+        Ty::Option(Box::new(Ty::String))
+    }
+
+    /// `write_file(path, text)`: overwrites `path` with `text`'s UTF-8 bytes
+    /// and returns `true` on success, `false` on failure.
+    fn check_write_file(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
+            self.err(e.span, "`write_file(path, text)` takes exactly two arguments");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        for (i, a) in args.iter().enumerate() {
+            let at = self.check_expr(&a.value);
+            if !matches!(at, Ty::String | Ty::Unknown) {
+                self.err(
+                    a.value.span,
+                    format!(
+                        "`write_file` argument {} must be a `string`",
+                        if i == 0 { "path" } else { "text" }
+                    ),
+                );
+                return Ty::Unknown;
+            }
+        }
+        Ty::Bool
+    }
+
+    /// `file_exists(path)`: whether the path exists on the filesystem.
+    fn check_file_exists(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`file_exists(path)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`file_exists` requires a `string` path");
+            return Ty::Unknown;
+        }
+        Ty::Bool
     }
 
     fn check_if(

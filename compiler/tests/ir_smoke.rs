@@ -2484,4 +2484,23 @@ fn emits_capturing_lambda_closure() {
     );
 }
 
+#[test]
+fn emits_fs_builtins() {
+    let m = emit_str(
+        r#"fn main() {
+            let path = "tests/pickle/x.txt"
+            write_file(path, "hello")
+            let r = read_file(path)
+            if (let some(t) = r) {
+                println(t)
+            }
+            println(file_exists(path))
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    for want in ["pickle_write_file", "pickle_read_file", "pickle_file_exists"] {
+        assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
+    }
+}
+
 
