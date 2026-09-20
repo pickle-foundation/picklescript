@@ -174,6 +174,28 @@ fn accepts_generic_function() {
 }
 
 #[test]
+fn rejects_uninferrable_generic_call() {
+    let d = check_str(
+        r#"fn idn<T>(x: T) -> T {
+            return x
+        }
+
+        fn main() {
+            let a = idn()
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected an error for an uninferrable generic call"
+    );
+    assert!(
+        error_msgs(&d).contains("cannot infer the type argument `T` for `idn`"),
+        "wrong diagnostics:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn accepts_enum_match() {
     let d = check_str(
         r#"enum Color {

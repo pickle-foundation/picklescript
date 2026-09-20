@@ -204,6 +204,74 @@ impl Ty {
     }
 }
 
+/// Bind generic parameter names from a *declared* parameter type (`want`,
+/// which may contain `Ty::Var`) to the caller's argument type (`got`). The
+/// first binding for a variable wins; inconsistent follow-ups are left for the
+/// assignability check to report, and `Unknown`/`none` args contribute nothing
+/// (they give no usable evidence). Used by type-argument inference at both the
+/// checker and the emitter so the two sides agree on every call site.
+pub fn infer_from(want: &Ty, got: &Ty, map: &mut HashMap<String, Ty>) {
+    use std::collections::hash_map::Entry;
+    match (want, got) {
+        (Ty::Var(n), g) => {
+            if matches!(g, Ty::Unknown | Ty::None) {
+                return;
+            }
+            match map.entry(n.clone()) {
+                Entry::Occupied(_) => {}
+                Entry::Vacant(v) => {
+                    v.insert(g.clone());
+                }
+            }
+        }
+        (Ty::Unknown, _) | (_, Ty::Unknown) => {}
+        (Ty::Class(a, wa), Ty::Class(b, ga)) if a == b => {
+            for (w, g) in wa.iter().zip(ga.iter()) {
+                infer_from(w, g, map);
+            }
+        }
+        (Ty::Struct(a, wa), Ty::Struct(b, ga)) if a == b => {
+            for (w, g) in wa.iter().zip(ga.iter()) {
+                infer_from(w, g, map);
+            }
+        }
+        (Ty::Enum(a, wa), Ty::Enum(b, ga)) if a == b => {
+            for (w, g) in wa.iter().zip(ga.iter()) {
+                infer_from(w, g, map);
+            }
+        }
+        (Ty::Interface(a, wa), Ty::Interface(b, ga)) if a == b => {
+            for (w, g) in wa.iter().zip(ga.iter()) {
+                infer_from(w, g, map);
+            }
+        }
+        (Ty::List(w), Ty::List(g)) => infer_from(w, g, map),
+        (Ty::Range(w), Ty::Range(g)) => infer_from(w, g, map),
+        (Ty::Map(kw, vw), Ty::Map(kg, vg)) => {
+            infer_from(kw, kg, map);
+            infer_from(vw, vg, map);
+        }
+        (Ty::Tuple(wa), Ty::Tuple(ga)) => {
+            for (w, g) in wa.iter().zip(ga.iter()) {
+                infer_from(w, g, map);
+            }
+        }
+        (Ty::Option(w), Ty::Option(g)) => infer_from(w, g, map),
+        // An option parameter accepts a plain `T` (implicit lifting); `none`
+        // gives nothing to infer.
+        (Ty::Option(w), g) if !matches!(g, Ty::None) => infer_from(w, g, map),
+        (Ty::Fn(wp, wr), Ty::Fn(gp, gr)) => {
+            for (w, g) in wp.iter().zip(gp.iter()) {
+                infer_from(w, g, map);
+            }
+            infer_from(wr, gr, map);
+        }
+        // A `&T` parameter accepts a plain `T` argument (implicit borrow).
+        (Ty::Ref(w), g) => infer_from(w, g, map),
+        _ => {}
+    }
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.bare_name())

@@ -2263,6 +2263,21 @@ impl<'a> Checker<'a> {
                     })
                     .cloned()
                     .unwrap_or_else(|| fns[0].clone());
+                if !first.generics.is_empty() {
+                    // A generic function called without explicit type
+                    // arguments: infer them from the arguments, then check
+                    // against the substituted signature.
+                    let Some(t) = self.infer_generic_call(e, &first, args) else {
+                        return Ty::Unknown;
+                    };
+                    if let Some(flags) = self.manual_param_fns.get(cname).cloned() {
+                        self.check_manual_args(&flags, args);
+                    }
+                    if self.manual_ret_fns.contains(cname) {
+                        self.pending_owned_calls.insert(e.span);
+                    }
+                    return t;
+                }
                 self.check_args_info(e, &first.params, args);
                 if let Some(flags) = self.manual_param_fns.get(cname).cloned() {
                     self.check_manual_args(&flags, args);
@@ -2682,6 +2697,101 @@ impl<'a> Checker<'a> {
             };
             let got = self.check_expr(&a.value);
             self.check_assignable(&want, &got, a.span, "argument");
+            position += 1;
+        }
+        if position < params.len() {
+            self.err(
+                e.span,
+                format!(
+                    "expected {} argument(s), found {}",
+                    params.len(),
+                    position
+                ),
+            );
+        }
+    }
+
+    /// Check a generic function call `name(args)` by **inferring** its type
+    /// arguments from the (already-checked) arguments. Every generic parameter
+    /// must be pinned by an argument's type; an unpinned one reports an error
+    /// telling the caller to write the type arguments explicitly. The
+    /// substituted signature is checked exactly once (arguments are not
+    /// re-checked), and the substituted return type is returned.
+    fn infer_generic_call(
+        &mut self,
+        e: &Expr,
+        f: &CallableInfo,
+        args: &[CallArg],
+    ) -> Option<Ty> {
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        let mut got: HashMap<Span, Ty> = HashMap::new();
+        for (position, a) in args.iter().enumerate() {
+            let t = self.check_expr(&a.value);
+            got.insert(a.value.span, t.clone());
+            if a.name.is_none() && !a.spread {
+                if let Some(want) = f.params.get(position) {
+                    crate::ty::infer_from(&want.ty, &t, &mut map);
+                }
+            }
+        }
+        let missing: Vec<&String> = f.generics.iter().filter(|g| !map.contains_key(*g)).collect();
+        if !missing.is_empty() {
+            let plural = if missing.len() == 1 { "" } else { "s" };
+            let names = missing
+                .iter()
+                .map(|g| format!("`{g}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.err(
+                e.span,
+                format!(
+                    "cannot infer the type argument{plural} {names} for `{}`; \
+                     specify them explicitly like `{}<...>(...)`",
+                    f.name, f.name
+                ),
+            );
+            return None;
+        }
+        let params: Vec<Ty> = f.params.iter().map(|p| self.subst(&p.ty, &map)).collect();
+        self.check_args_typed(e, &params, args, &got);
+        Some(self.subst(&f.ret, &map))
+    }
+
+    /// Argument checking against a signature whose expressions have already
+    /// been checked: reads the argument types back from `got` instead of
+    /// re-checking them (so inference's single pass stays single).
+    fn check_args_typed(
+        &mut self,
+        e: &Expr,
+        params: &[Ty],
+        args: &[CallArg],
+        got: &HashMap<Span, Ty>,
+    ) {
+        let mut position = 0usize;
+        for a in args {
+            if let Some(name) = &a.name {
+                self.err_note(
+                    a.span,
+                    format!("named argument `{name}` is not supported for this call"),
+                    "positional arguments are expected here",
+                );
+                position += 1;
+                continue;
+            }
+            if a.spread {
+                position += 1;
+                continue;
+            }
+            let want = match params.get(position) {
+                Some(p) => p.clone(),
+                None => {
+                    self.err(e.span, "too many arguments in call");
+                    position += 1;
+                    continue;
+                }
+            };
+            let got_ty = got.get(&a.value.span).cloned().unwrap_or(Ty::Unknown);
+            self.check_assignable(&want, &got_ty, a.span, "argument");
             position += 1;
         }
         if position < params.len() {

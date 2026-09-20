@@ -132,3 +132,11 @@ test fn nested_generic_type_args() {
     expect(p.first).toBe(3)
     expect(p.second.read()).toBe("three")
 }
+
+test fn inferred_unbox_and_swap() {
+    var b = Box<int>(5)
+    expect(unbox(b)).toBe(5)
+    expect(unbox(Box<string>("z"))).toBe("z")
+    expect(swap(b, 9)).toBe(5)
+    expect(b.read()).toBe(9)
+}

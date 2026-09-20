@@ -475,6 +475,61 @@ fn emits_generic_function_instantiation() {
 }
 
 #[test]
+fn emits_inferred_generic_function_instantiation() {
+    // `id_fn(7)` with no explicit type arguments infers `int` from the
+    // argument and materializes the SAME instantiation as an explicit
+    // `id_fn<int>(7)`: inferring and writing the type arguments by hand land
+    // on one shared monomorphized function. Uninferrable generic calls do not
+    // lower.
+    let m = emit_str(
+        r#"fn id_fn<T>(x: T) -> T {
+            x
+        }
+
+        fn first<T>(xs: List<T>, fallback: T) -> T {
+            if (len(xs) > 0) {
+                xs[0]
+            } else {
+                fallback
+            }
+        }
+
+        fn main() {
+            println(id_fn(7))
+            println(id_fn(7))
+            println(first([1, 2, 3], 0))
+        }"#,
+    );
+    let instantiated: Vec<&str> = m
+        .funcs
+        .iter()
+        .map(|f| f.symbol.as_str())
+        .filter(|s| s.starts_with("pkl_id_fn__") || s.starts_with("pkl_first__"))
+        .collect();
+    assert_eq!(
+        instantiated.len(),
+        2,
+        "expected id_fn<int> + first<int> instantiations, got {instantiated:?}"
+    );
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_id_fn__int"));
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_first__int"));
+    // The two inferred `id_fn(7)` sites share the single `id_fn<int>`.
+    let id_int = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_id_fn__int")
+        .expect("id<int> instantiation");
+    let call_count = m
+        .funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
+        .count();
+    assert_eq!(call_count, 2, "both inferred sites must call the single instantiation");
+}
+
+#[test]
 fn emits_generic_class_instantiation() {
     // `Box<int>(...)` lower like ordinary classes: the materialized ctor and
     // methods carry mangled symbols (a type-argument suffix, deduplicated with

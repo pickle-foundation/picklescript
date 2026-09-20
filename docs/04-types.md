@@ -82,18 +82,21 @@ fn max<T>(a: T, b: T) -> T where T: Comparable => a > b ? a : b
   machinery, so generics cost nothing at run time.
 
 > **Implemented subset (current compiler).** Generic *classes and structs*
-> (`class Box<T>`, `struct Pair<A, B>`) and explicit generic *calls*
-> (`f<int>(…)`, `Box<int>(…)`) are monomorphized: each distinct concrete
-> type-argument list produces its own instantiation with concrete field
-> types, slot layouts, and mangled symbols (`pkl_Box_new__int`,
-> `pkl_Box_read_int`), deduplicated across call sites. Generic functions
-> may take, return, and construct generic types (`unbox<T>(b: Box<T>)`,
-> `make_pair<A, B>`), including inside other generic functions (`Box<T>`
-> under an in-progress `T` resolves once `T` becomes concrete). Still bails
-> cleanly ("not lowered yet"): type-argument *inference* (`f(x)` with no
-> `<...>`), `where` bounds, generic functions as *values*, and lambdas
-> **declared inside** generic class/function bodies (lambdas passed **into**
-> an instantiation lower fine). See docs/06-compiler.md "Generic classes…".
+> (`class Box<T>`, `struct Pair<A, B>`) and generic *calls* (`f<int>(…)`,
+> `Box<int>(…)`) are monomorphized: each distinct concrete type-argument list
+> produces its own instantiation with concrete field types, slot layouts, and
+> mangled symbols (`pkl_Box_new__int`, `pkl_Box_read_int`), deduplicated across
+> call sites. Generic functions may take, return, and construct generic types
+> (`unbox<T>(b: Box<T>)`, `make_pair<A, B>`), including inside other generic
+> functions (`Box<T>` under an in-progress `T` resolves once `T` becomes
+> concrete). Type arguments can be **omitted when the arguments pin them**:
+> `id(3)`, `first([1, 2, 3], 0)`, `swap(b, 9)` infer `int` and land on the
+> *same* instantiation as the explicit `id<int>(…)` form; an unpin-able call
+> (`id()` with an impossible-to-infer parameter) errors asking for explicit
+> `<...>`. Still bails cleanly ("not lowered yet"): `where` bounds, generic
+> functions as *values*, and lambdas **declared inside** generic class/function
+> bodies (lambdas passed **into** an instantiation lower fine). See
+> docs/06-compiler.md "Generic classes…".
 
 ## Function types
 

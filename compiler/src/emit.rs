@@ -6135,6 +6135,22 @@ fn build_lambda_body(
         if let ExprKind::GenericCall { name, type_args } = &callee.kind {
             return self.generic_call(e, name, type_args, args);
         }
+        // A generic function called without explicit type arguments: infer them
+        // from the arguments, then monomorphize exactly like the explicit form.
+        if let ExprKind::Ident(cname) = &callee.kind {
+            if let Some(info) = self
+                .resolved
+                .fns
+                .get(cname)
+                .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+                .cloned()
+            {
+                if !info.generics.is_empty() {
+                    let arg_tys = self.infer_generic_fn_args(e.span, &info, args)?;
+                    return self.generic_fn_call(e, &info, arg_tys, args);
+                }
+            }
+        }
         // A function-valued callee that is not a plain named call (a closure
         // variable, a function-typed parameter, a call result, ...) dispatches
         // dynamically through the closure's stored address. Member callees and
@@ -6633,16 +6649,29 @@ fn build_lambda_body(
                 ),
             );
         }
+        self.generic_fn_call(e, &info, arg_tys, args)
+    }
+
+    /// Core of a monomorphized generic-function call, shared by the explicit
+    /// `name<T,...>(args)` form and the argument-driven `name(args)` form.
+    fn generic_fn_call(
+        &mut self,
+        e: &Expr,
+        info: &CallableInfo,
+        arg_tys: Vec<Ty>,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let name = info.name.clone();
         let map: HashMap<String, Ty> = info
             .generics
             .iter()
             .cloned()
             .zip(arg_tys.iter().cloned())
             .collect();
-        let key = (name.to_string(), arg_tys.clone());
+        let key = (name.clone(), arg_tys);
         let fid = match self.instantiations.get(&key) {
             Some(&fid) => fid,
-            None => self.instantiate_generic_fn(e.span, &info, &key, &map)?,
+            None => self.instantiate_generic_fn(e.span, info, &key, &map)?,
         };
         // Mirror the plain user-function call: borrow `&T` reference params,
         // wrap optional params, and store the result.
@@ -6670,6 +6699,54 @@ fn build_lambda_body(
             args: arg_temps,
         });
         Ok(dst)
+    }
+
+    /// Infer the type arguments of a generic user function `name(args)` from
+    /// the argument expressions' recorded types, exactly as the checker does
+    /// (`ty::infer_from`). Every generic parameter must be pinned by at least
+    /// one argument; an unpinned one bails with a message mirroring the
+    /// checker's. Clean programs never reach this failure (the checker
+    /// reports it), so the message is a defensive fallback.
+    fn infer_generic_fn_args(
+        &mut self,
+        span: Span,
+        info: &CallableInfo,
+        args: &[CallArg],
+    ) -> Result<Vec<Ty>, ()> {
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        for (i, a) in args.iter().enumerate() {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            if a.name.is_none() {
+                if let Some(want) = info.params.get(i) {
+                    let got = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                    crate::ty::infer_from(&want.ty, &got, &mut map);
+                }
+            }
+        }
+        let missing: Vec<&String> = info.generics.iter().filter(|g| !map.contains_key(*g)).collect();
+        if !missing.is_empty() {
+            let plural = if missing.len() == 1 { "" } else { "s" };
+            let names = missing
+                .iter()
+                .map(|g| format!("`{g}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return self.bad(
+                span,
+                format!(
+                    "cannot infer the type argument{plural} {names} for `{}`; \
+                     specify them explicitly like `{}<...>(...)`",
+                    info.name, info.name
+                ),
+            );
+        }
+        Ok(info
+            .generics
+            .iter()
+            .map(|g| map.get(g).cloned().unwrap_or(Ty::Unknown))
+            .collect())
     }
 
     /// A generic class/struct constructor call `Box<int>(arg, ...)`. Resolves

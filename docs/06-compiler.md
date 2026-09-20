@@ -219,6 +219,22 @@ Lowering rules:
   diagnostic. Generic classes target these same edges when instantiated:
   an instantiation whose plan hits `extends`/`implements`/`override`/named
   constructor/`deinit`/property/static-field/const bails with an E0900.
+- A generic *function* call `name<T,...>(args)` monomorphizes at the call
+  site: the callee is instantiated over the resolved type arguments
+  (substituted under the enclosing instantiation, so `id<U>` inside an
+  in-progress `outer<U>` yields the caller's `U`), the instantiation is
+  shared across identical type-argument lists, and the call lowers to a
+  static call of `pkl_<name>_<suffix>`. When a generic function is called
+  *without* `<...>` (`id(3)`, `first([1, 2, 3], 0)`), its type arguments are
+  **inferred from the argument types** instead — the same unification in the
+  checker and the emitter (`Ty::infer_from`): a `T` parameter pairs with the
+  argument's concrete type, nested types (`List<T>`, `T?`, `(T) -> T`,
+  `&T`, `Map<K, V>`) unify structurally, and one-pass argument checking
+  prevents double diagnostics. Every generic parameter must be pinned by at
+  least one argument; otherwise the call errors with "cannot infer the type
+  argument `…` for `…`; specify them explicitly" and, in the emitter, bails.
+  The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
+  shared), so inference and hand-written type arguments never diverge.
 - Generic classes and structs (`class Box<T>` / `struct Pair<A, B>`) lower by
   **lazy per-use-site materialization**. The first reference with a concrete
   type-argument list (`Box<int>(…)`, a `b.value`/`b.read()` access on a

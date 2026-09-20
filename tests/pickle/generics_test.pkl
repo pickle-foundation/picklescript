@@ -22,6 +22,14 @@ fn apply_twice<T>(f: fn (T) -> T, x: T) -> T {
     f(f(x))
 }
 
+fn pick_one<T>(xs: List<T>, fallback: T?) -> T {
+    if (len(xs) > 0) {
+        xs[0]
+    } else {
+        fallback?
+    }
+}
+
 fn negate(x: int) -> int {
     -x
 }
@@ -68,4 +76,54 @@ test fn generic_two_type_params() {
 test fn generic_with_lambda_argument() {
     expect(apply_twice<int>(fn (n: int) -> int { n * 2 }, 5)).toBe(20)
     expect(apply_twice<int>(negate, 3)).toBe(3)
+}
+
+test fn inferred_id_ints() {
+    expect(id_fn(3)).toBe(3)
+    expect(id_fn(-7)).toBe(-7)
+}
+
+test fn inferred_id_strings() {
+    expect(id_fn("hello")).toBe("hello")
+}
+
+test fn inferred_id_in_arith() {
+    expect(30 + id_fn(12)).toBe(42)
+}
+
+test fn inferred_id_nested() {
+    expect(id_fn(id_fn(3))).toBe(3)
+    expect(id_fn(id_fn("x"))).toBe("x")
+}
+
+test fn inferred_id_list() {
+    expect(len(id_fn([1, 2, 3]))).toBe(3)
+    expect(id_fn([1, 2, 3])[2]).toBe(3)
+}
+
+test fn inferred_twice() {
+    expect(twice(21)).toBe(21)
+    expect(twice("ab")).toBe("ab")
+}
+
+test fn inferred_first() {
+    expect(first([1, 2, 3], 0)).toBe(1)
+    expect(first(["a", "b"], "")).toBe("a")
+    expect(first([3.5, 2.5], 0.0)).toBe(3.5)
+}
+
+test fn inferred_choose() {
+    expect(choose(1, "x")).toBe("x")
+    expect(choose("a", 1.5)).toBe(1.5)
+}
+
+test fn inferred_apply_twice() {
+    expect(apply_twice(fn (n: int) -> int { n * 2 }, 5)).toBe(20)
+    expect(apply_twice(negate, 3)).toBe(3)
+}
+
+test fn inferred_option_param() {
+    expect(pick_one([1, 2], none)).toBe(1)
+    expect(pick_one([9], 5)).toBe(9)
+    expect(pick_one(["a", "b"], none)).toBe("a")
 }
