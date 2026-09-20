@@ -246,6 +246,8 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                         // Tag `Int` on purpose: raw data addresses must never
                         // be put into the shadow frame as managed pointers.
                         IrConst::StrAddr(_) => IrTy::Int,
+                        // Likewise for raw function addresses (finalizers).
+                        IrConst::FuncAddr(_) => IrTy::Int,
                     };
                     tt.insert(dst.0, ty);
                 }
@@ -608,6 +610,12 @@ fn lower_instr(
                         &[IrTy::Ptr, IrTy::Int],
                         IrTy::Ptr,
                     );
+                    builder.ins().symbol_value(types::I64, gv)
+                }
+            IrConst::FuncAddr(fid) => {
+                    let f = &module.funcs[fid.0];
+                    let params: Vec<IrTy> = f.params.iter().map(|p| p.ty).collect();
+                    let (_s, gv) = extern_pair(builder, call_cache, &f.symbol, &params, f.ret);
                     builder.ins().symbol_value(types::I64, gv)
                 }
             };

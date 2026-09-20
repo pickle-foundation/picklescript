@@ -881,8 +881,16 @@ impl<'a> Checker<'a> {
                     self.check_block(b);
                     self.pop_scope();
                 }
+                ClassMember::Deinit(b) => {
+                    // `deinit` is the GC-sweep finalizer: `this` is live and it
+                    // returns unit (a bare `return` is allowed).
+                    self.push_scope();
+                    self.ret_ty = Ty::Empty;
+                    self.fn_generics = Vec::new();
+                    self.check_block(b);
+                    self.pop_scope();
+                }
                 ClassMember::Property(p) => self.check_property_bodies(p, &table.generics),
-                _ => {}
             }
         }
         self.self_ty = None;

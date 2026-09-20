@@ -79,6 +79,10 @@ pub enum IrConst {
     /// runtime (e.g. `pickle_class_register`). Typed `Int` so the value never
     /// enters the GC trace frame.
     StrAddr(StrId),
+    /// Tag `Int`: the link-time address of a module function's symbol. Used to
+    /// hand a finalizer (`pkl_<T>_deinit`) to `pickle_class_register`. Typed
+    /// `Int` so the raw code pointer never enters the GC trace frame.
+    FuncAddr(FuncId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,5 +360,6 @@ pub fn irconst_repr(c: IrConst) -> String {
         IrConst::Null => "null".to_string(),
         IrConst::Str(id) => format!("str#{}", id.0),
         IrConst::StrAddr(id) => format!("addrof str#{}", id.0),
+        IrConst::FuncAddr(id) => format!("addrof fn#{}", id.0),
     }
 }

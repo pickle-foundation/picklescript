@@ -10,7 +10,8 @@
 
 use crate::gc::Gc;
 use crate::object::{
-    builtin_nop_finalizer, ClassDescriptor, PickleObject, PICKLE_CLASS_USER_BASE,
+    builtin_nop_finalizer, ClassDescriptor, PickleObject, PICKLE_CLASS_FLAG_FINALIZER,
+    PICKLE_CLASS_USER_BASE,
 };
 use crate::object::pickle_header_size;
 
@@ -78,18 +79,27 @@ pub fn class_set_slot(obj: *mut PickleObject, index: i64, value: *mut PickleObje
 // (`boxscalar::pickle_box_*`), matching list-element rules.
 
 /// Register one user-class descriptor (copies the name and mask into stable
-/// heap memory) and return its assigned class id.
+/// heap memory) and return its assigned class id. `finalizer` is the raw
+/// address of the compiled `pkl_<T>_deinit` function, or 0 when the class has
+/// no `deinit` block.
 #[no_mangle]
 pub extern "C" fn pickle_class_register(
     name_ptr: *const u8,
     name_len: usize,
     slot_count: usize,
     mask: u64,
+    finalizer: usize,
 ) -> u32 {
-    class_register(name_ptr, name_len, slot_count, mask)
+    class_register(name_ptr, name_len, slot_count, mask, finalizer)
 }
 
-fn class_register(name_ptr: *const u8, name_len: usize, slot_count: usize, mask: u64) -> u32 {
+fn class_register(
+    name_ptr: *const u8,
+    name_len: usize,
+    slot_count: usize,
+    mask: u64,
+    finalizer: usize,
+) -> u32 {
     let name: Box<[u8]> = if name_ptr.is_null() || name_len == 0 {
         Box::default()
     } else {
@@ -108,14 +118,23 @@ fn class_register(name_ptr: *const u8, name_len: usize, slot_count: usize, mask:
     // freed; the volumes are tiny (one copy per user class).
     let name_copy = Box::leak(name);
     let mask_copy = Box::leak(words.into_boxed_slice());
+    let (flags, finalizer): (u32, extern "C" fn(*mut PickleObject)) = if finalizer == 0 {
+        (0, builtin_nop_finalizer)
+    } else {
+        // SAFETY: the compiler emits the address of an `extern "C"` function
+        // with the `fn(*mut PickleObject)` shape; non-zero means a `deinit`
+        // block exists for this class.
+        let f: extern "C" fn(*mut PickleObject) = unsafe { std::mem::transmute(finalizer) };
+        (PICKLE_CLASS_FLAG_FINALIZER, f)
+    };
     let d = ClassDescriptor {
         name_ptr: name_copy.as_ptr(),
         name_len: name_len as u32,
-        flags: 0,
+        flags,
         slot_count: slot_count as u32,
         mask_words: mask_copy.len() as u32,
         managed_mask: mask_copy.as_ptr(),
-        finalizer: builtin_nop_finalizer,
+        finalizer,
     };
     let g = crate::gc::gc_mut();
     g.register_class(d)
@@ -196,7 +215,7 @@ mod tests {
         let _guard = crate::gc::test_begin();
         crate::pickle_runtime_init();
         let name = b"Hero".to_vec();
-        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111);
+        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0);
         assert!(id >= PICKLE_CLASS_USER_BASE, "user classes come after the builtins");
         let g = crate::gc::gc_mut();
         assert_eq!(g.class_name(id).map(|b| b.to_vec()), Some(b"Hero".to_vec()));

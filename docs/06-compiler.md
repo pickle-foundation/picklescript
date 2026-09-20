@@ -183,18 +183,23 @@ Classes use the same object-model extern path. A class instance is a plain
 managed object (`PickleObject`) whose runtime `ClassDescriptor` carries the
 name (for printing) and a field-validity mask. Descriptors are allocated *at
 runtime* rather than baked into the generated binary: `main`'s entry block
-opens with one `pickle_class_register(name_ptr, name_len, slot_count, mask)`
-void call per class, in registration order, so descriptor id == call site id.
-Call sites inside constructors hardcode that id (`8 + emitted index`), so no
-id is threaded through the lowering; `pickle_class_register` returns the id
-but emitters discard it. `StrAddr` lowerings pull the name bytes from the data
-section (`pkl_strdata_N`) — AOT marks those externs as data, JIT lowers them
-to symbol addresses; the pointer is never treated as a GC object.
+opens with one `pickle_class_register(name_ptr, name_len, slot_count, mask,
+finalizer)` void call per class, in registration order, so descriptor id == call
+site id. Call sites inside constructors hardcode that id (`8 + emitted index`),
+so no id is threaded through the lowering; `pickle_class_register` returns the
+id but emitters discard it. `StrAddr` lowerings pull the name bytes from the
+data section (`pkl_strdata_N`) — AOT marks those externs as data, JIT lowers
+them to symbol addresses; the pointer is never treated as a GC object. The
+`finalizer` argument is the address of `pkl_<TypeName>_deinit`, or `0`.
 
 Lowering rules:
 
-- No `deinit`, no generics/extends/implements
-  -> the class is *registered*. Anything else bails with
+- A `deinit { ... }` lowers to `pkl_<TypeName>_deinit(this) -> unit`: slot 0 is
+  `this`, the body runs like a constructor body (unit result, `this` live), and
+  the function's address is passed to `pickle_class_register` through a
+  `FuncAddr` const (`addrof fn#N`, typed `int` so the raw code pointer never
+  enters the GC trace frame). A class without `deinit` passes `0`.
+- Generics/extends/implements are not lowered: a class using them bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
   object is `pickle_class_new(id, field_count)`, then each field value is boxed

@@ -40,8 +40,13 @@ with the following properties:
 - Sweeping returns dead objects to the free list; consecutive free blocks
   coalesce.
 - Weak references exist (`weak T`) but do not keep objects alive.
-- Finalizers (`deinit`) run during sweep, off the allocation path, in
-  unspecified order; they must not allocate.
+- Finalizers (`deinit`) run during sweep, off the allocation path, at most
+  once per dead object, in unspecified order; they must not allocate. They are
+  best-effort: an object that is never reclaimed (e.g. live until exit) is
+  never finalized.
+- A fresh allocation is pinned across the collection its own allocation may
+  trigger, so an object under construction is never swept (or finalized)
+  before its constructor can store it.
 - The GC is **incremental-izable** later; v1 reserves a stop-the-world
   pause for simplicity and predictability.
 

@@ -211,7 +211,19 @@ impl Heap {
     /// a segment. Also frees raw buffers owned by dead lists/maps.
     ///
     /// `release_raw` is the raw-block deallocator for `PList`/`PMap`.
-    pub fn sweep<F: FnMut(*mut PickleObject)>(&mut self, mut release_raw: F) {
+    ///
+    /// `should_defer` marks a dead object whose finalizer must run before its
+    /// memory is reused. Such objects are *not* coalesced into a dead run and
+    /// are returned from this call; the caller runs their finalizers and then
+    /// hands each back via [`Heap::free_object`]. This keeps finalizers off the
+    /// sweep path so a finalizer that touches the heap cannot alias the
+    /// collector's `&mut Heap` borrow.
+    pub fn sweep<F, G>(&mut self, mut release_raw: F, mut should_defer: G) -> Vec<*mut PickleObject>
+    where
+        F: FnMut(*mut PickleObject),
+        G: FnMut(*mut PickleObject) -> bool,
+    {
+        let mut deferred: Vec<*mut PickleObject> = Vec::new();
         unsafe {
             let mut seg = self.segments;
             while !seg.is_null() {
@@ -245,10 +257,17 @@ impl Heap {
                     } else {
                         // Dead: hand any owned raw buffers to the callback.
                         release_raw(obj);
-                        if dead_start.is_null() {
-                            dead_start = cur;
+                        if should_defer(obj) {
+                            // A deferred block cannot be coalesced (its header
+                            // stays valid until its finalizer has run).
+                            flush_dead(self, &mut dead_start, &mut dead_len);
+                            deferred.push(obj);
+                        } else {
+                            if dead_start.is_null() {
+                                dead_start = cur;
+                            }
+                            dead_len += size;
                         }
-                        dead_len += size;
                     }
                     cur = cur.add(size);
                 }
@@ -256,6 +275,14 @@ impl Heap {
                 seg = (*seg).next;
             }
         }
+        deferred
+    }
+
+    /// Return a single dead object to its size class. Used for blocks whose
+    /// finalizer ran after a sweep; no coalescing is attempted.
+    pub fn free_object(&mut self, obj: *mut PickleObject) {
+        let size = unsafe { (*obj).size as usize };
+        self.push_free(obj, size);
     }
 
     /// Free all segments and bins (used in tests / shutdown).
@@ -358,9 +385,12 @@ mod tests {
             (*a).set_marked();
         }
         // Mark only `a`; b dies.
-        heap.sweep(|_obj| {
-            // no raw buffers
-        });
+        heap.sweep(
+            |_obj| {
+                // no raw buffers
+            },
+            |_obj| false,
+        );
         // b should be on the free list and a unmarked.
         unsafe {
             assert!(!(*a).is_marked());

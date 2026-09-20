@@ -69,7 +69,19 @@ impl Gc {
         }
         let _ = ALLOC_SINCE_GC.fetch_add(1, Ordering::Relaxed);
         let _ = BYTES_SINCE_GC.fetch_add(size, Ordering::Relaxed);
+        // The threshold is checked *after* the object exists, so pin it across
+        // its own collection: it is not reachable from any root yet, and an
+        // unpinned sweep would free (and, for a class with a `deinit`, run the
+        // finalizer on) the object before its constructor can even store it.
+        // Sweep clears the mark of every surviving object, and we clear it
+        // again here in case no collection ran.
+        unsafe {
+            (*obj).set_marked();
+        }
         self.maybe_collect();
+        unsafe {
+            (*obj).clear_marked();
+        }
         obj
     }
 
@@ -104,38 +116,64 @@ impl Gc {
         let descriptors = &self.descriptors;
         trace::trace_from_roots(descriptors, &roots);
 
-        // Sweep: release dead list/map raw buffers, run finalizers.
+        // Sweep: release dead list/map raw buffers and pick out the objects
+        // whose finalizers must run. Finalizers are *deferred*: the heap borrow
+        // ends before they run so a finalizer that touches the heap cannot
+        // alias the collector's `&mut Heap`.
         let heap = &mut self.heap;
+        let descriptors_sweep = &self.descriptors;
         let mut live: u32 = 0;
-        heap.sweep(|obj| {
-            unsafe {
-                let class_id = (*obj).class_id;
-                match class_id {
-                    PICKLE_CLASS_LIST => {
-                        let data = list_data(obj);
-                        if !data.is_null() {
-                            raw_free(data as *mut u8);
-                        }
-                    }
-                    PICKLE_CLASS_MAP => {
-                        let entries = map_entries(obj);
-                        if !entries.is_null() {
-                            raw_free(entries as *mut u8);
-                        }
-                    }
-                    PICKLE_CLASS_STRING => {}
-                    _ => {
-                        if let Some(d) = descriptors.get(class_id) {
-                            if d.flags & PICKLE_CLASS_FLAG_FINALIZER != 0 {
-                                (d.finalizer)(obj);
+        let deferred = heap.sweep(
+            |obj| {
+                unsafe {
+                    let class_id = (*obj).class_id;
+                    match class_id {
+                        PICKLE_CLASS_LIST => {
+                            let data = list_data(obj);
+                            if !data.is_null() {
+                                raw_free(data as *mut u8);
                             }
                         }
+                        PICKLE_CLASS_MAP => {
+                            let entries = map_entries(obj);
+                            if !entries.is_null() {
+                                raw_free(entries as *mut u8);
+                            }
+                        }
+                        _ => {}
                     }
+                    live += (*obj).size;
                 }
-                live += (*obj).size;
-            }
-        });
+            },
+            |obj| unsafe {
+                let class_id = (*obj).class_id;
+                if matches!(
+                    class_id,
+                    PICKLE_CLASS_LIST | PICKLE_CLASS_MAP | PICKLE_CLASS_STRING
+                ) {
+                    return false;
+                }
+                descriptors_sweep
+                    .get(class_id)
+                    .is_some_and(|d| d.flags & PICKLE_CLASS_FLAG_FINALIZER != 0)
+            },
+        );
         self.live_bytes.store(live, Ordering::Relaxed);
+
+        // Run finalizers now that the heap borrow has ended, then return the
+        // deferred blocks to the free list. `COLLECTING` is still set, so a
+        // finalizer that allocates cannot start a nested collection.
+        for obj in &deferred {
+            unsafe {
+                let class_id = (**obj).class_id;
+                if let Some(d) = self.descriptors.get(class_id) {
+                    (d.finalizer)(*obj);
+                }
+            }
+        }
+        for obj in deferred {
+            self.heap.free_object(obj);
+        }
 
         ALLOC_SINCE_GC.store(0, Ordering::Relaxed);
         BYTES_SINCE_GC.store(0, Ordering::Relaxed);
@@ -298,6 +336,67 @@ mod tests {
         })
     }
 
+    /// Counts finalizer runs for the tests below. Reset in each test.
+    static FINALIZED: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn count_finalizer(_obj: *mut PickleObject) {
+        let _ = FINALIZED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A user-class-like descriptor carrying `count_finalizer`.
+    fn finalizable_class(gc: &mut Gc) -> u32 {
+        gc.register_class(crate::object::ClassDescriptor {
+            name_ptr: b"fin\0".as_ptr(),
+            name_len: 3,
+            flags: PICKLE_CLASS_FLAG_FINALIZER,
+            slot_count: 0,
+            mask_words: 0,
+            managed_mask: std::ptr::null(),
+            finalizer: count_finalizer,
+        })
+    }
+
+    #[test]
+    fn finalizer_runs_once_for_a_dead_object_and_block_is_reused() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        FINALIZED.store(0, Ordering::Relaxed);
+        let gc = gc_mut();
+        let cls = finalizable_class(gc);
+        let orphan = gc.alloc(64, cls);
+        let addr_before = orphan as usize;
+        gc.collect();
+        assert_eq!(
+            FINALIZED.load(Ordering::Relaxed),
+            1,
+            "the dead object must be finalized exactly once"
+        );
+        // The finalizer runs before the block is recycled.
+        let recycled = gc.alloc(64, cls);
+        assert_eq!(recycled as usize, addr_before);
+    }
+
+    #[test]
+    fn rooted_finalizable_object_is_not_finalized() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        FINALIZED.store(0, Ordering::Relaxed);
+        let gc = gc_mut();
+        let cls = finalizable_class(gc);
+        let obj = gc.alloc(64, cls);
+        let root: *mut *mut PickleObject = Box::into_raw(Box::new(obj));
+        let handle = pickle_gc_root_add(root);
+        gc.collect();
+        assert_eq!(
+            FINALIZED.load(Ordering::Relaxed),
+            0,
+            "a rooted object must survive and not be finalized"
+        );
+        assert_eq!(unsafe { *root }, obj);
+        pickle_gc_root_drop(handle);
+        unsafe { drop(Box::from_raw(root)) };
+    }
+
     #[test]
     fn rooted_object_survives_collect() {
         let _guard = test_begin();
@@ -344,15 +443,46 @@ mod tests {
         pickle_gc_set_threshold(256);
         assert_eq!(pickle_gc_collection_count(), 0);
         let before = pickle_gc_collection_count();
-        // This allocation crosses the 256-byte threshold, collecting any
-        // unrooted blocks, then returns the block.
+        // This allocation crosses the 256-byte threshold and collects. The
+        // object itself is pinned across that collection (it is not reachable
+        // yet), so it survives.
         let orphan = gc.alloc(256, cls);
         let after = pickle_gc_collection_count();
         assert!(after > before, "auto-collect must run at the threshold");
-        // The orphan was unrooted, so it was swept; the next same-size
-        // allocation reuses its block.
+        assert_eq!(
+            unsafe { (*orphan).class_id },
+            cls,
+            "the allocation that crossed the threshold must survive its own collect"
+        );
+        // The orphan is unrooted, so the next collection sweeps it and the
+        // allocation after that reuses its block.
+        let _ = gc.alloc(256, cls);
         let recycled = gc.alloc(256, cls);
         assert_eq!(recycled as usize, orphan as usize);
+        pickle_gc_set_threshold(DEFAULT_AUTO_COLLECT_THRESHOLD);
+    }
+
+    #[test]
+    fn crossing_allocation_is_not_finalized_by_its_own_collect() {
+        let _guard = test_begin();
+        crate::pickle_runtime_init();
+        FINALIZED.store(0, Ordering::Relaxed);
+        let gc = gc_mut();
+        let cls = finalizable_class(gc);
+        pickle_gc_set_threshold(256);
+        // Allocating right at the threshold triggers a collection; the object
+        // under construction must not be treated as dead (which would run its
+        // finalizer and hand the constructor a freed block).
+        let obj = gc.alloc(256, cls);
+        assert_eq!(
+            FINALIZED.load(Ordering::Relaxed),
+            0,
+            "the object being allocated must not be finalized by its own collection"
+        );
+        assert_eq!(unsafe { (*obj).class_id }, cls);
+        // Once unrooted, a later collection reclaims it and finalizes once.
+        let _ = gc.alloc(256, cls);
+        assert_eq!(FINALIZED.load(Ordering::Relaxed), 1);
         pickle_gc_set_threshold(DEFAULT_AUTO_COLLECT_THRESHOLD);
     }
 

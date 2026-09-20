@@ -155,12 +155,31 @@ let p = Point(x: 1.5, y: 2.0)   // synthesized
 ```
 class File {
     init { ... }        // after fields + constructor body, before first use
-    deinit { ... }      // before collection (don't rely on timing)
+    deinit { ... }      // at GC sweep, once, best-effort
 }
 ```
 
-`deinit` runs during GC for cleanup of native handles; it must not allocate
-or allocate can be deferred to `init` alternates. Finalizers are best-effort.
+`init` runs after the fields and the constructor body are initialised, with
+`this` live.
+
+`deinit` is the GC finalizer. At most one `deinit` is allowed per class; it
+compiles to a private `pkl_<T>_deinit(this)` function whose address is
+registered on the class descriptor, and the collector runs it when a **dead**
+instance is swept. It runs at most once, off the allocation path, in an
+unspecified order relative to other finalizers, and it must **not allocate**
+(allocation from a finalizer can alias the collector's borrow). Finalizers are
+best-effort: they only run if a collection actually reclaims a dead instance,
+so do not rely on timing or on them running at all.
+
+```
+class Handle {
+    fd: int
+
+    deinit {
+        println(this.fd)   // `this` is live; do not allocate here
+    }
+}
+```
 
 ## Composition over inheritance
 

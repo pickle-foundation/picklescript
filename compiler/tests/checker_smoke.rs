@@ -831,3 +831,56 @@ fn rejects_named_constructor_misuse() {
         "missing stray-delegation diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_deinit_using_this() {
+    // A `deinit` finalizer runs with `this` live and returns unit.
+    let d = check_str(
+        r#"class Widget {
+            value: int
+
+            deinit {
+                println(this.value)
+            }
+        }
+
+        fn main() {
+            let w = Widget(7)
+            println(w.value)
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected a clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_deinit_unknown_member() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+
+            deinit {
+                this.missing = 1
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(msgs.contains("missing"), "expected a member diagnostic, got:\n{msgs}");
+}
+
+#[test]
+fn rejects_duplicate_deinit() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+
+            deinit { println(1) }
+            deinit { println(2) }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("already has a `deinit` block"),
+        "missing duplicate-deinit diagnostic, got:\n{msgs}"
+    );
+}

@@ -741,6 +741,7 @@ impl<'a> Resolver<'a> {
         let mut named_ctors: Vec<(String, CtorInfo)> = Vec::new();
         let mut consts = Vec::new();
         let mut seen: Vec<String> = Vec::new();
+        let mut has_deinit = false;
 
         let mut record = |name: &str, span: Span| {
             if seen.iter().any(|s| s == name) {
@@ -854,7 +855,17 @@ impl<'a> Resolver<'a> {
                         span: p.span,
                     });
                 }
-                ClassMember::Init(_) | ClassMember::Deinit(_) => {}
+                ClassMember::Init(_) => {}
+                ClassMember::Deinit(b) => {
+                    if has_deinit {
+                        self.diags.emit(Diagnostic::error_at(
+                            b.span,
+                            format!("`{class_name}` already has a `deinit` block"),
+                        ));
+                    } else {
+                        has_deinit = true;
+                    }
+                }
             }
         }
         MemberTables {

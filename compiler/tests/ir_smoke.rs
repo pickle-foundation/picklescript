@@ -1473,3 +1473,109 @@ fn emits_named_constructor_redirect() {
         .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if *fid == origin_fid));
     assert!(main_calls, "main must call `pkl_Point_nc_origin`");
 }
+
+#[test]
+fn emits_deinit_finalizer_and_registration() {
+    // A `deinit` lowers to `pkl_<T>_deinit(this)` returning unit, and the class
+    // descriptor carries its address (a `FuncAddr` const) as the finalizer.
+    let m = emit_str(
+        r#"class Widget {
+            value: int
+
+            deinit {
+                println(42)
+            }
+        }
+
+        fn main() {
+            let w = Widget(7)
+            println(w.value)
+        }"#,
+    );
+
+    let fid = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Widget_deinit")
+        .expect("missing pkl_Widget_deinit");
+    let f = &m.funcs[fid];
+    assert_eq!(f.ret, IrTy::Unit, "a finalizer returns unit");
+    assert_eq!(f.params.len(), 1, "a finalizer takes only `this`");
+    assert_eq!(f.params[0].name, "this");
+    assert_eq!(f.params[0].ty, IrTy::Ptr);
+    assert!(!f.is_main);
+
+    // The registration extern now takes a fifth (finalizer) argument.
+    let reg = m
+        .externs
+        .iter()
+        .find(|e| e.symbol == "pickle_class_register")
+        .expect("pickle_class_register extern");
+    assert_eq!(reg.params.len(), 5, "register takes addr,len,fields,mask,finalizer");
+    assert!(reg.params.iter().all(|t| *t == IrTy::Int));
+    assert_eq!(reg.ret, IrTy::Unit);
+
+    // `main` passes the finalizer address to that fifth slot.
+    let fid = pickle_compiler::ir::FuncId(fid);
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let args = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .find_map(|i| match i {
+            IrInstr::Call { callee: Callee::Extern(id), args, .. }
+                if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                    == Some("pickle_class_register") =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .expect("class registration call");
+    assert_eq!(args.len(), 5);
+    let fin = args[4];
+    let is_addr = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+        matches!(i, IrInstr::Const { dst, c: IrConst::FuncAddr(g) } if *dst == fin && *g == fid)
+    });
+    assert!(is_addr, "fifth registration arg must be `addrof pkl_Widget_deinit`");
+    assert!(format!("{m}").contains("addrof fn#"), "dump:\n{m}");
+}
+
+#[test]
+fn class_without_deinit_registers_a_null_finalizer() {
+    let m = emit_str(
+        r#"class Plain {
+            x: int
+        }
+
+        fn main() {
+            let p = Plain(1)
+            println(p.x)
+        }"#,
+    );
+    assert!(
+        !m.funcs.iter().any(|f| f.symbol.contains("_deinit")),
+        "no finalizer function without a `deinit`"
+    );
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let args = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .find_map(|i| match i {
+            IrInstr::Call { callee: Callee::Extern(id), args, .. }
+                if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                    == Some("pickle_class_register") =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .expect("class registration call");
+    assert_eq!(args.len(), 5);
+    let fin = args[4];
+    let is_null = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+        matches!(i, IrInstr::Const { dst, c: IrConst::Int(0) } if *dst == fin)
+    });
+    assert!(is_null, "a class without `deinit` registers finalizer 0");
+}

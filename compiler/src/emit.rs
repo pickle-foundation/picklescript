@@ -54,6 +54,7 @@ pub fn emit_ir(
         class_by_name: HashMap::new(),
         ctor_ids: HashMap::new(),
         named_ctor_ids: HashMap::new(),
+        deinit_ids: HashMap::new(),
         method_ids: HashMap::new(),
         property_ids: HashMap::new(),
         static_property_ids: HashMap::new(),
@@ -109,6 +110,12 @@ enum FnSource<'a> {
     NamedCtor {
         table: ClassTable,
         ctor: &'a ConstructorDecl,
+    },
+    /// A `deinit` finalizer: runs at GC sweep on a dead instance, off the
+    /// allocation path. Slot 0 is `this`; returns unit.
+    Deinit {
+        table: ClassTable,
+        body: &'a Block,
     },
     /// A class/struct method (instance or static).
     Method { table: ClassTable, md: &'a MethodDecl },
@@ -216,6 +223,8 @@ struct Emitter<'a> {
     ctor_ids: HashMap<u32, FuncId>,
     /// (Class id, named-constructor name) -> redirect function.
     named_ctor_ids: HashMap<(u32, String), FuncId>,
+    /// Class id -> `deinit` finalizer function.
+    deinit_ids: HashMap<u32, FuncId>,
     /// (Class id, method name) -> (function, is_static).
     method_ids: HashMap<(u32, String), (FuncId, bool)>,
     /// (Class id, property name, is_setter) -> accessor function.
@@ -342,10 +351,6 @@ impl<'a> Emitter<'a> {
         self.maybe_register_class(&s.name, &s.members, table, s.span);
     }
 
-    fn bad_class<T>(&mut self, span: Span, name: &str, what: &str) -> Result<T, ()> {
-        self.bad(span, format!("{what} in `{name}` are not lowered yet"))
-    }
-
     /// Register one class/struct: reserve its class id, its implicit-constructor
     /// function, and its method functions. Members outside the slice are
     /// rejected loudly rather than miscompiled; generic / inheriting /
@@ -355,11 +360,8 @@ impl<'a> Emitter<'a> {
         name: &str,
         members: &'a [ClassMember],
         table: ClassTable,
-        span: Span,
+        _span: Span,
     ) {
-let bad = |e: &mut Self, what: &str| {
-            let _ = e.bad_class::<()>(span, name, what);
-        };
         if !table.generics.is_empty() || table.extends.is_some() || !table.implements.is_empty() {
             return;
         }
@@ -369,6 +371,7 @@ let bad = |e: &mut Self, what: &str| {
         });
         let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
         let mut init_blocks: Vec<&'a Block> = Vec::new();
+        let mut deinit_block: Option<&'a Block> = None;
         for m in members {
             match m {
                 ClassMember::Field {
@@ -382,10 +385,7 @@ let bad = |e: &mut Self, what: &str| {
                     }
                 }
                 ClassMember::Init(b) => init_blocks.push(b),
-                ClassMember::Deinit(_) => {
-                    bad(self, "`deinit` blocks");
-                    return;
-                }
+                ClassMember::Deinit(b) => deinit_block = Some(b),
                 _ => {}
             }
         }
@@ -464,6 +464,20 @@ let bad = |e: &mut Self, what: &str| {
                 },
             );
             self.named_ctor_ids.insert((cid, cname), fid);
+        }
+
+        // `deinit`: a finalizer `pkl_<Name>_deinit(this)` registered on the
+        // class descriptor and run by the collector at sweep.
+        if let Some(body) = deinit_block {
+            let fid = self.push_class_func(
+                &format!("{name}.deinit"),
+                &format!("pkl_{name}_deinit"),
+                FnSource::Deinit {
+                    table: table.clone(),
+                    body,
+                },
+            );
+            self.deinit_ids.insert(cid, fid);
         }
 
         // Methods: `pkl_<Name>_<m>` (instance) and `pkl_<Name>_sm_<m>` (static).
@@ -644,6 +658,10 @@ let bad = |e: &mut Self, what: &str| {
             FnSource::NamedCtor { table, ctor } => {
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
                 let _ = self.build_named_ctor(&table, ctor);
+            }
+            FnSource::Deinit { table, body } => {
+                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                let _ = self.build_deinit_body(&table, body);
             }
             FnSource::Method { table, md } => {
                 let Some(info) = self.finfo.get(&fid).cloned() else {
@@ -904,6 +922,22 @@ let bad = |e: &mut Self, what: &str| {
         Ok(())
     }
 
+    /// Lower a `deinit` finalizer: slot 0 is `this`, the body runs with `this`
+    /// live, and the function returns unit. Deinit runs off the allocation path
+    /// during GC sweep (see `docs/05-memory.md`).
+    fn build_deinit_body(&mut self, _table: &ClassTable, body: &'a Block) -> Result<(), ()> {
+        self.fslots.push(IrTy::Ptr);
+        self.fparams.push(IrParam {
+            name: "this".to_string(),
+            ty: IrTy::Ptr,
+        });
+        self.declare("this", Slot(0));
+        self.fret = IrTy::Unit;
+        self.emit_ctor_block(body)?;
+        self.tail_cleanup();
+        Ok(())
+    }
+
     /// Lower a method: slot 0 is `this` (instance methods), followed by the
     /// declared parameters.
     fn build_method_body(
@@ -993,24 +1027,28 @@ let bad = |e: &mut Self, what: &str| {
     }
 
     /// Register every user class descriptor at the top of `main`'s entry block.
-    /// Each is a `pickle_class_register(name_ptr, name_len, slot_count, mask)`
+    /// Each is a
+    /// `pickle_class_register(name_ptr, name_len, slot_count, mask, finalizer)`
     /// void call; the returned id is discarded (call sites hardcode it).
+    /// `finalizer` is the address of the class's `pkl_<Name>_deinit` function,
+    /// or 0 when it has no `deinit` block.
     fn inject_class_registrations(&mut self) {
         if self.classes.is_empty() {
             return;
         }
-        let plans: Vec<(String, usize)> = self
+        let plans: Vec<(String, usize, u32)> = self
             .classes
             .iter()
             .map(|p| {
                 (
                     p.name.clone(),
                     p.table.fields.iter().filter(|f| !f.is_static).count(),
+                    p.class_id,
                 )
             })
             .collect();
         let mut instrs: Vec<IrInstr> = Vec::new();
-        for (name, field_count) in plans {
+        for (name, field_count, cid) in plans {
             let sid = StrId(self.intern_string(&name));
             let addr = self.temp();
             instrs.push(IrInstr::Const {
@@ -1033,15 +1071,21 @@ let bad = |e: &mut Self, what: &str| {
                 dst: mask,
                 c: IrConst::Int(m as i64),
             });
+            let fin = self.temp();
+            let c = match self.deinit_ids.get(&cid) {
+                Some(fid) => IrConst::FuncAddr(*fid),
+                None => IrConst::Int(0),
+            };
+            instrs.push(IrInstr::Const { dst: fin, c });
             let ex = self.module.extern_id(IrExtern {
                 symbol: "pickle_class_register".to_string(),
-                params: vec![IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int],
+                params: vec![IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int],
                 ret: IrTy::Unit,
             });
             instrs.push(IrInstr::Call {
                 dst: None,
                 callee: Callee::Extern(ex),
-                args: vec![addr, len, n, mask],
+                args: vec![addr, len, n, mask, fin],
             });
         }
         if let Some(fid) = self.static_init_id {
