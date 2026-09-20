@@ -233,8 +233,28 @@ Lowering rules:
   prevents double diagnostics. Every generic parameter must be pinned by at
   least one argument; otherwise the call errors with "cannot infer the type
   argument `…` for `…`; specify them explicitly" and, in the emitter, bails.
-  The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
-  shared), so inference and hand-written type arguments never diverge.
+The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
+   shared), so inference and hand-written type arguments never diverge.
+- A generic function used **as a value** lowers by *pinning its type
+   arguments* and reusing the normal fn-value machinery. With explicit
+   arguments (`let f = id<int>`; `apply(id<int>, 3)`) the checked `GenericCall`
+   resolves its type args (substituted under the enclosing instantiation) and
+   emits a zero-capture closure whose slot 0 holds a generated **forwarder
+   trampoline** — a `fn.value` class function `pkl_tramp_{target id}` built from
+   `FnSource::Trampoline`, which forwards `(env, args...)` to `pkl_id__int` and
+   is registered/`push_class_func`'d inline, consumed by the `fid_list` build
+   loop. Passing a *bare* generic fn name (`apply(id, 3)`) infers its type
+   arguments from the expected `fn`-typed parameter (`Ty::infer_from` on the
+   signature), and materializes the same shared instantiation at the argument
+   site (`borrow_arg`), so value forms and direct calls share one
+   `pkl_id__int`. `Ty::infer_from` only pins a variable from *concrete*
+   evidence (a type argument or hint that itself contains variables is
+   skipped), which is what lets `apply_twice(id, 3)` infer `id`'s `T` without
+   corrupting `apply_twice`'s own `T`. A value with no way to pin its type
+   arguments (`let f = id`) keeps a half-open `fn (T) -> T` signature that the
+   checker flags at the first use, and the emitter bails if one ever slips
+   through; instantiations with unresolved `Var` type arguments bail cleanly
+   with a "cannot instantiate …with unresolved type arguments" diagnostic.
 - Generic classes and structs (`class Box<T>` / `struct Pair<A, B>`) lower by
   **lazy per-use-site materialization**. The first reference with a concrete
   type-argument list (`Box<int>(…)`, a `b.value`/`b.read()` access on a

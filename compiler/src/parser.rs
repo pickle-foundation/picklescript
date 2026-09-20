@@ -4,6 +4,15 @@ use crate::token::{LexedToken, StrLit, StrSeg, Tok};
 
 type PResult<T> = Result<T, ()>;
 
+/// How the upcoming `name<Type,...>` bracket resolves: a call `name<T>(args)`,
+/// a standalone generic value `name<T>`, or no generic bracket at all (None).
+#[derive(PartialEq, Clone, Copy)]
+enum GenericCallFlavor {
+    Call,
+    Value,
+    None,
+}
+
 #[allow(clippy::result_unit_err)]
 pub fn parse(tokens: Vec<LexedToken>, diags: &DiagnosticSink) -> PResult<Program> {
     Parser::new(tokens, diags).parse_program()
@@ -1979,7 +1988,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Tok::Ident(_) => {
-                if self.is_generic_call_ahead() {
+                if matches!(self.generic_call_flavor(), Some(GenericCallFlavor::Call | GenericCallFlavor::Value)) {
                     return self.parse_generic_call(start);
                 }
                 let name = self.expect_ident("expression")?;
@@ -2229,15 +2238,19 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn is_generic_call_ahead(&self) -> bool {
+    /// Whether the upcoming `name<Type,...>` is a generic call `name<T>(...)`,
+    /// a generic value `name<T>` (a function value over explicit type
+    /// arguments), or not a generic bracket at all (a chained comparison such
+    /// as `a < b > c`, which keeps parsing as an ordinary expression).
+    fn generic_call_flavor(&self) -> Option<GenericCallFlavor> {
         let mut ix = self.pos;
         let toks = &self.tokens;
         if !matches!(toks[ix.min(toks.len() - 1)].token.kind, Tok::Ident(_)) {
-            return false;
+            return None;
         }
         ix += 1;
         if !matches!(toks[ix.min(toks.len() - 1)].token.kind, Tok::Lt) {
-            return false;
+            return None;
         }
         let mut depth = 0usize;
         loop {
@@ -2249,27 +2262,53 @@ impl<'a> Parser<'a> {
                     if depth < closings {
                         // `>>` closes more levels than are open: this is not a
                         // generic call (comparison/shift), not a nested type.
-                        return false;
+                        return None;
                     }
                     depth -= closings;
                     if depth == 0 {
-                        let mut j = ix + 1;
-                        while matches!(&toks[j.min(toks.len() - 1)].token.kind, Tok::Newline) {
-                            j += 1;
-                        }
-                        return matches!(&toks[j.min(toks.len() - 1)].token.kind, Tok::LParen);
+                        return Some(self.generic_flavor_after_close(toks, ix));
                     }
                 }
-                Tok::Eof | Tok::Newline => return false,
+                Tok::Eof | Tok::Newline => return None,
                 _ => {}
             }
             ix += 1;
         }
     }
 
+    fn generic_flavor_after_close(&self, toks: &[LexedToken], ix: usize) -> GenericCallFlavor {
+        // A `(` after the closing `>` is a call `name<T>(args)`.
+        let mut j = ix + 1;
+        while matches!(&toks[j.min(toks.len() - 1)].token.kind, Tok::Newline) {
+            j += 1;
+        }
+        if matches!(&toks[j.min(toks.len() - 1)].token.kind, Tok::LParen) {
+            return GenericCallFlavor::Call;
+        }
+        // Otherwise a value `name<T>` -- but only when the expression clearly
+        // ends there. A bare name, `>`, `>=`, or `>>` right after the close is
+        // a chained comparison (`a < b > c`), NOT a generic value; everything
+        // else (statement end, `,`, `)`, `]`, `}`, `;`) means the bracket
+        // stands alone as a value.
+        match toks[(ix + 1).min(toks.len() - 1)].token.kind {
+            Tok::Ident(_) | Tok::Gt | Tok::Ge | Tok::Shr | Tok::Eof => GenericCallFlavor::None,
+            _ => GenericCallFlavor::Value,
+        }
+    }
+
     fn parse_generic_call(&mut self, start: Span) -> PResult<Expr> {
         let name = self.expect_ident("function name")?;
         let type_args = self.parse_type_args()?;
+        // Without a `(` this is a generic function used as a VALUE
+        // (`let f = id_fn<int>` or `apply(id_fn<int>, 3)`): an expression of
+        // that concrete instantiation's signature.
+        if !self.at(&Tok::LParen) {
+            let span = start.to(self.prev_span());
+            return Ok(Expr {
+                span,
+                kind: ExprKind::GenericCall { name, type_args },
+            });
+        }
         let call_args = self.parse_call_args_internal()?;
         let callee_span = start.to(self.prev_span()).to(call_args.last().map(|a| a.span).unwrap_or(start));
         let span = start.to(self.prev_span());

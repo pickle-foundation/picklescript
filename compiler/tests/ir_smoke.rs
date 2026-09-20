@@ -530,6 +530,66 @@ fn emits_inferred_generic_function_instantiation() {
 }
 
 #[test]
+fn emits_generic_function_as_value() {
+    // A generic function used as a VALUE (`let f = id_fn<int>`) materializes
+    // the same instantiation an explicit call would, but the callee is wrapped
+    // in a zero-capture closure through a forwarder trampoline -- the
+    // `fn.value` class function with a `pkl_tramp_*` symbol. A bare generic fn
+    // passed as an argument whose fn-typed parameter pins its type args
+    // materializes the SAME instantiation at that argument site, so the whole
+    // program shares one `pkl_id_fn__int`.
+    let m = emit_str(
+        r#"fn id_fn<T>(x: T) -> T {
+            x
+        }
+
+        fn apply(f: fn (int) -> int, x: int) -> int {
+            f(x)
+        }
+
+        fn main() {
+            let f = id_fn<int>
+            println(str(f(3)))
+            println(str(id_fn<int>(7)))
+            println(str(apply(id_fn, 5)))
+        }"#,
+    );
+    let instantiated: Vec<&str> = m
+        .funcs
+        .iter()
+        .map(|f| f.symbol.as_str())
+        .filter(|s| s.starts_with("pkl_id_fn__"))
+        .collect();
+    assert_eq!(
+        instantiated,
+        vec!["pkl_id_fn__int"],
+        "the value, the explicit call, and the inferred arg must share one instantiation: {instantiated:?}"
+    );
+    // The value is dispatched through a forwarder trampoline (a `fn.value`
+    // class function), not the instantiation itself.
+    assert!(
+        m.funcs
+            .iter()
+            .any(|f| f.name == "fn.value" && f.symbol.starts_with("pkl_tramp_")),
+        "expected a forwarder trampoline for the generic value"
+    );
+    // The explicit call site still statically calls the instantiation.
+    let id_int = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_id_fn__int")
+        .expect("id<int> instantiation");
+    let static_calls = m
+        .funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
+        .count();
+    assert!(static_calls >= 1, "the explicit call must hit the instantiation");
+}
+
+#[test]
 fn emits_generic_class_instantiation() {
     // `Box<int>(...)` lower like ordinary classes: the materialized ctor and
     // methods carry mangled symbols (a type-argument suffix, deduplicated with

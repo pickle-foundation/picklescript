@@ -116,6 +116,12 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
   object holding the capture; a module-level function used as a value
   (`let by = add`) gets a generated forwarder so the same calling convention
   applies in both cases. See `examples/closures`.
+- A generic function used as a value needs its type arguments pinned. Give
+  them explicitly (`let idI = id<int>`) or pass the bare name to a parameter
+  whose expected type is `fn` and pins them (`apply(id, 4)` when
+  `apply(f: fn (int) -> int, ...)`); the concrete instantiation is shared with
+  direct calls. A bare `let idU = id` with nothing to pin `T` is an error —
+  the generic signature leaks an unresolved type variable into any use.
 - Calling through `fn`-typed values (lambda variables, function parameters,
   call results) is a dynamic call; it works under both `pickle run` (JIT) and
   `pickle build` (AOT).

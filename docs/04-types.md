@@ -93,10 +93,14 @@ fn max<T>(a: T, b: T) -> T where T: Comparable => a > b ? a : b
 > `id(3)`, `first([1, 2, 3], 0)`, `swap(b, 9)` infer `int` and land on the
 > *same* instantiation as the explicit `id<int>(…)` form; an unpin-able call
 > (`id()` with an impossible-to-infer parameter) errors asking for explicit
-> `<...>`. Still bails cleanly ("not lowered yet"): `where` bounds, generic
-> functions as *values*, and lambdas **declared inside** generic class/function
-> bodies (lambdas passed **into** an instantiation lower fine). See
-> docs/06-compiler.md "Generic classes…".
+> `<...>`. Generic functions work as **values** when their type arguments are
+> pinned: give them explicitly (`let idI = id<int>`) or pass the bare name to a
+> `fn`-typed parameter that pins them (`apply(id, 4)`); the concrete
+> instantiation is shared with direct calls and a `let idU = id` with nothing
+> to pin is an error (an unresolved type variable leaks into its uses). Still
+> bails cleanly ("not lowered yet"): `where` bounds, and lambdas **declared
+> inside** generic class/function bodies (lambdas passed **into** an
+> instantiation lower fine). See docs/06-compiler.md "Generic classes…".
 
 ## Function types
 

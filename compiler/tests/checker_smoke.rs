@@ -196,6 +196,98 @@ fn rejects_uninferrable_generic_call() {
 }
 
 #[test]
+fn accepts_generic_function_explicit_value() {
+    // A generic function used as a value with explicit type arguments types as
+    // that concrete instantiation's fn signature, so the value is callable and
+    // passes as an argument to a plain fn-typed parameter.
+    let d = check_str(
+        r#"fn id<T>(x: T) -> T {
+            return x
+        }
+
+        fn apply(f: fn (int) -> int, x: int) -> int {
+            return f(x)
+        }
+
+        fn main() {
+            let f = id<int>
+            print(str(f(3)))
+            print(str(apply(id<int>, 4)))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn accepts_generic_function_inferred_arg_value() {
+    // A bare generic function passed as an argument to a fn-typed parameter
+    // whose type pins its type arguments is accepted; the emitter materializes
+    // that instantiation at the argument site.
+    let d = check_str(
+        r#"fn id<T>(x: T) -> T {
+            return x
+        }
+
+        fn apply_twice<T>(f: fn (T) -> T, x: T) -> T {
+            return f(f(x))
+        }
+
+        fn apply(f: fn (int) -> int, x: int) -> int {
+            return f(x)
+        }
+
+        fn main() {
+            print(str(apply(id, 3)))
+            print(str(apply_twice(id, 3)))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_unpinned_generic_function_value() {
+    // `let f = id` cannot be lowered: no type arguments, no expected fn type to
+    // pin `T`. The generic signature leaks `Var(T)` and the checker flags its
+    // use rather than silently lowering a half-open value.
+    let d = check_str(
+        r#"fn id<T>(x: T) -> T {
+            return x
+        }
+
+        fn main() {
+            let f = id
+            let y = f(3)
+            print(str(y + 1))
+        }"#,
+    );
+    assert!(has_errors(&d), "expected an error for an unpinned generic fn value");
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("requires numeric or string operands"),
+        "wrong diagnostics:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_generic_function_value_arity() {
+    let d = check_str(
+        r#"fn id<T>(x: T) -> T {
+            return x
+        }
+
+        fn main() {
+            let f = id<int, string>
+        }"#,
+    );
+    assert!(has_errors(&d), "expected an arity error for the generic fn value");
+    assert!(
+        error_msgs(&d).contains("takes 1 type argument(s), found 2"),
+        "wrong diagnostics:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn accepts_enum_match() {
     let d = check_str(
         r#"enum Color {

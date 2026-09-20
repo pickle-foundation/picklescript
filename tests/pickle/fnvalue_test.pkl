@@ -109,3 +109,38 @@ test fn fn_value_in_list() {
     let fs = [double, double]
     expect(fs[0](2)).toBe(4)
 }
+
+fn id_fn<T>(x: T) -> T {
+    x
+}
+
+fn apply_id(f: fn (int) -> int, x: int) -> int {
+    f(x)
+}
+
+test fn generic_fn_value_explicit() {
+    let f = id_fn<int>
+    expect(f(7)).toBe(7)
+}
+
+test fn generic_fn_value_passed() {
+    expect(apply_id(id_fn<int>, 8)).toBe(8)
+}
+
+test fn generic_fn_value_inferred_arg() {
+    expect(apply_id(id_fn, 9)).toBe(9)
+}
+
+test fn generic_fn_value_shared_with_call() {
+    let f = id_fn<int>
+    expect(f(1) + id_fn<int>(2)).toBe(3)
+}
+
+fn list_reflect(f: fn (List<int>) -> List<int>, xs: List<int>) -> int {
+    len(f(xs))
+}
+
+test fn generic_fn_value_list_instantiation() {
+    expect(list_reflect(id_fn<List<int>>, [1, 2])).toBe(2)
+    expect(list_reflect(id_fn, [3, 4])).toBe(2)
+}

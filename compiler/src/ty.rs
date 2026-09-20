@@ -217,6 +217,15 @@ pub fn infer_from(want: &Ty, got: &Ty, map: &mut HashMap<String, Ty>) {
             if matches!(g, Ty::Unknown | Ty::None) {
                 return;
             }
+            // A variable is only pinned by CONCRETE evidence. Binding it to a
+            // type that still contains unresolved variables (e.g. another
+            // function's generic signature leaking through a higher-order
+            // argument) would thread a half-open instantiation through the
+            // emitter; leaving it unpinned keeps the checker/emitter honest
+            // and produces an "cannot infer the type argument" error instead.
+            if g.has_var() {
+                return;
+            }
             match map.entry(n.clone()) {
                 Entry::Occupied(_) => {}
                 Entry::Vacant(v) => {

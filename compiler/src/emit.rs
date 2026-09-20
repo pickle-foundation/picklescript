@@ -3439,7 +3439,7 @@ fn build_lambda_body(
                 arms,
             } => self.match_expr(e, scrutinee, arms),
             ExprKind::Await(_) => self.bad(e.span, "`await` is not lowered yet"),
-            ExprKind::GenericCall { .. } => self.bad(e.span, "generic calls are not lowered yet"),
+            ExprKind::GenericCall { name, type_args } => self.generic_fn_value(e, name, type_args),
             ExprKind::Cast { expr, ty, kind } => self.cast(e, expr, ty, *kind),
             ExprKind::Unsafe(b) => {
                 self.push_scope();
@@ -6662,6 +6662,15 @@ fn build_lambda_body(
         args: &[CallArg],
     ) -> Result<Temp, ()> {
         let name = info.name.clone();
+        if arg_tys.iter().any(|t| t.has_var()) {
+            return self.bad(
+                e.span,
+                format!(
+                    "cannot instantiate `{name}` with unresolved type arguments; \
+                     specify them explicitly like `{name}<...>(...)`"
+                ),
+            );
+        }
         let map: HashMap<String, Ty> = info
             .generics
             .iter()
@@ -6699,6 +6708,156 @@ fn build_lambda_body(
             args: arg_temps,
         });
         Ok(dst)
+    }
+
+    /// Lower `name<Type,...>` used as a VALUE (not called): the explicit type
+    /// arguments pick the concrete instantiation, which is wrapped in the same
+    /// zero-capture closure a plain function value gets, so it can be stored,
+    /// passed around, and called through the regular dynamic call convention.
+    fn generic_fn_value(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        type_args: &[TypeExpr],
+    ) -> Result<Temp, ()> {
+        let Some(info) = self
+            .resolved
+            .fns
+            .get(name)
+            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .cloned()
+        else {
+            return self.bad(e.span, format!("unknown generic function `{name}`"));
+        };
+        let arg_tys: Vec<Ty> = type_args
+            .iter()
+            .map(|te| {
+                let t = self.resolved.resolve_ty(te, &self.fn_generics, self.diags);
+                self.subst_ty(t)
+            })
+            .collect();
+        if arg_tys.len() != info.generics.len() {
+            return self.bad(
+                e.span,
+                format!(
+                    "`{name}` takes {} type argument(s), found {}",
+                    info.generics.len(),
+                    arg_tys.len()
+                ),
+            );
+        }
+        self.generic_fn_value_for(e, &info, arg_tys)
+    }
+
+    /// Materialize a generic function as a value over concrete `arg_tys`:
+    /// create (or reuse) the instantiation, wrap it in a zero-capture closure
+    /// whose slot 0 holds a forwarder trampoline's address, and return the
+    /// closure object.
+    fn generic_fn_value_for(
+        &mut self,
+        e: &Expr,
+        info: &CallableInfo,
+        arg_tys: Vec<Ty>,
+    ) -> Result<Temp, ()> {
+        if arg_tys.iter().any(|t| t.has_var()) {
+            return self.bad(
+                e.span,
+                format!(
+                    "cannot use the generic function `{}` as a value with unresolved type arguments",
+                    info.name
+                ),
+            );
+        }
+        let name = info.name.clone();
+        let map: HashMap<String, Ty> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(arg_tys.iter().cloned())
+            .collect();
+        let key = (name.clone(), arg_tys);
+        let fid = match self.instantiations.get(&key) {
+            Some(&fid) => fid,
+            None => self.instantiate_generic_fn(e.span, info, &key, &map)?,
+        };
+        let tramp = self.value_trampoline(e.span, fid)?;
+        self.closure_obj(e, tramp, &[])
+    }
+
+    /// The forwarder trampoline a generic instantiation value is wrapped in:
+    /// one per target instantiation, always forwarding the concrete
+    /// substituted signature recorded in `finfo`. Mirrors `register_trampoline`
+    /// but targets a lazily-materialized instantiation instead of a plain
+    /// registered function.
+    fn value_trampoline(&mut self, span: Span, target: FuncId) -> Result<FuncId, ()> {
+        if let Some(&t) = self.tramp_fids.get(&target) {
+            return Ok(t);
+        }
+        let Some(info) = self.finfo.get(&target).cloned() else {
+            return self.bad(
+                span,
+                format!("no signature recorded for instantiated function {target:?}"),
+            );
+        };
+        let pty: Vec<Ty> = info.params.iter().map(|p| p.ty.clone()).collect();
+        let ret = info.ret.clone();
+        if pty.iter().any(|t| self.map_ty(t, span).is_err()) {
+            return self.bad(span, "cannot map an instantiated function value's parameters");
+        }
+        if self.map_ty(&ret, span).is_err() {
+            return self.bad(span, "cannot map an instantiated function value's return type");
+        }
+        let t = self.push_class_func(
+            "fn.value",
+            &format!("pkl_tramp_{}", target.0),
+            FnSource::Trampoline {
+                span,
+                target,
+                pty,
+                ret,
+            },
+        );
+        self.tramp_fids.insert(target, t);
+        Ok(t)
+    }
+
+    /// When a call argument is a *generic user function* given bare (no type
+    /// arguments) and the expected parameter type is `fn`, infer the function's
+    /// type arguments from that fn type and materialize the concrete
+    /// instantiation as a value. `Some(v)` means materialized; `None` lets the
+    /// regular argument path handle it (a `funcs_by_name` member, or the
+    /// clean "as a value is not lowered yet" diagnostic).
+    fn generic_fn_arg_value(&mut self, v: &Expr, hint: &Ty) -> Result<Option<Temp>, ()> {
+        let ExprKind::Ident(name) = &v.kind else {
+            return Ok(None);
+        };
+        let Some(info) = self
+            .resolved
+            .fns
+            .get(name)
+            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if info.generics.is_empty() {
+            return Ok(None);
+        }
+        let sig = Ty::Fn(
+            info.params.iter().map(|p| p.ty.clone()).collect(),
+            Box::new(info.ret.clone()),
+        );
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        crate::ty::infer_from(&sig, hint, &mut map);
+        let arg_tys: Vec<Ty> = info
+            .generics
+            .iter()
+            .map(|g| map.get(g).cloned().unwrap_or(Ty::Unknown))
+            .collect();
+        if arg_tys.iter().any(|t| matches!(t, Ty::Unknown | Ty::Var(_)) || t.has_var()) {
+            return Ok(None);
+        }
+        Ok(Some(self.generic_fn_value_for(v, &info, arg_tys)?))
     }
 
     /// Infer the type arguments of a generic user function `name(args)` from
@@ -7478,6 +7637,13 @@ fn build_lambda_body(
     /// (already a `*T` address/identity) and a subtype argument are passed
     /// directly.
     fn borrow_arg(&mut self, src: Option<&Ty>, a: &CallArg) -> Result<Temp, ()> {
+        if let Some(hint) = src {
+            if matches!(hint, Ty::Fn(..)) {
+                if let Some(v) = self.generic_fn_arg_value(&a.value, hint)? {
+                    return Ok(v);
+                }
+            }
+        }
         if let Some(Ty::Ref(inner)) = src {
             let at = self.ty_of(&a.value.span);
             if let Some(at) = at {
