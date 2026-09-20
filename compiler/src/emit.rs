@@ -18,6 +18,24 @@ use crate::ir::UnOp as IrUnOp;
 use crate::resolve::{CallableInfo, ClassTable, EnumTable, FieldInfo, ParamInfo, PropertyInfo, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
 
+/// Make a function symbol from a type's display name: keep alphanumerics,
+/// replace every other character (commas, spaces, parens, `?`, `&`, ...) with
+/// `_`, so instantiation suffixes stay valid linker symbols.
+fn sanitize_symbol(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
 /// Runtime class ids for user classes start at this id: the runtime reserves
 /// 0..=6 for the builtin boxed types (string/list/map/int/float/bool/char)
 /// and 7 for `PEnum`, so the first user class registered at runtime gets id
@@ -52,6 +70,9 @@ pub fn emit_ir(
         fsource: HashMap::new(),
         finfo: HashMap::new(),
         src_param_tys: HashMap::new(),
+        fn_decls: HashMap::new(),
+        instantiations: HashMap::new(),
+        instanton_subst: HashMap::new(),
         classes: Vec::new(),
         class_by_name: HashMap::new(),
         class_decls: HashMap::new(),
@@ -74,6 +95,8 @@ pub fn emit_ir(
         fn_tramp: HashMap::new(),
         fname: String::new(),
         symbol: String::new(),
+        current_subst: HashMap::new(),
+        fn_generics: Vec::new(),
         fparams: Vec::new(),
         fret: IrTy::Unit,
         fslots: Vec::new(),
@@ -345,6 +368,15 @@ struct Emitter<'a> {
     /// These drive implicit borrows for `&T` reference parameters at callsites
     /// (the IR `IrFunc.params` are lowered `IrTy`s with no source type).
     src_param_tys: HashMap<FuncId, Vec<Ty>>,
+    /// Declaration of each top-level `fn`/`test`, by name — consumed when a
+    /// generic function is instantiated at a call site.
+    fn_decls: HashMap<String, &'a FnDecl>,
+    /// Generic function instantiation key -> its function id. The key is the
+    /// callee name plus the concrete (monomorphized) type arguments.
+    instantiations: HashMap<(String, Vec<Ty>), FuncId>,
+    /// Function id -> substitution map applied while building it (empty for
+    /// non-generic / not-yet-instantiated functions).
+    instanton_subst: HashMap<FuncId, HashMap<String, Ty>>,
     /// Registered user classes in id order.
     classes: Vec<ClassPlan>,
     /// Class/struct name -> assigned runtime class id (registered only).
@@ -401,6 +433,14 @@ struct Emitter<'a> {
     // ---- per-function state ----
     fname: String,
     symbol: String,
+    /// Generic parameter substitutions in effect while building the current
+    /// function body (empty outside an instantiated generic function). Every
+    /// inferred type read out of the checker's `types` map is substituted
+    /// through this before being mapped to IR.
+    current_subst: HashMap<String, Ty>,
+    /// The current function's generic parameter names, needed to resolve the
+    /// type arguments of a nested generic call in its body.
+    fn_generics: Vec<String>,
     fparams: Vec<IrParam>,
     fret: IrTy,
     fslots: Vec<IrTy>,
@@ -421,6 +461,9 @@ impl<'a> Emitter<'a> {
         for item in &self.prog.items {
             if let ItemKind::Const(c) = &item.kind {
                 self.consts_inits.insert(c.name.clone(), &c.value);
+            }
+            if let ItemKind::Fn(f) | ItemKind::Test(f) = &item.kind {
+                self.fn_decls.insert(f.name.clone(), f);
             }
             if let ItemKind::Class(c) = &item.kind {
                 self.class_decls.insert(c.name.clone(), c);
@@ -457,9 +500,14 @@ impl<'a> Emitter<'a> {
             self.test_setup_id = Some(fid);
         }
         self.register_lambdas();
-        let fids = self.fid_list.clone();
-        for fid in fids {
+        // Instantiated generic functions are registered lazily while their
+        // callers compile, so the build loop must keep consuming newly-appended
+        // function ids rather than snapshotting the list up front.
+        let mut ix = 0;
+        while ix < self.fid_list.len() {
+            let fid = self.fid_list[ix];
             self.build_func(fid);
+            ix += 1;
         }
     }
 
@@ -1692,6 +1740,18 @@ impl<'a> Emitter<'a> {
         self.loops = Vec::new();
         self.cur = BlockId(0);
         self.owner = None;
+
+        // An instantiated generic function's body is checked over its generic
+        // parameters, so every inferred type in it carries `Var`s. Apply the
+        // instantiation's substitution while this body compiles. Lambdas,
+        // trampolines, and non-instantiated functions carry none.
+        self.current_subst = self.instanton_subst.get(&fid).cloned().unwrap_or_default();
+        self.fn_generics = match &self.fsource.get(&fid) {
+            Some(FnSource::TopLevel(f)) => {
+                f.generics.iter().map(|g| g.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
 
         let Some(src) = self.fsource.get(&fid).cloned() else {
             return;
@@ -3199,6 +3259,15 @@ fn build_lambda_body(
         // body gets).
         if let Some(&fid) = self.module.funcs_by_name.get(name) {
             return self.fn_value_closure(e, fid);
+        }
+        if self.generic_user_fn(name) {
+            return self.bad(
+                e.span,
+                format!(
+                    "using the generic function `{name}` as a value is not lowered yet; \
+                     call it with explicit type arguments instead"
+                ),
+            );
         }
         self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
     }
@@ -5478,7 +5547,7 @@ fn build_lambda_body(
     /// hoisted body can copy its captures out, mirroring the static-call arg
     /// handling for the remaining arguments.
     fn fn_value_call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Result<Temp, ()> {
-        let Some(Ty::Fn(pty, prt)) = self.types.get(&callee.span).cloned() else {
+        let Some(Ty::Fn(pty, prt)) = self.ty_of(&callee.span) else {
             return self.bad(callee.span, "function-valued call has no signature");
         };
         let obj = self.expr(callee)?;
@@ -5699,6 +5768,11 @@ fn build_lambda_body(
                 }
             }
             return self.method_call(e, object, name, args);
+        }
+        // A generic call `name<Type,...>(args)`: monomorphize the callee at this
+        // call site and emit a static call to the instantiation.
+        if let ExprKind::GenericCall { name, type_args } = &callee.kind {
+            return self.generic_call(e, name, type_args, args);
         }
         // A function-valued callee that is not a plain named call (a closure
         // variable, a function-typed parameter, a call result, ...) dispatches
@@ -6132,8 +6206,183 @@ fn build_lambda_body(
                     vec![start, end, step],
                 )
             }
+            _ if self.generic_user_fn(name) => self.bad(
+                e.span,
+                format!(
+                    "calls to the generic function `{name}` must specify its type arguments \
+                     (`{name}<T,...>(...)`); argument type inference is not lowered yet"
+                ),
+            ),
             _ => self.bad(e.span, format!("`{name}` is not lowered yet")),
         }
+    }
+
+    /// Whether `name` resolves to a top-level generic user function (as opposed
+    /// to a builtin or a non-generic overridden callable).
+    fn generic_user_fn(&self, name: &str) -> bool {
+        self.resolved
+            .fns
+            .get(name)
+            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .is_some_and(|c| !c.generics.is_empty())
+    }
+
+    /// Lower `name<Type,...>(args)`. The call is monomorphized: the generic
+    /// callee is instantiated over the resolved type arguments (substituted
+    /// under the enclosing instantiation, if any), and the call is emitted as
+    /// a static call to that concrete function.
+    fn generic_call(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        type_args: &[TypeExpr],
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let Some(info) = self
+            .resolved
+            .fns
+            .get(name)
+            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .cloned()
+        else {
+            return self.bad(e.span, format!("unknown generic function `{name}`"));
+        };
+        let arg_tys: Vec<Ty> = type_args
+            .iter()
+            .map(|te| {
+                let t = self.resolved.resolve_ty(te, &self.fn_generics, self.diags);
+                self.subst_ty(t)
+            })
+            .collect();
+        if arg_tys.len() != info.generics.len() {
+            return self.bad(
+                e.span,
+                format!(
+                    "`{name}` takes {} type argument(s), found {}",
+                    info.generics.len(),
+                    arg_tys.len()
+                ),
+            );
+        }
+        let map: HashMap<String, Ty> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(arg_tys.iter().cloned())
+            .collect();
+        let key = (name.to_string(), arg_tys.clone());
+        let fid = match self.instantiations.get(&key) {
+            Some(&fid) => fid,
+            None => self.instantiate_generic_fn(e.span, &info, &key, &map)?,
+        };
+        // Mirror the plain user-function call: borrow `&T` reference params,
+        // wrap optional params, and store the result.
+        let mut arg_temps = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
+            let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
+            let is_opt = matches!(src.as_ref(), Some(Ty::Option(_) | Ty::None));
+            let t = self.borrow_arg(src.as_ref(), a)?;
+            let t = if !is_ref && is_opt {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(t, &vt, a.value.span)?
+            } else {
+                t
+            };
+            arg_temps.push(t);
+        }
+        let dst = self.temp();
+        self.instr(IrInstr::Call {
+            dst: Some(dst),
+            callee: Callee::Func(fid),
+            args: arg_temps,
+        });
+        Ok(dst)
+    }
+
+    /// Create the concrete instantiation of a generic function over `map`
+    /// (generic parameter -> concrete type), registering its signature under
+    /// `key`, and return its function id. Later calls with the same key reuse
+    /// the same instantiation.
+    fn instantiate_generic_fn(
+        &mut self,
+        span: Span,
+        info: &CallableInfo,
+        key: &(String, Vec<Ty>),
+        map: &HashMap<String, Ty>,
+    ) -> Result<FuncId, ()> {
+        let name = &info.name;
+        let Some(f) = self.fn_decls.get(name).copied() else {
+            return self.bad(span, format!("no declaration for generic function `{name}`"));
+        };
+        if f.is_async {
+            return self.bad(
+                span,
+                format!("generic async function `{name}` is not lowered yet"),
+            );
+        }
+        if f.params.iter().any(|p| p.default.is_some() || p.rest) {
+            return self.bad(
+                span,
+                format!(
+                    "generic function `{name}` with default or rest parameters is not lowered yet"
+                ),
+            );
+        }
+        let params: Vec<ParamInfo> = info
+            .params
+            .iter()
+            .map(|p| ParamInfo {
+                ty: p.ty.subst(map),
+                ..p.clone()
+            })
+            .collect();
+        let ret = info.ret.subst(map);
+        let mut symbol = format!(
+            "pkl_{name}__{}",
+            key.1
+                .iter()
+                .map(|t| sanitize_symbol(&t.bare_name()))
+                .collect::<Vec<_>>()
+                .join("_")
+        );
+        let mut n = 0;
+        while self.module.funcs.iter().any(|f| f.symbol == symbol) {
+            n += 1;
+            symbol = format!("{symbol}_v{n}");
+        }
+        let fid = FuncId(self.module.funcs.len());
+        self.module.funcs.push(IrFunc {
+            name: name.clone(),
+            symbol,
+            params: Vec::new(),
+            ret: IrTy::Unit,
+            slots: Vec::new(),
+            entry: BlockId(0),
+            blocks: Vec::new(),
+            is_main: false,
+            is_test: false,
+        });
+        self.fid_list.push(fid);
+        self.fsource.insert(fid, FnSource::TopLevel(f));
+        self.finfo.insert(
+            fid,
+            CallableInfo {
+                params,
+                ret,
+                ..info.clone()
+            },
+        );
+        self.src_param_tys.insert(
+            fid,
+            info.params.iter().map(|p| p.ty.subst(map)).collect(),
+        );
+        self.instanton_subst.insert(fid, map.clone());
+        self.instantiations.insert(key.clone(), fid);
+        Ok(fid)
     }
 
     /// Build an enum value via `Enum.Variant(arg...)`. Payload scalars are
@@ -6691,7 +6940,17 @@ fn build_lambda_body(
     // ---- types & helpers ----
 
     fn ty_of(&self, span: &Span) -> Option<Ty> {
-        self.types.get(span).cloned()
+        self.types.get(span).cloned().map(|t| self.subst_ty(t))
+    }
+
+    /// Apply the active generic-parameter substitution to an inferred type.
+    /// No-op outside instantiated generic bodies, where `current_subst` is empty.
+    fn subst_ty(&self, ty: Ty) -> Ty {
+        if self.current_subst.is_empty() {
+            ty
+        } else {
+            ty.subst(&self.current_subst)
+        }
     }
 
     /// Lower one call argument, honoring `&T` reference parameters. Passing a

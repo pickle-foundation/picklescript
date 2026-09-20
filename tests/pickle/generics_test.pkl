@@ -1,0 +1,71 @@
+fn id_fn<T>(x: T) -> T {
+    x
+}
+
+fn twice<T>(x: T) -> T {
+    id_fn<T>(id_fn<T>(x))
+}
+
+fn first<T>(xs: List<T>, fallback: T) -> T {
+    if (len(xs) > 0) {
+        xs[0]
+    } else {
+        fallback
+    }
+}
+
+fn choose<A, B>(primary: A, secondary: B) -> B {
+    secondary
+}
+
+fn apply_twice<T>(f: fn (T) -> T, x: T) -> T {
+    f(f(x))
+}
+
+fn negate(x: int) -> int {
+    -x
+}
+
+test fn generic_id_ints() {
+    expect(id_fn<int>(3)).toBe(3)
+    expect(id_fn<int>(-7)).toBe(-7)
+}
+
+test fn generic_id_strings() {
+    expect(id_fn<string>("hello")).toBe("hello")
+}
+
+test fn generic_id_floats() {
+    expect(id_fn<float>(2.5)).toBe(2.5)
+}
+
+test fn generic_id_list() {
+    expect(len(id_fn<List<int>>([1, 2, 3]))).toBe(3)
+    expect(id_fn<List<int>>([1, 2, 3])[2]).toBe(3)
+}
+
+test fn generic_call_in_arith() {
+    expect(30 + id_fn<int>(12)).toBe(42)
+}
+
+test fn nested_generic_calls() {
+    expect(twice<int>(21)).toBe(21)
+    expect(twice<string>("ab")).toBe("ab")
+    expect(twice<float>(3.5)).toBe(3.5)
+}
+
+test fn generic_element_types() {
+    expect(first<int>([1, 2, 3], 0)).toBe(1)
+    expect(first<string>(["a", "b"], "")).toBe("a")
+    expect(first<float>([3.5, 2.5], 0.0)).toBe(3.5)
+}
+
+test fn generic_two_type_params() {
+    expect(choose<int, string>(1, "x")).toBe("x")
+    expect(choose<string, float>("a", 1.5)).toBe(1.5)
+}
+
+test fn generic_with_lambda_argument() {
+    expect(apply_twice<int>(fn (n: int) -> int { n * 2 }, 5)).toBe(20)
+    expect(apply_twice<int>(negate, 3)).toBe(3)
+}

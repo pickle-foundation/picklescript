@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 /// A resolved/runtime type after semantic analysis and name resolution.
@@ -5,7 +6,7 @@ use std::fmt;
 /// Generic types carry their concrete argument list (`Class("List", [Ty::Int])`
 /// etc.). `Var` denotes an unresolved generic parameter inside a generic
 /// function/class body; it is only valid during monomorphization.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     Bool,
     Char,
@@ -92,6 +93,49 @@ impl Ty {
 
     pub fn is_never(&self) -> bool {
         matches!(self, Ty::Empty)
+    }
+
+    /// Whether the type (transitively) mentions an unresolved generic variable.
+    pub fn has_var(&self) -> bool {
+        match self {
+            Ty::Var(_) => true,
+            Ty::Option(t) | Ty::List(t) | Ty::Range(t) | Ty::Ptr(t) | Ty::Ref(t) => t.has_var(),
+            Ty::Class(_, a) | Ty::Struct(_, a) | Ty::Enum(_, a) | Ty::Interface(_, a) | Ty::Tuple(a) => {
+                a.iter().any(Ty::has_var)
+            }
+            Ty::Map(k, v) => k.has_var() || v.has_var(),
+            Ty::Fn(ps, r) => ps.iter().any(Ty::has_var) || r.has_var(),
+            _ => false,
+        }
+    }
+
+    /// Substitute generic parameters (`Var`) with `map`, producing a concrete
+    /// (or further-instantiated) type. Unmapped variables are left in place.
+    pub fn subst(&self, map: &HashMap<String, Ty>) -> Ty {
+        match self {
+            Ty::Var(n) => map.get(n).cloned().unwrap_or_else(|| Ty::Var(n.clone())),
+            Ty::Option(inner) => inner.subst(map).opt_of(),
+            Ty::Class(n, a) => {
+                Ty::Class(n.clone(), a.iter().map(|t| t.subst(map)).collect())
+            }
+            Ty::Struct(n, a) => {
+                Ty::Struct(n.clone(), a.iter().map(|t| t.subst(map)).collect())
+            }
+            Ty::Enum(n, a) => Ty::Enum(n.clone(), a.iter().map(|t| t.subst(map)).collect()),
+            Ty::Interface(n, a) => {
+                Ty::Interface(n.clone(), a.iter().map(|t| t.subst(map)).collect())
+            }
+            Ty::List(t) => Ty::List(Box::new(t.subst(map))),
+            Ty::Map(k, v) => Ty::Map(Box::new(k.subst(map)), Box::new(v.subst(map))),
+            Ty::Tuple(items) => Ty::Tuple(items.iter().map(|t| t.subst(map)).collect()),
+            Ty::Fn(ps, r) => {
+                Ty::Fn(ps.iter().map(|t| t.subst(map)).collect(), Box::new(r.subst(map)))
+            }
+            Ty::Range(t) => Ty::Range(Box::new(t.subst(map))),
+            Ty::Ptr(t) => Ty::Ptr(Box::new(t.subst(map))),
+            Ty::Ref(t) => Ty::Ref(Box::new(t.subst(map))),
+            other => other.clone(),
+        }
     }
 
     /// The "kind name" used in diagnostics (e.g. `class`, `struct`).

@@ -2244,8 +2244,14 @@ impl<'a> Parser<'a> {
             let t = &toks[ix.min(toks.len() - 1)];
             match &t.token.kind {
                 Tok::Lt => depth += 1,
-                Tok::Gt => {
-                    depth -= 1;
+                Tok::Gt | Tok::Shr => {
+                    let closings = if matches!(t.token.kind, Tok::Shr) { 2 } else { 1 };
+                    if depth < closings {
+                        // `>>` closes more levels than are open: this is not a
+                        // generic call (comparison/shift), not a nested type.
+                        return false;
+                    }
+                    depth -= closings;
                     if depth == 0 {
                         let mut j = ix + 1;
                         while matches!(&toks[j.min(toks.len() - 1)].token.kind, Tok::Newline) {

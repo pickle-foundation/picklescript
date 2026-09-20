@@ -235,6 +235,38 @@ fn parses_generics_fn_and_lambda() {
 }
 
 #[test]
+fn parses_generic_calls_with_nested_type_args() {
+    // The call-lookahead must recognize `name<Type>((args))` even when a type
+    // argument itself is generic (`List<int>` closes with a single `>>` token).
+    use pickle_compiler::ast::{Block, ExprKind, FnBody, ItemKind, Stmt};
+    let p = parse_str(
+        r#"fn main() {
+            let a = wrap<List<int>>([1, 2])
+            let b = pair<int, string>(1, "a")
+        }"#,
+    );
+    let body = match &p.items[0].kind {
+        ItemKind::Fn(f) => f.body.as_ref().expect("fn body"),
+        other => panic!("expected fn, got {other:?}"),
+    };
+    let block: &Block = match body {
+        FnBody::Block(b) => b,
+        FnBody::Expr(_) => panic!("expected block body"),
+    };
+    let mut generic_args: Vec<usize> = Vec::new();
+    for stmt in &block.stmts {
+        if let Stmt::Let { init: Some(e), .. } = stmt {
+            if let ExprKind::Call { callee, .. } = &e.kind {
+                if let ExprKind::GenericCall { type_args, .. } = &callee.kind {
+                    generic_args.push(type_args.len());
+                }
+            }
+        }
+    }
+    assert_eq!(generic_args, vec![1, 2]);
+}
+
+#[test]
 fn parses_trailing_expr_after_newline() {
     // A final expression followed by a newline before the closing brace must
     // still be recorded as the block's tail value, not a discarded statement.

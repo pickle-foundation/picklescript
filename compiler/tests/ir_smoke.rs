@@ -7,7 +7,7 @@
 use pickle_compiler::diag::{DiagnosticSink, SourceMap};
 use pickle_compiler::emit::emit_ir;
 use pickle_compiler::front::frontend;
-use pickle_compiler::ir::{BinOp, Callee, IrConst, IrInstr, IrModule, IrTerm, IrTy};
+use pickle_compiler::ir::{BinOp, Callee, FuncId, IrConst, IrInstr, IrModule, IrTerm, IrTy};
 
 fn emit_str(src: &str) -> IrModule {
     let mut map = SourceMap::default();
@@ -418,6 +418,60 @@ fn emits_nested_generic_lists() {
             >= 2,
         "a nested read needs two `pickle_list_get` calls, dump:\n{probe}"
     );
+}
+
+#[test]
+fn emits_generic_function_instantiation() {
+    // A generic call `id<int>(...)` monomorphizes: one concrete function per
+    // distinct type-argument list, with a mangled symbol; calls reuse the
+    // same instantiation, and nested generic calls reuse the inner one. The
+    // generic declaration itself is not lowered as a callable.
+    let m = emit_str(
+        r#"fn id_fn<T>(x: T) -> T {
+            x
+        }
+
+        fn twice<T>(x: T) -> T {
+            id_fn<T>(id_fn<T>(x))
+        }
+
+        fn main() {
+            println(id_fn<int>(5))
+            println(twice<int>(6))
+            println(id_fn<string>("hi"))
+        }"#,
+    );
+    let instantiated: Vec<&str> = m
+        .funcs
+        .iter()
+        .map(|f| f.symbol.as_str())
+        .filter(|s| s.starts_with("pkl_id_fn__") || s.starts_with("pkl_twice__"))
+        .collect();
+    assert_eq!(
+        instantiated.len(),
+        3,
+        "expected id_fn<int>, twice<int>, id_fn<string> instantiations, got {instantiated:?}"
+    );
+    assert!(!m.funcs.iter().any(|f| f.symbol == "pkl_id_fn"));
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_id_fn__int"));
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_id_fn__string"));
+    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_twice__int"));
+    // The two id_fn<int> calls in `twice` and the one in `main` must share a
+    // single instantiation.
+    let id_int = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_id_fn__int")
+        .expect("id<int> instantiation");
+    assert_eq!(m.funcs[id_int].ret, IrTy::Int, "instantiated return type wrong:\n{}", m.funcs[id_int]);
+    let call_count = m
+        .funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
+        .count();
+    assert_eq!(call_count, 3, "all three sites must call the single instantiation");
 }
 
 #[test]

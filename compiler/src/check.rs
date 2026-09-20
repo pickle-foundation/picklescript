@@ -643,28 +643,7 @@ impl<'a> Checker<'a> {
 
     /// Substitute concrete args for a type's generic `Var`s.
     fn subst(&self, ty: &Ty, args: &HashMap<String, Ty>) -> Ty {
-        match ty {
-            Ty::Var(n) => args.get(n).cloned().unwrap_or_else(|| Ty::Var(n.clone())),
-            Ty::Option(inner) => self.subst(inner, args).opt_of(),
-            Ty::Class(n, a) => Ty::Class(n.clone(), a.iter().map(|t| self.subst(t, args)).collect()),
-            Ty::Struct(n, a) => Ty::Struct(n.clone(), a.iter().map(|t| self.subst(t, args)).collect()),
-            Ty::Enum(n, a) => Ty::Enum(n.clone(), a.iter().map(|t| self.subst(t, args)).collect()),
-            Ty::Interface(n, a) => {
-                Ty::Interface(n.clone(), a.iter().map(|t| self.subst(t, args)).collect())
-            }
-            Ty::List(inner) => Ty::List(Box::new(self.subst(inner, args))),
-            Ty::Map(k, v) => Ty::Map(
-                Box::new(self.subst(k, args)),
-                Box::new(self.subst(v, args)),
-            ),
-            Ty::Tuple(items) => Ty::Tuple(items.iter().map(|t| self.subst(t, args)).collect()),
-            Ty::Fn(ps, ret) => Ty::Fn(
-                ps.iter().map(|t| self.subst(t, args)).collect(),
-                Box::new(self.subst(ret, args)),
-            ),
-            Ty::Range(inner) => Ty::Range(Box::new(self.subst(inner, args))),
-            other => other.clone(),
-        }
+        ty.subst(args)
     }
 
     /// The `(name, generic-args)` pair that backs this type for member lookup.
@@ -1887,8 +1866,7 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
             ExprKind::GenericCall { name, type_args } => {
-                let _ = type_args;
-                self.generic_fn_ty(e, name)
+                self.generic_fn_ty(e, name, type_args)
             }
             ExprKind::Cast { expr, ty, kind } => self.check_cast(e, expr, ty, *kind),
             ExprKind::Unsafe(b) => {
@@ -2570,12 +2548,50 @@ impl<'a> Checker<'a> {
         Ty::Empty
     }
 
-    fn generic_fn_ty(&mut self, e: &Expr, name: &str) -> Ty {
+    fn generic_fn_ty(&mut self, e: &Expr, name: &str, type_args: &[TypeExpr]) -> Ty {
         let Some(fns) = self.resolved.fns.get(name) else {
             self.err(e.span, format!("unknown generic function `{name}`"));
             return Ty::Unknown;
         };
-        self.fn_sig(fns)
+        let Some(f) = fns
+            .iter()
+            .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+            .cloned()
+        else {
+            return self.fn_sig(fns);
+        };
+        // Instantiate the callee signature with the explicit type arguments,
+        // resolved in the caller's namespace. This threads the callee's `Var`s
+        // through the caller's own generic parameters, so the emitter can fully
+        // substitute them at a concrete call site. When the arity mismatches,
+        // the generic signature is returned so the surrounding expression keeps
+        // a loose type (the emit-time arity diagnostic still fires).
+        let args: Vec<Ty> = type_args
+            .iter()
+            .map(|te| self.resolved_fn_ty(te, &self.fn_generics))
+            .collect();
+        if f.generics.len() != args.len() {
+            self.err(
+                e.span,
+                format!(
+                    "`{name}` takes {} type argument(s), found {}",
+                    f.generics.len(),
+                    args.len()
+                ),
+            );
+            return Ty::Fn(
+                f.params.iter().map(|p| p.ty.clone()).collect(),
+                Box::new(f.ret.clone()),
+            );
+        }
+        let map: HashMap<String, Ty> = f
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let params: Vec<Ty> = f.params.iter().map(|p| self.subst(&p.ty, &map)).collect();
+        Ty::Fn(params, Box::new(self.subst(&f.ret, &map)))
     }
 
     fn check_args(&mut self, e: &Expr, params: &[Ty], args: &[CallArg]) {
