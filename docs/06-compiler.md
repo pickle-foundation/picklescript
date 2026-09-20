@@ -213,14 +213,38 @@ Lowering rules:
   initializers, superclass first. `super.m(...)` lowers to a direct call of the
   superclass method on the same receiver.
 - Not-yet-lowered inheritance edges bail loudly instead of miscompiling:
-  generics, `implements`/interfaces, `override fn`, explicit or named
+  `implements`/interfaces, `override fn`, explicit or named
   constructors in a hierarchy, and a subclass whose superclass is itself
   unbounded. A class using one of these is skipped with a "… not lowered yet"
-  diagnostic.
+  diagnostic. Generic classes target these same edges when instantiated:
+  an instantiation whose plan hits `extends`/`implements`/`override`/named
+  constructor/`deinit`/property/static-field/const bails with an E0900.
+- Generic classes and structs (`class Box<T>` / `struct Pair<A, B>`) lower by
+  **lazy per-use-site materialization**. The first reference with a concrete
+  type-argument list (`Box<int>(…)`, a `b.value`/`b.read()` access on a
+  `Box<int>`, a generic fn call building `Pair<int, string>`) registers an
+  *instantiation plan* at codegen
+  time: a substituted `ClassTable` under the mangled display name (`Box<int>`),
+  a fresh stable class id (`8 + classes.len()`, allocated in deterministic
+  plan order; the `pickle_class_register` preamble is injected *after* the
+  build loop via `inject_class_registrations`), and mangled symbols for the
+  constructor and methods — `pkl_Box_new__int`, `pkl_Box_read_int`,
+  statics `pkl_<T>_sm_<m>_<suffix>` — deduplicated with a `_v{n}` counter on
+  symbol collisions. Ctor/method/field layouts resolve through the
+  substituted table (`table_of` falls back to plan tables), so concrete field
+  types, slot counts, and scalar boxing rules all follow the type arguments.
+  The same `class_id_of(ty, span)` resolution routes member reads, member
+  assignments, optional access, and method dispatch for generic receivers.
+  Returns `Ok(None)` (defer to the enclosing build) when the receiver's type
+  still carries an unsubstituted `Var`, which keeps `Box<T>` inside an
+  in-progress generic function working.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
   object is `pickle_class_new(id, field_count)`, then each field value is boxed
   per the scalar list rules and stored with `pickle_obj_slot_set`. Only
   non-static fields occupy slots; a class with 64+ fields empties the mask.
+  A generic instantiation's constructor is `pkl_<TypeName>_new__<suffix>` with
+  the substituted field/parameter types; spread arguments in an instantiation
+  call bail.
 - Constructor parameters are the explicit `constructor(...)`'s parameters when
   one is declared; otherwise they are the instance fields *without*
   initializers (declaration order, superclass fields first). Fields with
@@ -239,8 +263,10 @@ Lowering rules:
 - Instance methods compile to `pkl_<TypeName>_<m>`, with the receiver passed
   first as a managed pointer (IR param slot 0, declared as `this`); static
   methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/
-  override/body-less/generic methods and methods with default/rest params are
-  skipped like their top-level counterparts.
+  override/body-less methods and methods with default/rest params are
+  skipped like their top-level counterparts. Methods of a generic class
+  instantiation follow the same shapes under the mangled symbols above
+  (`pkl_Box_read_int`, `pkl_<T>_sm_<m>_<suffix>`).
 - `this` loads the receiver slot. An undefined identifier inside an instance
   method falls back to `this.<name>`; `obj.field` read/write and compound
   assigns (`+=`) lower through `pickle_obj_slot_get`/`pickle_obj_slot_set`

@@ -93,7 +93,9 @@ Rules:
 > checked runtime test (`as` panics on a bad cast). **Not yet lowered** (a loud
 > "not lowered yet" diagnostic, never a silent miscompile): `override fn`,
 > `super(...)` constructor chaining, explicit or named constructors anywhere in
-> a hierarchy, interfaces/`implements`, and generics.
+> a hierarchy, and interfaces/`implements`. Generic classes (`class Box<T>`)
+> are lowered on their own (see 04-types.md), but **not inside a hierarchy**:
+> an instantiated generic class using `extends`/`implements`/`override` bails.
 
 ## Interfaces
 
