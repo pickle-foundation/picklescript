@@ -418,7 +418,7 @@ fn run() -> Result<()> {
                 );
                 println!("running {} test(s) from {}", tests.len(), file.display());
                 let code = pickle_runtime::abi::pickle_runtime_run_tests();
-                pickle_runtime::abi::pickle_test_clear();
+                pickle_runtime::abi::pickle_runtime_reset();
                 if code != 0 {
                     failed = true;
                 }

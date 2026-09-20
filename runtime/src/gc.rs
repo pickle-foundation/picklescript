@@ -452,18 +452,17 @@ pub extern "C" fn pickle_gc_set_threshold(bytes: u32) {
     AUTO_THRESHOLD.store(bytes, Ordering::Relaxed);
 }
 
-/// Serialises tests that touch the shared global `Gc`. Each test fresh-starts
-/// the collector under the lock so parallel tests cannot sweep each other's
-/// allocations. Returns the guard; hold it for the test's duration.
-#[cfg(test)]
-pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-    let guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+/// Reset the collector: counters, dropped root cells, heap teardown and a
+/// fresh `Gc`. Used between `pickle test` files so a new module's compiled
+/// class ids (restarting at `PICKLE_CLASS_USER_BASE`) line up with an empty
+/// registry, and so objects from the previous module can never be traced or
+/// swept by this one.
+pub(crate) fn reset() {
     ALLOC_SINCE_GC.store(0, Ordering::Relaxed);
     BYTES_SINCE_GC.store(0, Ordering::Relaxed);
     AUTO_THRESHOLD.store(DEFAULT_AUTO_COLLECT_THRESHOLD, Ordering::Relaxed);
     COLLECTIONS.store(0, Ordering::Relaxed);
-    // Drop roots left behind by earlier tests (e.g. leaked static-field
+    // Drop roots left behind by the previous module (e.g. leaked static-field
     // cells) so they can never trace objects from a destroyed heap.
     STATIC_ROOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
     unsafe {
@@ -474,6 +473,16 @@ pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
         GLOBAL_GC = Box::into_raw(Box::new(Gc::new()));
         shadow::register_thread();
     }
+}
+
+/// Serialises tests that touch the shared global `Gc`. Each test fresh-starts
+/// the collector under the lock so parallel tests cannot sweep each other's
+/// allocations. Returns the guard; hold it for the test's duration.
+#[cfg(test)]
+pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    let guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset();
     guard
 }
 

@@ -143,8 +143,14 @@ ABI:
   reporting `test <name> ... ok` / `test <name> ... FAILED (<detail>)` plus a
   `test result: <p> passed; <f> failed` summary, and returns `0` when all
   pass / `1` when any fail.
-- `pickle_test_clear()` — drop all registered tests and hooks (called between
-  modules).
+- `pickle_test_clear()` — drop all registered tests and hooks.
+- `pickle_runtime_reset()` — full per-module teardown between test files:
+  `pickle_test_clear()` plus dropping every static-field cell and rebuilding
+  the collector with an empty descriptor table (then re-registering the
+  builtins). Each compiled module bakes class ids starting at
+  `PICKLE_CLASS_USER_BASE`, so the registry, statics, and heap must restart so
+  a later module's ids line up again and earlier modules' objects can never be
+  traced or swept by it. `pickle test` calls this after each module's run.
 
 Language-level `panic()` records its message to a thread-local captured slot,
 which the harness prints as the failure detail; outside a test run it prints
@@ -152,7 +158,8 @@ a `fatal:` banner and exits nonzero. Class/struct registration runs once per
 process — in `main` for normal programs, in `pkl_test_setup` for test
 modules — because the runtime appends descriptors without de-duplication,
 and the ids baked into each call site must match the runtime's registration
-order.
+order. Test modules therefore register against a freshly-reset runtime
+(`pickle_runtime_reset`) so each file's baked ids start from the same base.
 
 ## GC auto-collect
 

@@ -42,6 +42,15 @@ fn cell_bits(class_id: u32, slot: u32) -> usize {
     bits
 }
 
+/// Drop every static-field cell. `pickle test` calls this between files so a
+/// new module's `(class_id, slot)` statics never collide with the previous
+/// module's registry: class ids restart at `PICKLE_CLASS_USER_BASE`, so the
+/// old cells must not be reused. Cells are leaked (they were turned into raw
+/// boxes and registered as GC roots), matching the existing cell lifecycle.
+pub(crate) fn reset() {
+    CELLS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+}
+
 /// Read the managed value held in static cell `(class_id, slot)`; null when the
 /// field was never assigned.
 #[no_mangle]

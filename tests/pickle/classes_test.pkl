@@ -1,0 +1,28 @@
+class Hero {
+    static var counter: int = 0
+    var name: string
+    var level: int
+}
+
+fn hero(n: string) -> Hero {
+    Hero.counter = Hero.counter + 1
+    Hero(n, 1)
+}
+
+class Legacy {
+    static var flag: string = "old"
+    var id: int
+}
+
+describe("multi-file classes", {
+    test("hero statics are per-file", {
+        expect(Hero.counter).toBe(0)
+        expect(hero("alice").name).toBe("alice")
+        expect(Hero.counter).toBe(1)
+    })
+
+    test("second class in file", {
+        expect(Legacy.flag).toBe("old")
+        expect(Legacy(9).id).toBe(9)
+    })
+})

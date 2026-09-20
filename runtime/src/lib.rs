@@ -189,6 +189,23 @@ pub extern "C" fn pickle_runtime_shutdown() {
     gc::shutdown();
 }
 
+/// Reset the runtime to a pristine state between `pickle test` files: drop
+/// registered tests and hooks, static-field cells, compiled class descriptors
+/// and all heap objects. Each file compiles its own class ids starting at
+/// `PICKLE_CLASS_USER_BASE`, so the registry and statics must restart with it.
+#[no_mangle]
+pub extern "C" fn pickle_runtime_reset() {
+    test::pickle_test_clear();
+    statics::reset();
+    gc::reset();
+    let g = gc::gc_mut();
+    if g.descriptors.len() < BUILTIN_DESCRIPTORS.len() {
+        for d in BUILTIN_DESCRIPTORS {
+            g.register_class(*d);
+        }
+    }
+}
+
 // The compiler-emitted program entry. Resolved at link time.
 #[cfg(all(feature = "entry", not(test)))]
 unsafe extern "C" {
@@ -213,6 +230,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
 #[doc(hidden)]
 pub mod abi {
     pub use crate::pickle_runtime_init;
+    pub use crate::pickle_runtime_reset;
     pub use crate::pickle_runtime_shutdown;
 
     pub use crate::class::pickle_class_new;
@@ -393,5 +411,57 @@ mod tests {
         let g = gc::gc_mut();
         assert_eq!(g.class_name(0).map(|b| b.to_vec()), Some(b"string".to_vec()));
         assert_eq!(g.class_name(start - 1).map(|b| b.to_vec()), Some(b"State".to_vec()));
+    }
+
+    #[test]
+    fn runtime_reset_restores_pristine_state() {
+        let _guard = crate::gc::test_begin();
+        pickle_runtime_init();
+
+        const D: object::ClassDescriptor = object::ClassDescriptor {
+            name_ptr: b"Reset\0".as_ptr(),
+            name_len: 5,
+            flags: 0,
+            slot_count: 0,
+            mask_words: 0,
+            managed_mask: std::ptr::null(),
+            finalizer: object::builtin_nop_finalizer,
+        };
+
+        // Simulate one compiled file: register a class, touch a static, and
+        // register a test.
+        let first_id = pickle_runtime_register_class_table(&D as *const _, 1);
+        let boxed = boxscalar::pickle_box_i64(99);
+        statics::pickle_static_set(first_id - 1, 0, boxed);
+        extern "C" fn body() {}
+        let t = test::PickleTest {
+            name: b"reset > survives".as_ptr(),
+            name_len: "reset > survives".len() as u32,
+            body,
+        };
+        let tests = [t];
+        test::pickle_test_register_table(tests.as_ptr() as *const _, 1);
+
+        // The next file may compile even more classes before its own registry
+        // assignments; a second registration must get a fresh id sequence.
+        let second_id = pickle_runtime_register_class_table(&D as *const _, 1);
+        assert!(second_id > first_id, "ids accumulate across files pre-reset");
+
+        // Reset exactly like `pickle test` does between files.
+        pickle_runtime_reset();
+
+        // Registry is back to builtins + the newly compiled file's classes.
+        let g = gc::gc_mut();
+        assert_eq!(g.class_name(first_id).map(|b| b.to_vec()), None);
+        assert_eq!(
+            g.class_name(0).map(|b| b.to_vec()),
+            Some(b"string".to_vec()),
+            "builtins must be re-registered after reset"
+        );
+        // The old static cell must read as unset, not the stale 99.
+        assert!(statics::pickle_static_get(first_id - 1, 0).is_null());
+        // A fresh compilation gets the same ids as the first file did.
+        let fresh_id = pickle_runtime_register_class_table(&D as *const _, 1);
+        assert_eq!(fresh_id, first_id, "ids must restart per file");
     }
 }
