@@ -1757,4 +1757,60 @@ fn emits_scalar_pointer_address_load_and_store() {
     );
 }
 
+#[test]
+fn emits_raw_buffer_address_load_store() {
+    let m = emit_str(
+        r#"fn main() {
+            unsafe {
+                var buf: *int = alloc(int, 8)
+                buf[0] = 10
+                buf[2] += 5
+                println(buf[0] + buf[2])
+                free(buf)
+            }
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        dump.contains("storeraw.int64") && dump.contains("loadraw.int64"),
+        "`buf[i] = v` / `buf[i]` must lower to raw int64 stores and loads:\n{dump}"
+    );
+    assert!(
+        dump.contains("binop.mul"),
+        "element addressing must scale the index by the element stride:\n{dump}"
+    );
+    assert!(
+        dump.contains("binop.add"),
+        "element addressing must add `base + i * stride`:\n{dump}"
+    );
+}
+
+#[test]
+fn emits_raw_buffer_float_and_char_strides() {
+    let m = emit_str(
+        r#"fn main() {
+            unsafe {
+                var f: *float = alloc(float, 4)
+                f[1] = 2.5
+                println(f[1])
+                free(f)
+
+                var c: *char = alloc(char, 2)
+                c[0] = 'A'
+                println(c[0])
+                free(c)
+            }
+        }"#,
+    );
+    let dump = format!("{m}");
+    assert!(
+        dump.contains("storeraw.float64") && dump.contains("loadraw.float64"),
+        "`float` buffers must use float64 raw stores and loads:\n{dump}"
+    );
+    assert!(
+        dump.contains("storeraw.char") && dump.contains("loadraw.char"),
+        "`char` buffers must use char raw stores and loads:\n{dump}"
+    );
+}
+
 

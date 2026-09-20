@@ -22,6 +22,7 @@ mod list;
 mod map;
 mod object;
 mod panic;
+mod raw;
 pub(crate) mod shadow;
 pub(crate) mod strings;
 mod statics;
@@ -268,6 +269,9 @@ pub mod abi {
 
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;
+
+    pub use crate::raw::pickle_raw_alloc;
+    pub use crate::raw::pickle_raw_free;
 
     pub use crate::shadow::pickle_shadow_get;
     pub use crate::shadow::pickle_shadow_pop;

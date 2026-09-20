@@ -1896,6 +1896,15 @@ impl<'a> Checker<'a> {
             return Ty::Empty;
         }
 
+        // Raw-buffer builtins `alloc(T, count)` and `free(p)`. Both are
+        // `unsafe`-only; the emitter lowers them to `pickle_raw_alloc` /
+        // `pickle_raw_free` over manual heap memory the GC never traces.
+        if let ExprKind::Ident(bname) = &callee.kind {
+            if bname == "alloc" || bname == "free" {
+                return self.check_raw_builtin(e, bname, args);
+            }
+        }
+
         // `.free()` on a `#[manualAlloc]` binding.
         if let ExprKind::Member { object, name } = &callee.kind {
             if name == "free" {
@@ -2025,6 +2034,84 @@ impl<'a> Checker<'a> {
                 );
                 Ty::Unknown
             }
+        }
+    }
+
+    /// Validate the raw-buffer builtins `alloc(T, count)` and `free(p)`.
+    ///
+    /// `alloc(int, 8)` allocates a raw buffer and is typed `*int`;
+    /// `free(p)` releases it and is typed unit. Both are `unsafe`-only, and
+    /// the element type is currently restricted to scalars — buffers holding
+    /// managed values are not traced by the GC, so a raw address stored under
+    /// a managed pointee would be collected as a PickleObject.
+    fn check_raw_builtin(&mut self, e: &Expr, name: &str, args: &[CallArg]) -> Ty {
+        if self.unsafe_depth == 0 {
+            self.err(
+                e.span,
+                format!("`{name}` may only be used inside an `unsafe` block"),
+            );
+        }
+        match name {
+            "alloc" => {
+                if args.len() != 2 {
+                    self.err(e.span, "`alloc(T, count)` takes two arguments");
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Unknown;
+                }
+                let ty = &args[0];
+                let count = &args[1];
+                let ExprKind::Ident(ty_name) = &ty.value.kind else {
+                    self.err(ty.value.span, "`alloc` element type must be a type name");
+                    let _ = self.check_expr(&count.value);
+                    return Ty::Unknown;
+                };
+                let wrapped = TypeExpr {
+                    span: ty.value.span,
+                    kind: TypeExprKind::Path(vec![ty_name.clone()]),
+                };
+                let inner = self.resolved_fn_ty(&wrapped, &[]);
+                self.types.insert(ty.value.span, inner.clone());
+                match &inner {
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char => {}
+                    other => {
+                        self.err(
+                            ty.value.span,
+                            format!(
+                                "`alloc` currently only supports scalar element types (int, float, bool, char), found `{other}`"
+                            ),
+                        );
+                        let _ = self.check_expr(&count.value);
+                        return Ty::Unknown;
+                    }
+                }
+                let ct = self.check_expr(&count.value);
+                if ct != Ty::Unknown && ct != Ty::Int {
+                    self.err(count.value.span, "`alloc` count must be an `int`");
+                }
+                Ty::Ptr(Box::new(inner))
+            }
+            "free" => {
+                if args.len() != 1 {
+                    self.err(e.span, "`free(p)` takes one argument");
+                    for a in args {
+                        let _ = self.check_expr(&a.value);
+                    }
+                    return Ty::Empty;
+                }
+                let p = &args[0].value;
+                let at = self.check_expr(p);
+                match &at {
+                    Ty::Ptr(_) => {}
+                    other => self.err(
+                        p.span,
+                        format!("`free` expects a pointer argument, found `{other}`"),
+                    ),
+                }
+                Ty::Empty
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -2397,6 +2484,29 @@ impl<'a> Checker<'a> {
                 Ty::Char
             }
             Ty::Tuple(items) => Ty::Tuple(items.clone()),
+            Ty::Ptr(inner) => {
+                if it != Ty::Unknown && it != Ty::Int {
+                    self.err(e.span, "pointer index must be an `int`");
+                }
+                if self.unsafe_depth == 0 {
+                    self.err(
+                        e.span,
+                        "pointer indexing may only be used inside an `unsafe` block",
+                    );
+                }
+                match inner.as_ref() {
+                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char => (**inner).clone(),
+                    other => {
+                        self.err(
+                            e.span,
+                            format!(
+                                "indexing a pointer to a `{other}` value is not supported yet"
+                            ),
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
             Ty::Unknown => Ty::Unknown,
             other => {
                 self.err(
@@ -2782,10 +2892,33 @@ impl<'a> Checker<'a> {
                     Ty::List(inner) => inner.as_ref().clone(),
                     Ty::Map(_, v) => v.as_ref().clone(),
                     Ty::String => Ty::Char,
+                    Ty::Ptr(inner) => {
+                        if it != Ty::Unknown && it != Ty::Int {
+                            self.err(target.span, "pointer index must be an `int`");
+                        }
+                        if self.unsafe_depth == 0 {
+                            self.err(
+                                object.span,
+                                "pointer stores may only be used inside an `unsafe` block",
+                            );
+                        }
+                        match inner.as_ref() {
+                            Ty::Int | Ty::Float | Ty::Bool | Ty::Char => (**inner).clone(),
+                            other => {
+                                self.err(
+                                    target.span,
+                                    format!(
+                                        "storing through a pointer to a `{other}` value is not supported yet"
+                                    ),
+                                );
+                                Ty::Unknown
+                            }
+                        }
+                    }
                     _ => {
                         self.err(
                             target.span,
-                            "index assignment target must be a List, Map, or string",
+                            "index assignment target must be a List, Map, string, or pointer",
                         );
                         Ty::Unknown
                     }

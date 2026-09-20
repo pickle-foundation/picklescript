@@ -3116,6 +3116,42 @@ impl<'a> Emitter<'a> {
                 v.as_ref().clone(),
             );
         }
+        if let Some(Ty::Ptr(inner)) = &ot {
+            let Some(ty) = Self::scalar_ir(inner) else {
+                return self.bad(
+                    e.span,
+                    "storing through a pointer to a managed value is not lowered yet",
+                );
+            };
+            let base = self.expr(object)?;
+            let idx = self.expr(index)?;
+            let addr = self.ptr_element_addr(base, idx, ty, e.span)?;
+            if op == AssignOp::Assign {
+                let v = self.expr(value)?;
+                self.instr(IrInstr::StoreRaw {
+                    addr,
+                    v,
+                    ty,
+                });
+                return Ok(v);
+            }
+            let cur = self.temp();
+            self.instr(IrInstr::LoadRaw {
+                dst: cur,
+                addr,
+                ty,
+            });
+            let v = self.expr(value)?;
+            let dst = self.temp();
+            self.instr(IrInstr::BinOp {
+                dst,
+                op: assign_opcode(op),
+                a: cur,
+                b: v,
+            });
+            self.instr(IrInstr::StoreRaw { addr, v: dst, ty });
+            return Ok(dst);
+        }
         if !matches!(ot, Some(Ty::List(_))) {
             // Maps are handled above; other types are typed but unlowered.
             return self.bad(e.span, "index assignment over this type is not lowered yet");
@@ -3162,6 +3198,40 @@ impl<'a> Emitter<'a> {
         Ok(dst)
     }
 
+    /// Byte address of `base[i]` for a scalar pointee (`base + i * stride`).
+    /// Strides match the runtime block layout: 8 for int/float, 4 for char,
+    /// 1 for bool.
+    fn ptr_element_addr(
+        &mut self,
+        base: Temp,
+        idx: Temp,
+        elem: IrTy,
+        span: Span,
+    ) -> Result<Temp, ()> {
+        let stride = match elem {
+            IrTy::Bool => 1,
+            IrTy::Char => 4,
+            IrTy::Int | IrTy::Float => 8,
+            _ => return self.bad(span, "this pointee type is not indexed yet"),
+        };
+        let s = self.int_const(stride);
+        let off = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: off,
+            op: IrBinOp::Mul,
+            a: idx,
+            b: s,
+        });
+        let addr = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: addr,
+            op: IrBinOp::Add,
+            a: base,
+            b: off,
+        });
+        Ok(addr)
+    }
+
     /// `pickle_list_set(obj, idx, boxed)`: boxes a scalar element first.
     fn list_store(
         &mut self,
@@ -3199,6 +3269,15 @@ impl<'a> Emitter<'a> {
         }
         let ot = self.ty_of(&object.span);
         let elem = match ot {
+            Some(Ty::Ptr(inner)) if Self::scalar_ir(inner.as_ref()).is_some() => {
+                let ty = Self::scalar_ir(inner.as_ref()).unwrap();
+                let base = self.expr(object)?;
+                let idx = self.expr(index)?;
+                let addr = self.ptr_element_addr(base, idx, ty, e.span)?;
+                let dst = self.temp();
+                self.instr(IrInstr::LoadRaw { dst, addr, ty });
+                return Ok(dst);
+            }
             Some(Ty::List(inner)) => inner.as_ref().clone(),
             Some(Ty::String) => {
                 let obj = self.expr(object)?;
@@ -3962,6 +4041,45 @@ impl<'a> Emitter<'a> {
                 if newline {
                     self.extern_call_void("pickle_print_newline", vec![], vec![]);
                 }
+                Ok(self.unit_temp())
+            }
+"alloc" => {
+                if args.len() != 2 {
+                    return self.bad(e.span, "`alloc(T, count)` takes two arguments");
+                }
+                let stride = match self.ty_of(&args[0].value.span) {
+                    Some(Ty::Int) | Some(Ty::Float) => 8,
+                    Some(Ty::Char) => 4,
+                    Some(Ty::Bool) => 1,
+                    _ => {
+                        return self.bad(
+                            args[0].span,
+                            "`alloc` currently only supports scalar element types (int, float, bool, char)",
+                        )
+                    }
+                };
+                let count = self.expr(&args[1].value)?;
+                let s = self.int_const(stride);
+                let size = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: size,
+                    op: IrBinOp::Mul,
+                    a: count,
+                    b: s,
+                });
+                self.extern_call_t1(
+                    "pickle_raw_alloc",
+                    vec![IrTy::Int],
+                    IrTy::Int,
+                    vec![size],
+                )
+            }
+            "free" => {
+                if args.len() != 1 {
+                    return self.bad(e.span, "`free(p)` takes one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                self.extern_call_void("pickle_raw_free", vec![IrTy::Int], vec![p]);
                 Ok(self.unit_temp())
             }
             "len" => {

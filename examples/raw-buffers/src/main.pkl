@@ -1,0 +1,38 @@
+module rawBuffers
+
+// Raw buffers: `alloc(T, count)` reserves an unmanaged byte block whose the
+// GC never traces, `p[i]` reads/writes the i-th scalar element, and
+// `free(p)` releases it. All of it requires an `unsafe` block.
+//
+// A buffer must be freed exactly once; freeing it twice (or freeing a
+// foreign pointer) panics at runtime. Buffers hold scalars only — a managed
+// value stored behind a raw address would be collected as a PickleObject.
+
+fn main() {
+    unsafe {
+        var buf: *int = alloc(int, 8)
+        buf[0] = 10
+        buf[1] = 20
+        buf[2] = 0
+        buf[3] = buf[0] + buf[1]
+
+        var total = 0
+        for (var i = 0; i < 4; i += 1) {
+            total = total + buf[i]
+        }
+        println(total)
+
+        buf[2] += 5
+        println(buf[2])
+        free(buf)
+    }
+
+    unsafe {
+        var f: *float = alloc(float, 4)
+        f[1] = 2.5
+        println(f[1])
+        free(f)
+    }
+
+    println("done")
+}

@@ -175,11 +175,43 @@ Implemented today:
   of a local, and `*p` reads / `(*p) = v` writes through them. A scalar
   pointer is carried as an unmanaged address (never GC-tracked). Address-of
   a scalar requires a local variable, so `&n` is legal but `&(1 + 2)` is not.
+- Raw buffers: `alloc(T, count)` / `free(p)` over an unmanaged block and
+  `p[i]` element reads/writes with stride (see "Raw buffers" below).
 
 Line-leading `*`: the parser reads a line that starts with `*` as a
 multiplication continuation, so a store through a scalar pointer on its own
 line uses the parenthesized form `(*p) = v` (or `;` to end the previous
 statement).
+
+### Raw buffers (`alloc` / `free` / indexing)
+
+```
+unsafe {
+    var buf: *int = alloc(int, 8)    // 8 ints, 64 raw bytes
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = buf[0] + buf[1]
+    println(buf[2])                  // element read
+    free(buf)
+}
+```
+
+- `alloc(T, count)` returns `*T` over a non-GC block; `free(p)` releases it.
+  Both are `unsafe`-only. Element type `T` must be a scalar (`int`, `float`,
+  `bool`, `char`); a buffer holding managed values is not lowered, because
+  the GC never traces raw memory and would collect a stored object as a
+  PickleObject.
+- `p[i]` reads and `p[i] = v` writes the `i`-th element, scaled by the
+  element stride: 8 bytes for `int`/`float`, 4 for `char`, 1 for `bool`.
+  Compound forms (`p[i] += v`) load-modify-store.
+- Blocks are uninitialized: initialize an element before reading it. Reads
+  of never-written elements are whatever the allocator left in memory.
+- `free(p)` is checked: freeing a pointer that was not allocated (double
+  free, foreign pointer) reports `fatal: pickle: raw free of a pointer that
+  was not allocated (double free?)` through the runtime panic path and exits.
+- The checker does not track a raw buffer past `free`; the runtime registry
+  catches double frees, but a buffer used after being freed is unchecked
+  (like C).
 
 Rules enforced by the type checker:
 
@@ -189,10 +221,10 @@ Rules enforced by the type checker:
 - Pointer values are non-owning: they neither keep an object alive nor free
   it. A `#[manualAlloc]` owner still performs the deterministic free.
 
-Planned (not lowered yet): `&T` immutable-reference parameters, pointer
-arithmetic and indexing, `alloc(T)` / raw `free`, custom allocators and
-arenas. The syntax is reserved above but those lowering paths return a
-"not lowered yet" diagnostic rather than miscompiling.
+Planned (not lowered yet): `&T` immutable-reference parameters, raw buffers
+with managed pointees, custom allocators and arenas. The syntax is reserved
+above but those lowering paths return a "not lowered yet" diagnostic rather
+than miscompiling.
 
 Rules enforced by the type checker inside `unsafe` (planned):
 - A raw pointer derived from a managed object must not outlive a GC point in
@@ -228,7 +260,9 @@ as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
 | `*ptr`          | dereference (read a scalar pointee)      |
 | `(*ptr) = v`    | store through a scalar/pointer pointee   |
 | `ptr.field`     | field through a raw pointer (auto-deref) |
-| `p[n]`          | index through pointer (unsafe, planned)  |
+| `p[n]`          | index through pointer: element read/write with stride (unsafe) |
+| `alloc(T, n)`   | raw buffer of `n` scalar `T`s (unsafe)    |
+| `free(p)`       | release a raw buffer (unsafe, checked)    |
 
 `*T` is a non-owning pointer. There is no manual free in safe code, and the
 `#[manualAlloc]` owner is still what frees the object.

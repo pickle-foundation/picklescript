@@ -1728,6 +1728,140 @@ fn rejects_scalar_store_through_read_only_value() {
 }
 
 #[test]
+fn accepts_raw_buffer_alloc_free_and_index() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                var buf: *int = alloc(int, 8)
+                buf[0] = 10
+                buf[2] += 5
+                var t = buf[0] + buf[1]
+                println(t)
+                free(buf)
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_alloc_outside_unsafe() {
+    let d = check_str(
+        r#"fn main() {
+            var buf: *int = alloc(int, 8)
+            free(buf)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`alloc` may only be used inside an `unsafe` block"),
+        "expected an alloc diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("`free` may only be used inside an `unsafe` block"),
+        "expected a free diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_alloc_non_scalar() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                var s: *string = alloc(string, 4)
+                println(s)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`alloc` currently only supports scalar element types (int, float, bool, char), found `string`"),
+        "expected a scalar-only diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_alloc_bad_count() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                let b = alloc(int, "three")
+                println(b)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`alloc` count must be an `int`"),
+        "expected a count diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_free_non_pointer() {
+    let d = check_str(
+        r#"fn main() {
+            unsafe {
+                free(42)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`free` expects a pointer argument, found `int`"),
+        "expected a pointer diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_pointer_index_outside_unsafe() {
+    let d = check_str(
+        r#"fn main() {
+            var buf: *int = unsafe { alloc(int, 4) }
+            buf[0] = 1
+            println(buf[0])
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("pointer stores may only be used inside an `unsafe` block"),
+        "expected a store diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("pointer indexing may only be used inside an `unsafe` block"),
+        "expected an index diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_indexing_managed_pointer() {
+    let d = check_str(
+        r#"class C {
+            x: int
+        }
+
+        fn main() {
+            var c = C(1)
+            unsafe {
+                let p: *C = &c
+                println(p[0])
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("indexing a pointer to a `C` value is not supported yet"),
+        "expected a managed-pointee diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
 fn rejects_pointer_member_outside_unsafe() {
     let d = check_str(
         r#"class Vec2 {
