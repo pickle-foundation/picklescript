@@ -1986,7 +1986,12 @@ impl<'a> Emitter<'a> {
             ExprKind::Await(_) => self.bad(e.span, "`await` is not lowered yet"),
             ExprKind::GenericCall { .. } => self.bad(e.span, "generic calls are not lowered yet"),
             ExprKind::Cast { expr, ty, kind } => self.cast(e, expr, ty, *kind),
-            ExprKind::Unsafe(_) => self.bad(e.span, "`unsafe` blocks are not lowered yet"),
+            ExprKind::Unsafe(b) => {
+                self.push_scope();
+                let r = self.block_value(b);
+                self.pop_scope();
+                r
+            }
             ExprKind::Tuple(_) => self.bad(e.span, "tuple values are not lowered yet"),
             ExprKind::Array(items) => self.array_literal(e, items),
             ExprKind::Map(pairs) => self.map_literal(e, pairs),
@@ -2186,8 +2191,16 @@ impl<'a> Emitter<'a> {
                 });
                 Ok(dst)
             }
-            AstUnOp::Deref | AstUnOp::AddrOf => {
-                self.bad(e.span, "pointer operations are not lowered yet")
+            AstUnOp::Deref => self.expr(operand),
+            AstUnOp::AddrOf => {
+                let t = self.ty_of(&operand.span);
+                match t {
+                    Some(Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..)) => self.expr(operand),
+                    _ => self.bad(
+                        e.span,
+                        "`&` currently only supports class, struct, and pointer values",
+                    ),
+                }
             }
         }
     }
@@ -2654,6 +2667,26 @@ impl<'a> Emitter<'a> {
 
     fn assign(&mut self, e: &Expr, target: &Expr, op: AssignOp, value: &Expr) -> Result<Temp, ()> {
         let span = target.span;
+        if let ExprKind::Unary {
+            op: AstUnOp::Deref,
+            operand,
+        } = &target.kind
+        {
+            if op != AssignOp::Assign {
+                return self.bad(
+                    span,
+                    "compound assignment through a raw pointer is not lowered yet",
+                );
+            }
+            let pt = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
+            return match pt {
+                Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) => self.assign(e, operand, op, value),
+                _ => self.bad(
+                    span,
+                    "assignment through a raw pointer is only supported for class, struct, and pointer values",
+                ),
+            };
+        }
         if let ExprKind::Index { object, index } = &target.kind {
             return self.index_assign(e, op, object, index, value);
         }
@@ -2774,6 +2807,10 @@ impl<'a> Emitter<'a> {
             }
         }
         let ot = self.ty_of(&object.span);
+        let ot = match ot {
+            Some(Ty::Ptr(inner)) => Some((*inner).clone()),
+            other => other,
+        };
         let cid = match ot {
             Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
                 self.class_by_name.get(&cn).copied()
@@ -4035,6 +4072,10 @@ impl<'a> Emitter<'a> {
         }
         // `object.field` on a class/struct instance.
         let ot = self.ty_of(&object.span);
+        let ot = match ot {
+            Some(Ty::Ptr(inner)) => Some((*inner).clone()),
+            other => other,
+        };
         let cid = match ot {
             Some(Ty::Class(cn, _)) | Some(Ty::Struct(cn, _)) => {
                 self.class_by_name.get(&cn).copied()
@@ -4382,7 +4423,8 @@ impl<'a> Emitter<'a> {
             | Ty::List(..)
             | Ty::Map(..)
             | Ty::Tuple(..)
-            | Ty::Range(..) => Ok(Ptr),
+            | Ty::Range(..)
+            | Ty::Ptr(..) => Ok(Ptr),
             Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
             Ty::Fn(..) => self.bad(span, "function values are not lowered yet"),
             Ty::Unknown => self.bad(span, "list element type is not statically known"),
@@ -4453,7 +4495,8 @@ impl<'a> Emitter<'a> {
             | Ty::List(..)
             | Ty::Map(..)
             | Ty::Tuple(..)
-            | Ty::Range(..) => {
+            | Ty::Range(..)
+            | Ty::Ptr(..) => {
                 let _ = span;
                 Ok(IrTy::Ptr)
             }
@@ -4476,6 +4519,7 @@ impl<'a> Emitter<'a> {
                 "String" => Ok(IrTy::Str),
                 _ => Ok(IrTy::Ptr),
             },
+            TypeExprKind::Pointer(_) | TypeExprKind::Ref(_) => Ok(IrTy::Ptr),
             _ => self.bad(span, "this type annotation is not lowered yet"),
         }
     }

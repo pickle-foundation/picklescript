@@ -145,27 +145,48 @@ with the following properties:
 ## Safe vs unsafe
 
 ```
-let account = Account("Ada")          // safe: GC
+class Account {
+    var branch: string
+}
+
+#[manualAlloc]
+let account = Account("Ada")           // safe: deterministic owner
 
 unsafe {
-    let ptr: *Account = &account      // raw address
-    ptr->branch = "NYC"
-    let selfPtr: *selfObject = ...    // whatever you need
+    let ptr: *Account = &account       // raw address of a managed object
+    ptr.branch = "NYC"                 // `.` auto-dereferences a raw pointer
+    println((*ptr).branch)             // explicit dereference
 }
+account.free()
 ```
 
-Inside `unsafe { }` you get:
+`unsafe { }` is a scope: inside it the raw-pointer operators below are
+allowed, and the block's value is its tail expression (like any block).
 
-- `*T` raw pointers (taking `&` address-of, dereferencing `*p`, field access
-  `p->field`, index `p[i]`, arithmetic `p + n`).
-- `&T` references (`fn update(v: &int)`) for out/inout style parameters —
-  the referenced object is rooted on the shadow stack for the call's
-  duration.
-- Direct allocation through `alloc(T)`, `allocArray`, and allocator hooks:
-  `withAllocator(a) { ... }`.
-- Calling foreign (C) functions — not in v1.
+Implemented today:
 
-Rules enforced by the type checker inside `unsafe`:
+- `*T` raw pointer types (`let ptr: *Account = ...`).
+- `&expr` address-of, `*p` dereference.
+- Field access through a pointer: `p.field` auto-dereferences (there is no
+  separate `->` operator; `(*p).field` is always available).
+- Assigning through a pointer to a class, struct, or pointer value:
+  `*p = v` rebinds the pointer, and `p.field = v` writes the field.
+
+Rules enforced by the type checker:
+
+- `&` and `*` (and pointer field access) are only legal inside `unsafe`.
+- `&` currently accepts class, struct, and pointer values; `*p` requires `p`
+  to be a raw pointer.
+- Pointer values are non-owning: they neither keep an object alive nor free
+  it. A `#[manualAlloc]` owner still performs the deterministic free.
+
+Planned (not lowered yet): `&T` immutable-reference parameters, scalar raw
+pointers (`*int`) with store-through, pointer arithmetic and indexing,
+`alloc(T)` / raw `free`, custom allocators and arenas. The syntax is
+reserved above but those lowering paths return a "not lowered yet"
+diagnostic rather than miscompiling.
+
+Rules enforced by the type checker inside `unsafe` (planned):
 - A raw pointer derived from a managed object must not outlive a GC point in
   a way the compiler can see; the compiler inserts implicit roots for live
   referents of `&T` params.
@@ -194,14 +215,14 @@ as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
 
 | Syntax          | Meaning                                  |
 |-----------------|------------------------------------------|
-| `&expr`         | address of a value (stack or managed)    |
+| `&expr`         | address of a class/struct/pointer value  |
 | `*T`            | raw pointer type (unsafe only)           |
-| `ptr->field`    | field through raw pointer                |
 | `*ptr`          | dereference                              |
-| `T&`? — no, `&T` | reference as a parameter (rooted)       |
-| `p[n]`          | index through pointer (unsafe)           |
+| `ptr.field`     | field through a raw pointer (auto-deref) |
+| `p[n]`          | index through pointer (unsafe, planned)  |
 
-`*T` and `&T` do not own memory. There is no manual free in safe code.
+`*T` is a non-owning pointer. There is no manual free in safe code, and the
+`#[manualAlloc]` owner is still what frees the object.
 
 ## GC and the C side
 

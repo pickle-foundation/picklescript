@@ -119,6 +119,8 @@ struct Checker<'a> {
     /// Spans of `#[manualAlloc]`-returning calls whose result has not yet been
     /// consumed in the current statement.
     pending_owned_calls: HashSet<Span>,
+    /// Nesting depth of `unsafe { }` blocks; raw pointer operations require it.
+    unsafe_depth: u32,
 }
 
 impl<'a> Checker<'a> {
@@ -146,6 +148,7 @@ impl<'a> Checker<'a> {
             manual_ret_fns,
             manual_param_fns,
             pending_owned_calls: HashSet::new(),
+            unsafe_depth: 0,
         }
     }
 
@@ -1706,7 +1709,12 @@ impl<'a> Checker<'a> {
                 self.generic_fn_ty(e, name)
             }
             ExprKind::Cast { expr, ty, kind } => self.check_cast(e, expr, ty, *kind),
-            ExprKind::Unsafe(b) => self.check_block(b),
+            ExprKind::Unsafe(b) => {
+                self.unsafe_depth += 1;
+                let t = self.check_block(b);
+                self.unsafe_depth -= 1;
+                t
+            }
             ExprKind::Block(b) => self.check_block(b),
             ExprKind::Tuple(items) => {
                 Ty::Tuple(items.iter().map(|i| self.check_expr(i)).collect())
@@ -2230,6 +2238,19 @@ impl<'a> Checker<'a> {
         }
 
         let ot = self.check_expr(object);
+        // Member access through a raw pointer auto-dereferences: `p.field`.
+        let ot = match ot {
+            Ty::Ptr(inner) => {
+                if self.unsafe_depth == 0 {
+                    self.err(
+                        e.span,
+                        "pointer access may only be used inside an `unsafe` block",
+                    );
+                }
+                *inner
+            }
+            other => other,
+        };
         if let Ty::List(inner) = &ot {
             // Builtin list methods (slice subset).
             return match name {
@@ -2483,7 +2504,42 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Int
             }
-            UnOp::AddrOf | UnOp::Deref => Ty::Unknown,
+            UnOp::AddrOf => {
+                if self.unsafe_depth == 0 {
+                    self.err(e.span, "`&` may only be used inside an `unsafe` block");
+                }
+                match &t {
+                    Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) | Ty::String | Ty::Unknown => {
+                        Ty::Ptr(Box::new(t))
+                    }
+                    other => {
+                        self.err(
+                            e.span,
+                            format!(
+                                "`&` currently only supports class, struct, and pointer values, found `{other}`"
+                            ),
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            UnOp::Deref => {
+                if self.unsafe_depth == 0 {
+                    self.err(e.span, "`*` may only be used inside an `unsafe` block");
+                }
+                match t {
+                    Ty::Ptr(inner) => *inner,
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.err_note(
+                            e.span,
+                            format!("cannot dereference a value of type `{other}`"),
+                            "only raw pointers (`*T`) can be dereferenced",
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
         }
     }
 
@@ -2557,6 +2613,28 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            ExprKind::Unary {
+                op: UnOp::Deref,
+                operand,
+            } => {
+                if self.unsafe_depth == 0 {
+                    self.err(target.span, "`*` may only be used inside an `unsafe` block");
+                }
+                let pt = self.check_expr(operand);
+                match pt {
+                    Ty::Ptr(inner) => {
+                        self.check_assignable(&inner, &vt, target.span, "assignment");
+                    }
+                    Ty::Unknown => {}
+                    other => {
+                        self.err_note(
+                            target.span,
+                            format!("cannot dereference a value of type `{other}`"),
+                            "only raw pointers (`*T`) can be dereferenced",
+                        );
+                    }
+                }
+            }
             ExprKind::Member { object, name } => {
     // Type-qualified static property assignment: `Type.prop = v`.
     if let ExprKind::Ident(tname) = &object.kind {
@@ -2604,6 +2682,18 @@ impl<'a> Checker<'a> {
         }
     }
     let ot = self.check_expr(object);
+                let ot = match ot {
+                    Ty::Ptr(inner) => {
+                        if self.unsafe_depth == 0 {
+                            self.err(
+                                target.span,
+                                "pointer access may only be used inside an `unsafe` block",
+                            );
+                        }
+                        *inner
+                    }
+                    other => other,
+                };
                 if let Some((class, args_map)) = self.type_key(&ot) {
                     if let Some(f) = self.find_field(&class, name, &args_map) {
                         if f.0.is_static {

@@ -1587,3 +1587,131 @@ fn rejects_unknown_member_in_subclass() {
     assert!(has_errors(&d), "expected an error, got none");
     assert!(msgs.contains("missing"), "expected a member diagnostic, got:\n{msgs}");
 }
+
+#[test]
+fn accepts_unsafe_raw_pointer_access() {
+    let d = check_str(
+        r#"class Vec2 {
+            x: int
+            y: int
+        }
+
+        fn bump(p: *Vec2) {
+            unsafe {
+                p.x = p.x + 1
+                (*p).y = (*p).y + 1
+            }
+        }
+
+        fn main() {
+            #[manualAlloc] let v = Vec2(1, 2)
+            unsafe {
+                let p: *Vec2 = &v
+                bump(p)
+                println(p.x)
+            }
+            v.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_addr_of_outside_unsafe() {
+    let d = check_str(
+        r#"class Vec2 {
+            x: int
+        }
+
+        fn main() {
+            let v = Vec2(1)
+            let p: *Vec2 = &v
+            println(p)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`&` may only be used inside an `unsafe` block"),
+        "expected an unsafe diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_deref_outside_unsafe() {
+    let d = check_str(
+        r#"class Vec2 {
+            x: int
+        }
+
+        fn main() {
+            let v = Vec2(1)
+            let p: *Vec2 = unsafe { &v }
+            println((*p).x)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`*` may only be used inside an `unsafe` block"),
+        "expected an unsafe diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_deref_of_non_pointer() {
+    let d = check_str(
+        r#"fn main() {
+            let n = 3
+            unsafe {
+                println(*n)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("cannot dereference"),
+        "expected a deref diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_addr_of_scalar() {
+    let d = check_str(
+        r#"fn main() {
+            let n = 3
+            unsafe {
+                let p: *int = &n
+                println(p)
+            }
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("`&` currently only supports"),
+        "expected an address-of diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_pointer_member_outside_unsafe() {
+    let d = check_str(
+        r#"class Vec2 {
+            x: int
+        }
+
+        fn main() {
+            let v = Vec2(1)
+            let p: *Vec2 = unsafe { &v }
+            println(p.x)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("pointer access may only be used inside an `unsafe` block"),
+        "expected a pointer access diagnostic, got:\n{msgs}"
+    );
+}

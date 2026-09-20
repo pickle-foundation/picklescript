@@ -1,0 +1,34 @@
+module rawPointers
+
+// Raw pointers are only reachable inside `unsafe { }`. They never own the
+// object: a `#[manualAlloc]` binding is still what frees it.
+
+class Vec2 {
+    x: int
+    y: int
+}
+
+fn bump(p: *Vec2) {
+    unsafe {
+        p.x = p.x + 10
+        (*p).y = (*p).y + 20
+    }
+}
+
+fn main() {
+    #[manualAlloc] let v = Vec2(1, 2)
+
+    unsafe {
+        let p: *Vec2 = &v
+        println(p.x)          // `.` auto-dereferences a raw pointer
+        println((*p).y)       // explicit dereference
+        p.x = 5
+        bump(p)
+        println(v.x)
+        println(v.y)
+    }
+
+    println(v.x)
+    v.free()
+    println("done")
+}

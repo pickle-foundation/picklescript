@@ -442,12 +442,8 @@ impl<'a> TypeCtx<'a> {
                 let _ = is_async;
                 Ty::Fn(ps, Box::new(r))
             }
-            TypeExprKind::Pointer(_) | TypeExprKind::Ref(_) => {
-                self.diags.emit(Diagnostic::error_at(
-                    te.span,
-                    "pointer and reference types are not available in safe code",
-                ));
-                Ty::Unknown
+            TypeExprKind::Pointer(inner) | TypeExprKind::Ref(inner) => {
+                Ty::Ptr(Box::new(self.resolve_ty(inner, generics)))
             }
             TypeExprKind::Infer => Ty::Unknown,
         }

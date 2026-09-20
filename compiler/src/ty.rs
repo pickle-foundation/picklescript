@@ -40,6 +40,8 @@ pub enum Ty {
     Var(String),
     /// `Range<T>` produced by `a..b`.
     Range(Box<Ty>),
+    /// `*T` raw pointer (only usable inside `unsafe`).
+    Ptr(Box<Ty>),
 }
 
 impl Ty {
@@ -136,6 +138,7 @@ impl Ty {
             Ty::Unknown => "?".into(),
             Ty::Var(n) => n.clone(),
             Ty::Range(inner) => format!("Range<{}>", inner.bare_name()),
+            Ty::Ptr(inner) => format!("*{}", inner.bare_name()),
         }
     }
 
