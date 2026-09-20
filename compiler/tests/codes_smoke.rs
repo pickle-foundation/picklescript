@@ -320,6 +320,34 @@ fn generic_class_lambda_is_e0900() {
 }
 
 #[test]
+fn lambda_assigning_to_captured_var_is_e0900() {
+    // A lambda that assigns to a `var` captured from the enclosing scope
+    // used to silently mutate a dead per-call copy of the snapshot (the
+    // write-after-read variant compiled and corrupted state at runtime).
+    let src = "fn main() {
+            var n = 0
+            let inc = () -> int {
+                let start = n
+                n += 1
+                n
+            }
+            println(inc())
+        }";
+    let d = check_str(src);
+    assert!(!d.any_error(), "should type-check cleanly:\n{}", error_msgs(&d));
+    let d2 = DiagnosticSink::new();
+    let mut map = SourceMap::default();
+    let out = pickle_compiler::front::frontend("test.pk", src, &mut map, &d).unwrap();
+    let _ = pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &d2);
+    let diags = d2.diagnostics.borrow();
+    let msg = diags
+        .iter()
+        .find(|d| d.message.contains("assigning to `n` inside a lambda"))
+        .expect("expected a codegen error about mutation of a captured binding");
+    assert_eq!(msg.code, Some(ErrorCode::NotLowered));
+}
+
+#[test]
 fn grouped_render_has_code_headlines() {
     let d = check_str("fn main() { let x = nope }");
     let mut map = SourceMap::default();

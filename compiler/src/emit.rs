@@ -101,6 +101,7 @@ pub fn emit_ir(
         lambda_caps: HashMap::new(),
         lambda_owners: HashMap::new(),
         lambda_exprs: HashMap::new(),
+        collect_writes: false,
         next_closure: 0,
         tramp_fids: HashMap::new(),
         method_tramp_fids: HashMap::new(),
@@ -498,6 +499,11 @@ struct Emitter<'a> {
     /// when a per-instantiation copy registers during build (the build-time
     /// expression handle is not known to live for `'a`).
     lambda_exprs: HashMap<Span, &'a Expr>,
+    /// While re-walking a lambda body to collect its assigned bare names, the
+    /// walk pushes `(name, span)` write targets into the accumulator instead of
+    /// free-name reads. The mutable-capture guard bails on any capture that is
+    /// also an assignment target (a hoisted body would mutate a snapshot).
+    collect_writes: bool,
     /// Monotonic id for hoisted lambda body names (`pkl_closure_<n>`).
     next_closure: u32,
     /// Top-level function id -> its value-use trampoline (`FnSource::Trampoline`),
@@ -805,6 +811,9 @@ impl<'a> Emitter<'a> {
     ) {
         match &e.kind {
             ExprKind::Ident(name) => {
+                if self.collect_writes {
+                    return;
+                }
                 if !scope_contains_from(scope, lmark, name) {
                     acc.push((name.clone(), e.span));
                 }
@@ -869,6 +878,14 @@ impl<'a> Emitter<'a> {
                 self.walk_expr(operand, owner_cid, owner_name, lmark, scope, acc)
             }
             ExprKind::Assign { target, value, .. } => {
+                if self.collect_writes {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        if !scope_contains_from(scope, lmark, name) {
+                            acc.push((name.clone(), target.span));
+                        }
+                    }
+                    return;
+                }
                 self.walk_expr(target, owner_cid, owner_name, lmark, scope, acc);
                 self.walk_expr(value, owner_cid, owner_name, lmark, scope, acc);
             }
@@ -878,6 +895,11 @@ impl<'a> Emitter<'a> {
                 body,
                 ..
             } => {
+                if self.collect_writes {
+                    // Writes inside a nested lambda belong to that lambda's own
+                    // guard, not the enclosing one.
+                    return;
+                }
                 if let Some(cls) = &self.generic_ctx_name {
                     let _ = self.bad::<()>(
                         e.span,
@@ -910,9 +932,45 @@ impl<'a> Emitter<'a> {
                 let before = acc.len();
                 scope.push(bound_params(params));
                 self.walk_fn_body(body, owner_cid, owner_name, child_marker, scope, acc);
-                scope.pop();
                 let mut mine = acc.split_off(before);
                 let free_names = std::mem::take(&mut mine);
+                // A second pass over the same body collects the names the
+                // lambda assigns as bare identifiers. A captured binding is
+                // snapshotted into the closure object and re-copied into a
+                // fresh slot on every call, so assigning to one inside the
+                // hoisted body would mutate a dead copy on every invocation.
+                // Reject it loudly instead of silently miscompiling (the
+                // escape hatch is to mutate a captured *object*'s field, which
+                // is shared by reference).
+                let before = acc.len();
+                self.collect_writes = true;
+                self.walk_fn_body(body, owner_cid, owner_name, child_marker, scope, acc);
+                self.collect_writes = false;
+                let written = acc.split_off(before);
+                for (name, refs) in written {
+                    if self.is_enclosing_global(&name) {
+                        continue;
+                    }
+                    if let Some(cid) = owner_cid {
+                        if self.instance_field_index(cid, &name).is_some()
+                            || self
+                                .property_ids
+                                .contains_key(&(cid as u32, name.to_string(), false))
+                            || self.static_field(cid, &name).is_some()
+                            || self.class_const_defined(cid, &name)
+                        {
+                            continue;
+                        }
+                    }
+                    let _ = self.bad::<()>(
+                        refs,
+                        format!(
+                            "assigning to `{name}` inside a lambda is not lowered yet: it is captured by value, and a hoisted body cannot mutate the enclosing binding (assign through a captured object's field instead)"
+                        ),
+                    );
+                    return;
+                }
+                scope.pop();
                 let captures =
                     self.decide_captures(&free_names, owner_cid, owner_name, e.span);
                 let captures = match captures {

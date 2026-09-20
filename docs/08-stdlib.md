@@ -61,7 +61,10 @@ and assignments (including `+=`-style compounds), `len(xs)`, `xs.push(v)` /
 `xs.pop()`, `for (x in xs)` iteration, and `print`/`println` on a list
 (prints `List(len=N)`). Scalar elements are boxed at the runtime boundary;
 strings/lists and other managed values pass through as pointers. Lists of
-`char` and string indexing are not lowered yet.
+`char` and string byte-indexing/iteration are lowered: `List<char>` goes
+through the scalar-list path (see the `char` bullet in `06-compiler.md`), and
+`s[i]` / `for (c in s)` are byte-addressed reads per the locked string model
+(`04-types.md`).
 
 ## I/O model
 

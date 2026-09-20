@@ -19,7 +19,9 @@ Version 1. Files use the `.pkl` extension.
     `"Total: {total}"`. Escapes: `\n \t \\ \" \{ \u{1F600}`.
   - `r"raw text {not inserted}"` — no interpolation.
   - `"""multi\nline\nstring"""` — interpolation allowed.
-- Character literal: `'a'` — a Unicode scalar, type `char`.
+- Character literal: `'a'` — a Unicode scalar, type `char`. Strings are
+  UTF-8 bytes, not `char` arrays (see the locked string/char model in
+  `04-types.md`).
 
 ## Statements
 

@@ -417,15 +417,19 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
 - `char` values are boxed/unboxed exactly like the other scalars: the runtime
   provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
   elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`
-  pointers and load them back through the scalar list path. `char` is an i32
-  scalar at the IR boundary; only the low byte is meaningful for ASCII, and the
-  printed form (raw or boxed) is that single byte. An absent map key of type
-  `char` reads back the zero value `'\0'`.
-- `s[i]` on a `string` lowers to `pickle_str_get` (a bounds-checked byte read
-  widening to the `char` `i32` ABI; out-of-range panics). `for (c in s)`
+  pointers and load them back through the scalar list path. Under the locked
+  string/char model (`04-types.md`) a `char` is a Unicode scalar; at the IR
+  boundary it is an i32/UCS-4 scalar (0..=0x10FFFF), never a surrogate half.
+  `char` → `string` lowers to `pickle_str_from_char`, which encodes the scalar
+  as UTF-8. An absent map key of type `char` reads back the zero value `'\0'`.
+- `s[i]` on a `string` lowers to `pickle_str_get`: a bounds-checked **byte**
+  read that widens to the `char` `i32` ABI (out-of-range panics). `for (c in s)`
   iterates a string through the same path (`pickle_str_len` bound +
-  `pickle_str_get` per trip), char-binding the raw scalar with no box. The
-  checker rejects too-few-argument constructor calls, so a miscounted
+  `pickle_str_get` per trip). Whether indexed or looped, non-ASCII text yields
+  the raw UTF-8 byte, never a decoded scalar — strings are byte-addressed by
+  design, matching Rust `s.as_bytes()[i]`. A scalar-exact view is the reserved
+  future `s.chars()`; nothing decodes UTF-8 implicitly today. The checker
+  rejects too-few-argument constructor calls, so a miscounted
   synthesized-ctor call reports "expected N argument(s), found M" instead of
   reaching a codegen crash.
 - `println`/`print` of a class/struct value lowers to `pickle_print_obj`,

@@ -30,6 +30,25 @@ Numeric literal inference: integer literals adapt to the expected type
 (`u16`, `byte`, ...); range errors are compile errors. Explicit suffixes
 override inference.
 
+## String and char model
+
+The model is locked. A `string` is an immutable, contiguous string of **UTF-8
+bytes**, and a `char` is a **Unicode scalar value** (a single code point,
+never a surrogate half). Strings are *not* arrays of `char`:
+
+- `s[i]` and `for (c in s)` address *bytes*, like Rust `s.as_bytes()[i]`:
+  O(1), bounds-checked, and for non-ASCII text they yield `byte` values
+  (widened to the `char` ABI), never decoded scalars. This keeps indexing and
+  iteration cheap and deterministic.
+- Converting a `char` to a `string` encodes the scalar as UTF-8; converting
+  the other way always consumes exactly one scalar.
+- Scalar/byte *views* (`s.chars()`, `s.bytes()`) are reserved spellings for
+  future explicit iteration and are not part of the primitive surface yet.
+
+This is deliberate: pretending UTF-8 is an array of scalar values invites
+expensive re-decoding and surprising `len()`. The Rust model (`str` /
+`char` / `as_bytes`) is the reference design.
+
 ## Composite types
 
 - **`struct`** — value type. Field-for-field equality, copied on
