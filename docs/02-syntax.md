@@ -76,6 +76,18 @@ continue
 return [expr] | return          // bare return == return none, if option
 ```
 
+> **Implemented subset (current compiler).** `if (let pattern = value)` lower as a
+> conditional binding: `some(v)`/`none` against an option value gate the
+> then-block, and the binding is visible only inside it. A plain `let x = value`
+> binding is unconditional. `match` lowers over enums (variant patterns) **and**
+> non-enums: literal patterns against `int`/`float`/`byte`/`char`/`bool`/`string`
+> scrutinees (string patterns must be non-interpolated), plus `some(v)`/`none`
+> against options; arms may carry `if` guards that fall through on `false`, a
+> binding/wildcard arm is a catch-all, and a non-exhaustive chain faults with
+> "pickle: match is not exhaustive" at runtime. `Or` (`case a | b`) and tuple
+> patterns lower only for enums; matching over other composite types still bails
+> "not lowered yet".
+
 ### Expression statements
 
 ```

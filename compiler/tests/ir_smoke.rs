@@ -1232,6 +1232,80 @@ fn emits_guarded_match_arms() {
 }
 
 #[test]
+fn emits_non_enum_match_and_if_let() {
+    // Int/string/option scrutinees lower to equality/presence tests, `some(v)`
+    // unboxes the payload, and `if (let some(v) = m)` branches on presence.
+    let m = emit_str(
+        r#"fn band(n: int) -> string {
+            match (n) {
+                case 0 -> "zero"
+                case x if x > 9 -> "big"
+                case _ -> "small"
+            }
+        }
+        fn name_of(k: string) -> string {
+            match (k) {
+                case "up" -> "north"
+                case _ -> "?"
+            }
+        }
+        fn unwrap(m: int?) -> int {
+            match (m) {
+                case some(v) -> v
+                case none -> 0
+            }
+        }
+        fn pick(m: int?, f: int) -> int {
+            if (let some(v) = m) { v } else { f }
+        }
+        fn main() {
+            println(band(3), name_of("up"), unwrap(none), pick(1 as? int, 2))
+        }"#,
+    );
+    let syms = externs(&m);
+    for need in [
+        "pickle_str_cmp",
+        "pickle_panic_no_match",
+        "pickle_unbox_i64",
+        "pickle_box_i64",
+    ] {
+        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+    }
+    let band = m.funcs.iter().find(|f| f.name == "band").expect("band");
+    let eq_checks = band
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::BinOp { op: BinOp::Eq, .. }))
+        .count();
+    assert!(eq_checks >= 1, "int literal case needs an equality check:\n{band}");
+    let name_of = m.funcs.iter().find(|f| f.name == "name_of").expect("name_of");
+    let cmp_calls = name_of
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_str_cmp")))
+        .count();
+    assert_eq!(cmp_calls, 1, "one string case -> one str_cmp:\n{name_of}");
+    let unwrap = m.funcs.iter().find(|f| f.name == "unwrap").expect("unwrap");
+    let branches = unwrap
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.term {
+            IrTerm::BranchIf { .. } => Some(()),
+            _ => None,
+        })
+        .count();
+    assert!(branches >= 1, "option some/none needs a presence branch:\n{unwrap}");
+    let pick = m.funcs.iter().find(|f| f.name == "pick").expect("pick");
+    assert!(
+        pick.blocks.iter().any(|b| matches!(b.term, IrTerm::BranchIf { .. })),
+        "if-let needs a presence branch:\n{pick}"
+    );
+}
+
+#[test]
 fn property_getter_reads_bare_field_and_this() {
     // Bare field names and bare property names inside accessors resolve
     // through `this`; the getter/setter bodies must lower without unset `this`.

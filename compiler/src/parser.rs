@@ -1533,9 +1533,16 @@ impl<'a> Parser<'a> {
             }
             Tok::Number => {
                 let t = self.advance();
-                Ok(Pattern::Literal(Lit::Int {
-                    value: t.data.int.unwrap_or(0),
-                }))
+                let kind = if t.data.is_float {
+                    Lit::Float {
+                        value: t.data.float.unwrap_or(0.0),
+                    }
+                } else {
+                    Lit::Int {
+                        value: t.data.int.unwrap_or(0),
+                    }
+                };
+                Ok(Pattern::Literal(kind))
             }
             Tok::Str(_) => {
                 let t = self.advance();
@@ -1566,9 +1573,16 @@ impl<'a> Parser<'a> {
             Tok::Minus => {
                 self.bump();
                 let t = self.advance();
-                Ok(Pattern::Literal(Lit::Int {
-                    value: -t.data.int.unwrap_or(0),
-                }))
+                let kind = if t.data.is_float {
+                    Lit::Float {
+                        value: -t.data.float.unwrap_or(0.0),
+                    }
+                } else {
+                    Lit::Int {
+                        value: -t.data.int.unwrap_or(0),
+                    }
+                };
+                Ok(Pattern::Literal(kind))
             }
             Tok::LParen => {
                 self.bump();

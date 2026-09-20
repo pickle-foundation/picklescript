@@ -1383,6 +1383,16 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Variant { path, payloads } => {
+                // `some(v)` binds the payload against an option scrutinee.
+                if path.len() == 1 && path[0] == "some" && ty.is_option() {
+                    let inner = ty.inner_option().unwrap_or(Ty::Unknown);
+                    if payloads.len() != 1 {
+                        self.err(p.span(), "`some` pattern takes exactly one payload binding");
+                    } else {
+                        self.bind_pattern(&payloads[0], &inner, mutable);
+                    }
+                    return;
+                }
                 // `Enum.Variant(p1, p2)` binding. If only the variant name is
                 // given, the enum type is inferred from the value.
                 let (enum_name, variant_name) = match path.len() {
@@ -3894,21 +3904,31 @@ impl<'a> Checker<'a> {
         then: &Block,
         else_else: Option<&Expr>,
     ) -> Ty {
-        match cond {
-            IfCond::Cond(c) => self.check_bool_cond(c),
+        // For `if (let pattern = value)` the binding stays in scope for the
+        // then-block only: a failing pattern skips the binding entirely, so
+        // the else branch must not see it.
+        let bind_scope = match cond {
+            IfCond::Cond(c) => {
+                self.check_bool_cond(c);
+                false
+            }
             IfCond::Binding { pattern, value } => {
                 let vt = self.check_expr(value);
+                self.check_match_pattern(pattern, &vt, value.span);
                 self.push_scope();
                 self.bind_pattern(pattern, &vt, false);
-                self.pop_scope();
+                true
             }
-        }
+        };
         // Analyze each branch from the same entry state and merge the moved
         // bits, so a value moved on one path is treated as moved afterwards
         // without falsely rejecting a move that happens on both paths.
         let before = self.capture_moved();
         let tt = self.check_block(then);
         let mut after = self.capture_moved();
+        if bind_scope {
+            self.pop_scope();
+        }
         let _ = e.span;
         if let Some(else_e) = else_else {
             self.set_moved(&before);
@@ -3938,6 +3958,7 @@ impl<'a> Checker<'a> {
         for arm in arms {
             self.set_moved(&before);
             self.push_scope();
+            self.check_match_pattern(&arm.pattern, &st, arm.span);
             self.bind_pattern(&arm.pattern, &st, false);
             if let Some(g) = &arm.guard {
                 self.check_bool_cond(g);
@@ -3964,6 +3985,97 @@ impl<'a> Checker<'a> {
         }
         let _ = e.span;
         result
+    }
+
+    /// Validate that a match arm's pattern can actually match a scrutinee of
+    /// type `st`. Binding/wildcard/tuple patterns are structurally fine;
+    /// literals must share the scrutinee's domain, and string patterns may
+    /// not interpolate.
+    fn check_match_pattern(&mut self, p: &Pattern, st: &Ty, span: Span) {
+        if matches!(st, Ty::Unknown | Ty::Var(_)) {
+            return;
+        }
+        match p {
+            Pattern::Wildcard | Pattern::Binding { .. } | Pattern::Tuple(_) => {}
+            Pattern::Or(alts) => {
+                for a in alts {
+                    self.check_match_pattern(a, st, span);
+                }
+            }
+            Pattern::Literal(l) => self.check_match_literal(l, st, span),
+            Pattern::Variant { path, payloads } => {
+                if path.len() == 1 && path[0] == "some" {
+                    if !st.is_option() {
+                        self.err_note(
+                            span,
+                            format!("`some` patterns require an option value, not `{st}`"),
+                            "match `none`/`some(v)` against an option scrutinee",
+                        );
+                    } else {
+                        let inner = st.inner_option().unwrap_or(Ty::Unknown);
+                        for pl in payloads {
+                            self.check_match_pattern(pl, &inner, span);
+                        }
+                    }
+                    return;
+                }
+                // A variant path on a non-enum, non-option scrutinee is a
+                // mismatch; enum variants are validated while binding.
+                if !st.is_option()
+                    && !matches!(st, Ty::Enum(..))
+                    && path.len() >= 2
+                {
+                    self.err(
+                        span,
+                        format!("variant pattern `{}` cannot match a value of type `{st}`", path.join(".")),
+                    );
+                }
+                if st.is_option() && !(path.len() == 1 && path[0] == "some") {
+                    self.err(
+                        span,
+                        "patterns on an option value must be `some(v)`, `none`, or `_`",
+                    );
+                }
+            }
+        }
+    }
+
+    fn check_match_literal(&mut self, l: &Lit, st: &Ty, span: Span) {
+        let ok = match (l, st) {
+            (Lit::Int { .. } | Lit::Float { .. }, Ty::Int | Ty::Float | Ty::Byte) => true,
+            (Lit::Bool(_), Ty::Bool) => true,
+            (Lit::Char(_), Ty::Char) => true,
+            (Lit::Char(c), Ty::Byte) => *c as u32 <= 0x7F,
+            (Lit::String(parts), Ty::String) => parts.iter().all(|p| matches!(p, StrPart::Text(_))),
+            (Lit::None, _) => st.is_option(),
+            _ => false,
+        };
+        if ok {
+            return;
+        }
+        if let Lit::String(parts) = l {
+            if parts.iter().any(|p| matches!(p, StrPart::Expr(_))) {
+                self.err_note(
+                    span,
+                    "string match patterns may not interpolate",
+                    "compare a literal inside the arm body instead",
+                );
+                return;
+            }
+        }
+        let what = match l {
+            Lit::Int { .. } => "an integer",
+            Lit::Float { .. } => "a float",
+            Lit::Bool(_) => "`true`/`false`",
+            Lit::Char(_) => "a character literal",
+            Lit::String(_) => "a string literal",
+            Lit::None => "`none`",
+        };
+        self.err_note(
+            span,
+            format!("{what} pattern cannot match a value of type `{st}`"),
+            "match patterns must share the scrutinee's type",
+        );
     }
 
     fn check_cast(&mut self, e: &Expr, expr: &Expr, ty: &TypeExpr, kind: CastKind) -> Ty {

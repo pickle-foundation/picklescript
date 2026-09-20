@@ -354,6 +354,76 @@ fn rejects_inconsistent_match_arms() {
 }
 
 #[test]
+fn accepts_non_enum_match_and_if_let() {
+    let d = check_str(
+        r#"fn band(n: int) -> string {
+            match (n) {
+                case x if x < 0 -> "neg"
+                case 0 -> "zero"
+                case x if x > 9 -> "big"
+                case _ -> "small"
+            }
+        }
+        fn greet(k: string) -> string {
+            match (k) {
+                case "hi" -> "hello"
+                case _ -> "?"
+            }
+        }
+        fn opt(m: int?) -> int {
+            match (m) {
+                case some(v) -> v
+                case none -> 0
+            }
+        }
+        fn pick(m: int?, f: int) -> int {
+            if (let some(v) = m) { v } else { f }
+        }
+        fn main() {
+            println(band(3), greet("hi"), opt(1 as? int), pick(none, 2))
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_mismatched_literal_match_pattern() {
+    let d = check_str(
+        r#"fn bad(v: int) -> string {
+            match (v) {
+                case true -> "bool"
+                case _ -> "int"
+            }
+        }
+        fn main() { println(bad(1)) }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a literal/scrutinee type mismatch error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_interpolated_string_match_pattern() {
+    let d = check_str(
+        r#"fn bad(k: string) -> string {
+            let x = "a"
+            match (k) {
+                case "{x}" -> "interpolated"
+                case _ -> "?"
+            }
+        }
+        fn main() { println(bad("a")) }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected an interpolation-in-pattern error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn accepts_lambda_higher_order() {
     let d = check_str(
         r#"fn apply(f: fn (int) -> int, x: int) -> int {

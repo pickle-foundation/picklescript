@@ -1,0 +1,40 @@
+fn band(n: int) -> string {
+    match (n) {
+        case x if x < 0 -> "neg"
+        case 0 -> "zero"
+        case x if x > 9 -> "big"
+        case _ -> "small"
+    }
+}
+
+fn name_of(k: string) -> string {
+    match (k) {
+        case "up" -> "north"
+        case "down" -> "south"
+        case _ -> "?"
+    }
+}
+
+fn unwrap(m: int?) -> int {
+    match (m) {
+        case some(v) -> v
+        case none -> 0
+    }
+}
+
+fn pick(m: int?, f: int) -> int {
+    if (let some(v) = m) {
+        v
+    } else {
+        f
+    }
+}
+
+fn main() {
+    println(band(-2) + "|" + band(0) + "|" + band(5) + "|" + band(42))
+    println(name_of("up") + "|" + name_of("down") + "|" + name_of("left"))
+    println(unwrap(none))
+    println(unwrap(7 as? int))
+    println(unwrap(3 as? int))
+    println(pick(none, -1), pick(9 as? int, -1))
+}

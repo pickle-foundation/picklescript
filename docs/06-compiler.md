@@ -181,6 +181,17 @@ Lowering rules:
   guarded catch-all keeps the chain live, and a chain that exhausts every arm
   falls into the `pickle_panic_no_match` trap). Guards may use `&&`/`||`,
   which lower through the ordinary short-circuit `logic()` path.
+- Non-enum scrutinees share the same per-arm chain shape via
+  `lower_generic_match`: the value is stored in a shadow slot of its scalar IR
+  domain, and `pattern_test_cond` builds the branch condition per pattern —
+  string literals via `pickle_str_cmp == 0`, numeric/bool/char literals via a
+  const `==` (integer literals are `itof`-widened against a float scrutinee),
+  `none` as `!opt_is_present`, `some(v)` as `opt_is_present`. `bind_match_value`
+  then binds the scrutinee (unboxed through `opt_resolve` for `some(v)`) into
+  fresh slots. `if (let pattern = value)` is `if_let_expr`: the value is
+  evaluated once, `pattern_test_cond` gates the then-block (a bare binding/wild
+  card pattern is a plain branch), and bindings are scoped to the then-block
+  only, since a failed `some(v)` test must not leak a stale binding to `else`.
 - Numeric promotion at mixed float/int operands (`r > 0`, `f * i`) inserts an
   `itof` (i64 -> f64) conversion instruction on the int side before the binop,
   so the JIT and AOT always see same-width operands.

@@ -160,6 +160,13 @@ all-zeros pattern. Flattening: `T??` == `T?`.
 
 Pattern matching covers `Some(v)` / `none` for enums and option.
 
+> **Implemented subset (current compiler).** `some(v)`/`none` patterns on an
+> option value are lowered (match **and** `if (let some(v) = m)`): the presence
+> test becomes a null check, and `v` is unboxed to the inner type. Matching over
+> non-option values with literal patterns (`case 1`, `case "up"`, `case true`),
+> optional guards, and catch-all arms is lowered too; see docs/02-syntax.md
+> "Control flow".
+
 ## Structural subtyping
 
 Only interfaces participate structurally. A function that takes

@@ -5693,9 +5693,10 @@ fn build_lambda_body(
         let Some(st) = st else {
             return self.bad(e.span, "matching over non-enum values is not lowered yet");
         };
-        let Ty::Enum(en_name, _) = &st else {
-            return self.bad(e.span, "matching over non-enum values is not lowered yet");
-        };
+        if !matches!(st, Ty::Enum(..)) {
+            return self.lower_generic_match(e, scrutinee, arms, &st);
+        }
+        let Ty::Enum(en_name, _) = &st else { unreachable!() };
         let enum_name = en_name.clone();
         let table = match self.resolved.types.get(&enum_name) {
             Some(TypeTableEntry::Enum(t)) => t.clone(),
@@ -5879,8 +5880,360 @@ fn build_lambda_body(
         }
     }
 
-    /// Emit the body expression of a match arm, storing its value into
-    /// `res_slot` when the match produces a value.
+    /// Lower `match` over non-enum scrutinees: numeric scalars, `bool`,
+    /// `char`, `byte`, `string`, and options (`some(v)`/`none`). Literal
+    /// patterns become equality tests against the scrutinee slot; a
+    /// binding/wildcard arm catches everything that reaches it. Mirrors the
+    /// enum chain shape: options may guard, arms store into `res_slot`, and
+    /// a non-exhaustive chain fails loudly at runtime.
+    fn lower_generic_match(
+        &mut self,
+        e: &Expr,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        st: &Ty,
+    ) -> Result<Temp, ()> {
+        let is_option = st.is_option();
+        let is_str = matches!(st, Ty::String);
+        let scalar = self.scalar_ir_of(st);
+        if !(is_option || is_str || scalar.is_some()) {
+            return self.bad(e.span, format!("matching over `{st}` values is not lowered yet"));
+        }
+        let s_ir = if is_option {
+            IrTy::Ptr
+        } else if is_str {
+            IrTy::Str
+        } else {
+            scalar.unwrap()
+        };
+        // The scrutinee lives in a slot so every arm sees the same value (and
+        // a managed one stays rooted across arm allocations).
+        let s = self.expr(scrutinee)?;
+        let s_slot = self.new_slot(s_ir);
+        self.instr(IrInstr::StoreSlot { slot: s_slot, v: s });
+
+        let res_ty = self.irty(e.span).ok();
+        let res_slot = if !matches!(res_ty, Some(IrTy::Unit) | None) {
+            Some(self.new_slot(res_ty.unwrap()))
+        } else {
+            None
+        };
+        let join = self.new_block();
+        let mut cur = self.cur;
+        let mut chain_live = true;
+
+        for arm in arms {
+            let body = self.new_block();
+            let guard = arm.guard.as_ref();
+            let guard_in = if guard.is_some() {
+                self.new_block()
+            } else {
+                body
+            };
+
+            let testable = match &arm.pattern {
+                Pattern::Wildcard | Pattern::Binding { .. } => None,
+                other => Some(other),
+            };
+
+            // A testable arm: the pattern's match condition gates entry.
+            if let Some(p) = testable {
+                if chain_live {
+                    self.cur = cur;
+                    let cond = self.pattern_test_cond(p, st, s_slot, arm.span)?;
+                    let next = self.new_block();
+                    self.term(IrTerm::BranchIf {
+                        cond,
+                        then: guard_in,
+                        else_: next,
+                    });
+                    cur = next;
+                }
+                self.cur = guard_in;
+                self.push_scope();
+                self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                if let Some(g) = guard {
+                    let cond = self.expr(g)?;
+                    let fall = if chain_live { cur } else { join };
+                    self.term(IrTerm::BranchIf {
+                        cond,
+                        then: body,
+                        else_: fall,
+                    });
+                    self.cur = body;
+                }
+                self.match_arm_body(&arm.body, res_slot)?;
+                self.pop_scope();
+                self.term(IrTerm::Branch { target: join });
+                continue;
+            }
+
+            // Catch-all pattern (always matches when reached).
+            if let Some(g) = guard {
+                if chain_live {
+                    self.cur = cur;
+                    self.term(IrTerm::Branch { target: guard_in });
+                    cur = self.new_block();
+                    self.cur = guard_in;
+                    self.push_scope();
+                    self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                    let cond = self.expr(g)?;
+                    self.term(IrTerm::BranchIf {
+                        cond,
+                        then: body,
+                        else_: cur,
+                    });
+                    self.cur = body;
+                    self.match_arm_body(&arm.body, res_slot)?;
+                    self.pop_scope();
+                    self.term(IrTerm::Branch { target: join });
+                } else {
+                    self.cur = guard_in;
+                    self.push_scope();
+                    self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                    let cond = self.expr(g)?;
+                    self.term(IrTerm::BranchIf {
+                        cond,
+                        then: body,
+                        else_: join,
+                    });
+                    self.cur = body;
+                    self.match_arm_body(&arm.body, res_slot)?;
+                    self.pop_scope();
+                    self.term(IrTerm::Branch { target: join });
+                }
+                continue;
+            }
+            if chain_live {
+                self.cur = cur;
+                self.term(IrTerm::Branch { target: body });
+                chain_live = false;
+            }
+            self.cur = body;
+            self.push_scope();
+            self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+            self.match_arm_body(&arm.body, res_slot)?;
+            self.pop_scope();
+            self.term(IrTerm::Branch { target: join });
+        }
+
+        // A chain that checked every arm and still fell through is
+        // non-exhaustive; fail loudly at runtime rather than read garbage.
+        if chain_live {
+            self.cur = cur;
+            self.extern_call_void("pickle_panic_no_match", vec![], vec![]);
+            self.term(IrTerm::Branch { target: join });
+        }
+        self.cur = join;
+        match res_slot {
+            Some(slot) => Ok(self.load(slot)),
+            None => Ok(self.unit_temp()),
+        }
+    }
+
+    /// Produce the branch condition under which `p` matches the scrutinee in
+    /// `s_slot` (`none` tests absence, `some(_)` and literal patterns test
+    /// equality/presence). Only call for patterns that can actually gate a
+    /// branch; the checker rejects incompatible ones first.
+    fn pattern_test_cond(
+        &mut self,
+        p: &Pattern,
+        st: &Ty,
+        s_slot: Slot,
+        span: Span,
+    ) -> Result<Temp, ()> {
+        let a = self.load(s_slot);
+        match p {
+            Pattern::Literal(Lit::None) if st.is_option() => {
+                let present = self.opt_is_present(a)?;
+                let f = self.const_temp(IrConst::Bool(false));
+                let dst = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: IrBinOp::Eq,
+                    a: present,
+                    b: f,
+                });
+                Ok(dst)
+            }
+            Pattern::Variant { path, payloads } if path == &["some"] && st.is_option() => {
+                let _ = payloads;
+                self.opt_is_present(a)
+            }
+            Pattern::Literal(lit) if matches!(st, Ty::String) => {
+                let Lit::String(parts) = lit else {
+                    return self.bad(span, "this match pattern is not lowered yet");
+                };
+                let mut text = String::new();
+                for part in parts {
+                    match part {
+                        StrPart::Text(t) => text.push_str(t),
+                        StrPart::Expr(_) => {
+                            return self.bad(span, "string match patterns may not interpolate");
+                        }
+                    }
+                }
+                let b = self.str_const(&text)?;
+                let cmp = self.extern_call_t1(
+                    "pickle_str_cmp",
+                    vec![IrTy::Str, IrTy::Str],
+                    IrTy::Int,
+                    vec![a, b],
+                )?;
+                let zero = self.int_const(0);
+                let dst = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: IrBinOp::Eq,
+                    a: cmp,
+                    b: zero,
+                });
+                Ok(dst)
+            }
+            Pattern::Literal(lit) => {
+                let b = self.pattern_literal_temp(lit, st, span)?;
+                let dst = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: IrBinOp::Eq,
+                    a,
+                    b,
+                });
+                Ok(dst)
+            }
+            _ => self.bad(span, "this match pattern is not lowered yet"),
+        }
+    }
+
+    /// Build a constant in the scrutinee's domain for a literal pattern. A
+    /// float scrutinee widens integer literals; a byte scrutinee accepts
+    /// ASCII char literals.
+    fn pattern_literal_temp(&mut self, lit: &Lit, st: &Ty, span: Span) -> Result<Temp, ()> {
+        match (lit, st) {
+            (Lit::Int { value }, Ty::Float) => {
+                let Ok(v) = i64::try_from(*value) else {
+                    return self.bad(span, "integer literal out of range for i64");
+                };
+                let i = self.const_temp(IrConst::Int(v));
+                let d = self.temp();
+                self.instr(IrInstr::Itof { dst: d, v: i });
+                Ok(d)
+            }
+            (Lit::Int { value }, _) => {
+                let Ok(v) = i64::try_from(*value) else {
+                    return self.bad(span, "integer literal out of range for i64");
+                };
+                Ok(self.const_temp(IrConst::Int(v)))
+            }
+            (Lit::Float { value }, _) if matches!(st, Ty::Int | Ty::Byte) => {
+                if *value == value.trunc()
+                    && *value >= i64::MIN as f64
+                    && *value <= i64::MAX as f64
+                {
+                    Ok(self.const_temp(IrConst::Int(*value as i64)))
+                } else {
+                    self.bad(span, "float pattern does not represent an integer")
+                }
+            }
+            (Lit::Float { value }, _) => Ok(self.const_temp(IrConst::Float(value.to_bits()))),
+            (Lit::Bool(v), Ty::Bool) => Ok(self.const_temp(IrConst::Bool(*v))),
+            (Lit::Char(c), Ty::Char) => Ok(self.const_temp(IrConst::Char(*c as u32))),
+            (Lit::Char(c), Ty::Byte) => {
+                if *c as u32 <= 0x7F {
+                    Ok(self.const_temp(IrConst::Int(*c as u8 as i64)))
+                } else {
+                    self.bad(span, "a non-ASCII char pattern has no `byte` value")
+                }
+            }
+            _ => self.bad(span, "this match pattern is not lowered yet"),
+        }
+    }
+
+    /// The raw IR domain a non-enum, non-string matched type lives in.
+    fn scalar_ir_of(&self, st: &Ty) -> Option<IrTy> {
+        match st {
+            Ty::Int | Ty::Byte => Some(IrTy::Int),
+            Ty::Float => Some(IrTy::Float),
+            Ty::Bool => Some(IrTy::Bool),
+            Ty::Char => Some(IrTy::Char),
+            _ => None,
+        }
+    }
+
+    fn const_temp(&mut self, c: IrConst) -> Temp {
+        let dst = self.temp();
+        self.instr(IrInstr::Const { dst, c });
+        dst
+    }
+
+    /// Bind the names of an arm pattern to the scrutinee in `s_slot` (current
+    /// block). `some(v)` unboxes the present option; scalar and string
+    /// bindings are just the scrutinee value; `_`/literals bind nothing.
+    fn bind_match_value(
+        &mut self,
+        p: &Pattern,
+        st: &Ty,
+        s_slot: Slot,
+        span: Span,
+    ) -> Result<(), ()> {
+        match p {
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) => Ok(()),
+            Pattern::Binding { name, .. } => {
+                let ir = if matches!(st, Ty::String) {
+                    IrTy::Str
+                } else {
+                    self.map_ty(st, span)?
+                };
+                let v = self.load(s_slot);
+                self.declare_binding(name, ir, v);
+                Ok(())
+            }
+            Pattern::Variant { path, payloads } if path == &["some"] && st.is_option() => {
+                let inner = st.inner_option().unwrap_or(Ty::Unknown);
+                let sv = self.load(s_slot);
+                let v = self.opt_resolve(sv, &inner, span)?;
+                self.bind_nested_pattern(payloads.first(), &inner, v, span)
+            }
+            Pattern::Or(alts) => {
+                for a in alts {
+                    self.bind_match_value(a, st, s_slot, span)?;
+                }
+                Ok(())
+            }
+            _ => self.bad(span, "this match pattern is not lowered yet"),
+        }
+    }
+
+    /// Bind a `some(v)` payload (or a plain binding) to a value `v` of type
+    /// `ty` already in IR form.
+    fn bind_nested_pattern(
+        &mut self,
+        p: Option<&Pattern>,
+        ty: &Ty,
+        v: Temp,
+        span: Span,
+    ) -> Result<(), ()> {
+        let Some(p) = p else { return Ok(()) };
+        match p {
+            Pattern::Binding { name, .. } => {
+                let ir = if matches!(ty, Ty::String) {
+                    IrTy::Str
+                } else {
+                    self.map_ty(ty, span)?
+                };
+                self.declare_binding(name, ir, v);
+                Ok(())
+            }
+            Pattern::Wildcard => Ok(()),
+            _ => self.bad(span, "nested `some` patterns are not lowered yet"),
+        }
+    }
+
+    fn declare_binding(&mut self, name: &str, ir: IrTy, v: Temp) {
+        let slot = self.new_slot(ir);
+        self.instr(IrInstr::StoreSlot { slot, v });
+        self.declare(name, slot);
+    }
     fn match_arm_body(&mut self, body: &Expr, res_slot: Option<Slot>) -> Result<(), ()> {
         let bt = self.expr(body)?;
         if let Some(slot) = res_slot {
@@ -5950,8 +6303,8 @@ fn build_lambda_body(
         then: &Block,
         else_else: Option<&Expr>,
     ) -> Result<Temp, ()> {
-        if matches!(cond, IfCond::Binding { .. }) {
-            return self.bad(then.span, "`if (let ...)` bindings are not lowered yet");
+        if let IfCond::Binding { pattern, value } = cond {
+            return self.if_let_expr(e, pattern, value, then, else_else);
         }
         let IfCond::Cond(c) = cond else { unreachable!() };
         let cond_t = self.expr(c)?;
@@ -5980,6 +6333,93 @@ fn build_lambda_body(
         self.block_into_slot(then, res_slot)?;
         self.pop_scope();
         self.term(IrTerm::Branch { target: join });
+
+        if let Some(e) = else_else {
+            self.cur = else_id.unwrap();
+            match res_slot {
+                Some(slot) => {
+                    let t = self.expr(e)?;
+                    self.instr(IrInstr::StoreSlot { slot, v: t });
+                }
+                None => {
+                    let _ = self.expr(e)?;
+                }
+            }
+            self.term(IrTerm::Branch { target: join });
+        }
+        self.cur = join;
+        match res_slot {
+            Some(slot) => Ok(self.load(slot)),
+            None => Ok(self.unit_temp()),
+        }
+    }
+
+    /// Lower `if (let pattern = value) then-block [else ...]`: the value is
+    /// evaluated once into a slot, a `pattern_test_cond` gates the then-block
+    /// (an always-true binding/wildcard pattern needs no branch), and the
+    /// binding is scoped to the then-block only. An `ElseStmt`/value
+    /// expression otherwise mirrors `if_expr`.
+    fn if_let_expr(
+        &mut self,
+        e: &Expr,
+        pattern: &Pattern,
+        value: &Expr,
+        then: &Block,
+        else_else: Option<&Expr>,
+    ) -> Result<Temp, ()> {
+        let st = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
+        let is_option = st.is_option();
+        let is_str = matches!(st, Ty::String);
+        let s_ir = match self.scalar_ir_of(&st) {
+            Some(ir) => ir,
+            None if is_option => IrTy::Ptr,
+            None if is_str => IrTy::Str,
+            None => IrTy::Int,
+        };
+        let v = self.expr(value)?;
+        let s_slot = self.new_slot(s_ir);
+        self.instr(IrInstr::StoreSlot { slot: s_slot, v });
+
+        let res_ty = self.irty(e.span).ok();
+        let need_slot = !matches!(res_ty, Some(IrTy::Unit) | None) && else_else.is_some();
+        let res_slot = if need_slot {
+            Some(self.new_slot(res_ty.unwrap()))
+        } else {
+            None
+        };
+        let always = matches!(pattern, Pattern::Binding { .. } | Pattern::Wildcard);
+        let then_id = self.new_block();
+        let else_id = if else_else.is_some() {
+            Some(self.new_block())
+        } else {
+            None
+        };
+        let join = self.new_block();
+
+        // Bindings are declared in the then-block so a failed `some(v)` test
+        // never leaves a stale name visible to the else branch.
+        if always {
+            self.term(IrTerm::Branch { target: then_id });
+            self.cur = then_id;
+            self.push_scope();
+            self.bind_match_value(pattern, &st, s_slot, value.span)?;
+            self.block_into_slot(then, res_slot)?;
+            self.pop_scope();
+            self.term(IrTerm::Branch { target: join });
+        } else {
+            let cond = self.pattern_test_cond(pattern, &st, s_slot, value.span)?;
+            self.term(IrTerm::BranchIf {
+                cond,
+                then: then_id,
+                else_: else_id.unwrap_or(join),
+            });
+            self.cur = then_id;
+            self.push_scope();
+            self.bind_match_value(pattern, &st, s_slot, value.span)?;
+            self.block_into_slot(then, res_slot)?;
+            self.pop_scope();
+            self.term(IrTerm::Branch { target: join });
+        }
 
         if let Some(e) = else_else {
             self.cur = else_id.unwrap();

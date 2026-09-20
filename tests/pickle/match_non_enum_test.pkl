@@ -1,0 +1,144 @@
+fn categorize(n: int) -> string {
+    match (n) {
+        case 0 -> "zero"
+        case 1 -> "one"
+        case 2 -> "two"
+        case _ -> "many"
+    }
+}
+
+fn band(n: int) -> string {
+    match (n) {
+        case x if x < 0 -> "neg"
+        case 0 -> "zero"
+        case x if x > 9 -> "big"
+        case _ -> "small"
+    }
+}
+
+fn name_of(k: string) -> string {
+    match (k) {
+        case "up" -> "north"
+        case "down" -> "south"
+        case _ -> "?"
+    }
+}
+
+fn flip(b: bool) -> string {
+    match (b) {
+        case true -> "yes"
+        case false -> "no"
+    }
+}
+
+fn punct(c: char) -> string {
+    match (c) {
+        case '.' -> "dot"
+        case ',' -> "comma"
+        case _ -> "other"
+    }
+}
+
+fn rate(x: float) -> string {
+    match (x) {
+        case 1.5 -> "one and a half"
+        case 2.0 -> "two"
+        case _ -> "other"
+    }
+}
+
+fn unwrap_or_zero(m: int?) -> int {
+    match (m) {
+        case some(v) -> v
+        case none -> 0
+    }
+}
+
+fn first_of(t: string?) -> string {
+    match (t) {
+        case some(x) -> x
+        case none -> "missing"
+    }
+}
+
+fn opt_or_else(m: int?, fallback: int) -> int {
+    if (let some(v) = m) {
+        v
+    } else {
+        fallback
+    }
+}
+
+test fn int_literal_cases() {
+    expect(categorize(0)).toBe("zero")
+    expect(categorize(1)).toBe("one")
+    expect(categorize(2)).toBe("two")
+    expect(categorize(7)).toBe("many")
+}
+
+test fn int_guards_and_bindings() {
+    expect(band(-3)).toBe("neg")
+    expect(band(0)).toBe("zero")
+    expect(band(5)).toBe("small")
+    expect(band(42)).toBe("big")
+}
+
+test fn string_literal_cases() {
+    expect(name_of("up")).toBe("north")
+    expect(name_of("down")).toBe("south")
+    expect(name_of("left")).toBe("?")
+}
+
+test fn bool_cases_are_exhaustive() {
+    expect(flip(true)).toBe("yes")
+    expect(flip(false)).toBe("no")
+}
+
+test fn char_literal_cases() {
+    expect(punct('.')).toBe("dot")
+    expect(punct('x')).toBe("other")
+}
+
+test fn float_literal_cases() {
+    expect(rate(1.5)).toBe("one and a half")
+    expect(rate(2.0)).toBe("two")
+    expect(rate(9.0)).toBe("other")
+}
+
+test fn option_some_unwraps() {
+    let m: int? = 5 as? int
+    expect(unwrap_or_zero(m)).toBe(5)
+    let s: string? = "hi" as? string
+    expect(first_of(s)).toBe("hi")
+}
+
+test fn option_none_hits_none_branch() {
+    let n: int? = none
+    expect(unwrap_or_zero(n)).toBe(0)
+}
+
+test fn if_let_some_binds_in_then() {
+    let m: int? = 3 as? int
+    expect(opt_or_else(m, -1)).toBe(3)
+    let n: int? = none
+    expect(opt_or_else(n, -1)).toBe(-1)
+}
+
+test fn if_let_plain_binding_is_unconditional() {
+    var seen = 0
+    if (let x = 42) {
+        seen = x
+    }
+    expect(seen).toBe(42)
+}
+
+test fn if_let_scoping_does_not_leak() {
+    var broke = false
+    let m: int? = none
+    if (let some(v) = m) {
+        broke = v > 0
+    } else {
+        broke = false
+    }
+    expect(broke).toBe(false)
+}
