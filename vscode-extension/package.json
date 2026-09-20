@@ -1,0 +1,41 @@
+{
+  "name": "picklescript",
+  "displayName": "PickleScript",
+  "description": "Syntax highlighting and language configuration for PickleScript (.pkl)",
+  "version": "0.0.1",
+  "publisher": "picklescript",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "picklescript",
+    "pickle",
+    "pkl"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "picklescript",
+        "aliases": [
+          "PickleScript",
+          "pickle"
+        ],
+        "extensions": [
+          ".pkl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "picklescript",
+        "scopeName": "source.picklescript",
+        "path": "./syntaxes/picklescript.tmLanguage.json"
+      }
+    ]
+  }
+}
