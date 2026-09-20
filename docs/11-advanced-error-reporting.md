@@ -1,6 +1,10 @@
 # Advanced error reporting
 
-Status: design notes, not implemented yet.
+Status: partially implemented. Stable codes, the error catalogue, `pickle
+explain`, code grouping, suggestions, and `pickle check --json` are in.
+Still designed-but-unbuilt: the reasoning tree, value origins in type
+mismatches, the E0501 lifetime timeline, and impact analysis. See
+`docs/error-codes.md` for the catalogue.
 
 The compiler's diagnostics today are flat: a message, a location, a source
 snippet. That is enough to pinpoint a single mistake in a small file, but for

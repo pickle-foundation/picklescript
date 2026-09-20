@@ -2,6 +2,7 @@ pub mod ast;
 pub mod check;
 pub mod diag;
 pub mod emit;
+pub mod error;
 pub mod front;
 pub mod ir;
 pub mod lexer;

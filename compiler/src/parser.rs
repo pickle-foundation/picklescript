@@ -105,7 +105,8 @@ impl<'a> Parser<'a> {
     }
 
     fn err_at(&mut self, span: Span, msg: impl Into<String>) {
-        self.diags.emit(Diagnostic::error_at(span, msg));
+        self.diags
+            .emit(Diagnostic::error_at(span, msg).with_code(crate::error::ErrorCode::Syntax));
     }
 
     fn err_here(&mut self, msg: impl Into<String>) {

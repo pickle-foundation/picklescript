@@ -63,7 +63,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn err(&self, span: Span, msg: impl Into<String>) {
-        self.diags.emit(Diagnostic::error_at(span, msg));
+        self.diags
+            .emit(Diagnostic::error_at(span, msg).with_code(crate::error::ErrorCode::Lex));
     }
 
     fn run(mut self) -> Vec<LexedToken> {

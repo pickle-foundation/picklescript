@@ -5848,15 +5848,25 @@ fn build_lambda_body(
 
     fn bad<T>(&mut self, span: Span, msg: impl Into<String>) -> Result<T, ()> {
         self.failed = true;
-        self.diags
-            .emit(Diagnostic::error_at(span, format!("codegen: {}", msg.into())));
+        let msg = msg.into();
+        let mut d = Diagnostic::error_at(span, format!("codegen: {msg}"));
+        // The overwhelming majority of `bad` messages describe constructs the
+        // code generator has not lowered yet. Only those get E0900; genuine
+        // codegen constraints that say something different stay uncoded.
+        if msg.contains("not lowered yet") {
+            d.code = Some(crate::error::ErrorCode::NotLowered);
+        }
+        self.diags.emit(d);
     Err(())
     }
 
     fn bad_span_note<T>(&mut self, msg: &str) -> Result<T, ()> {
         self.failed = true;
-        self.diags
-            .emit(Diagnostic::error_at(Span::new(crate::diag::FileId(0), 0, 0), format!("codegen: {msg}")));
+        let mut d = Diagnostic::error_at(Span::new(crate::diag::FileId(0), 0, 0), format!("codegen: {msg}"));
+        if msg.contains("not lowered yet") {
+            d.code = Some(crate::error::ErrorCode::NotLowered);
+        }
+        self.diags.emit(d);
     Err(())
     }
 

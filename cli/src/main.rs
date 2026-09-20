@@ -24,6 +24,12 @@ enum Command {
     Check {
         /// Source file to check
         file: PathBuf,
+        /// Emit machine-readable JSON for every diagnostic on stdout
+        #[arg(long)]
+        json: bool,
+        /// Group diagnostics under their error code
+        #[arg(long)]
+        group: bool,
     },
     /// Print the parsed AST for a module
     Ast {
@@ -34,6 +40,12 @@ enum Command {
     Ir {
         /// Source file to lower
         file: PathBuf,
+    },
+    /// Explain a stable error code (e.g. `E0308`); with no code, list every
+    /// code in the catalogue
+    Explain {
+        /// Error code to explain
+        code: Option<String>,
     },
     /// Compile a module with the JIT and run it
     Run {
@@ -83,17 +95,61 @@ fn run() -> Result<()> {
     let colored = std::io::stderr().is_terminal();
 
     match &cli.command {
-        Command::Check { file } => {
+        Command::Check { file, json, group } => {
             let (source, mut map, diags) = load(file)?;
             let ok = frontend_checked(&file.display().to_string(), &source, &mut map, &diags);
-            let rendered = diags.render_all(&map, colored);
-            if !rendered.is_empty() {
-                eprint!("{rendered}");
+            if *json {
+                // Machine mode: the JSON itself goes to stdout, human
+                // diagnostics are suppressed. The consumer decides what to
+                // show and the exit code carries pass/fail.
+                print!("{}", diags.render_all_json(&map));
+            } else if *group {
+                let rendered = diags.render_all_grouped(&map, colored);
+                if !rendered.is_empty() {
+                    eprint!("{rendered}");
+                }
+            } else {
+                let rendered = diags.render_all(&map, colored);
+                if !rendered.is_empty() {
+                    eprint!("{rendered}");
+                }
             }
             if diags.any_error() || ok.is_none() {
                 std::process::exit(1);
             }
         }
+        Command::Explain { code } => match code {
+            Some(code) => {
+                let id = format!(
+                    "E{}",
+                    code.trim().to_uppercase().trim_start_matches('E')
+                );
+                match pickle_compiler::error::explain(&id) {
+                    Some(entry) => {
+                        println!("error[{}] -- {}", entry.code.id(), entry.title);
+                        println!();
+                        println!("{}", entry.rule);
+                        println!();
+                        println!("example:");
+                        for line in entry.example.lines() {
+                            println!("    {line}");
+                        }
+                    }
+                    None => {
+                        anyhow::bail!("unknown error code `{id}`");
+                    }
+                }
+            }
+            None => {
+                for entry in pickle_compiler::error::CATALOGUE {
+                    println!(
+                        "error[{}] -- {}",
+                        entry.code.id(),
+                        entry.title
+                    );
+                }
+            }
+        },
         Command::Ast { file } => {
             let (source, mut map, diags) = load(file)?;
             if let Some(out) = frontend(&file.display().to_string(), &source, &mut map, &diags) {

@@ -7,6 +7,124 @@ use crate::resolve::{
 };
 use crate::ty::Ty;
 
+/// Map a checker diagnostic message to its stable error code.
+///
+/// The checker emits ~150 diagnostics and each one would describe the same
+/// semantic condition thousands of messages later, so codes are NOT assigned
+/// per call site. Instead every message here is matched against the exact
+/// conditions its code documents, most specific first. A message is never
+/// guessed at: unlisted messages render without a code rather than with a
+/// wrong one. The `codes_smoke` test pins representative messages to their
+/// code so the mapping cannot quietly drift.
+pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
+    use crate::error::ErrorCode::*;
+    const TABLE: &[(&str, crate::error::ErrorCode)] = &[
+        // Codegen limitation (message text is authoritative for check.rs too).
+        ("not lowered yet", NotLowered),
+        // E05xx ownership and memory.
+        ("after `free()`", UseAfterFree),
+        ("after it was moved", UseAfterFree),
+        ("was already freed", DoubleFree),
+        ("`free` is only available on a `#[manualAlloc]` binding", FreeOnNonManual),
+        ("cannot store `#[manualAlloc]`", OwnedPosition),
+        ("cannot assign `#[manualAlloc]`", OwnedPosition),
+        ("cannot bind `#[manualAlloc]`", OwnedPosition),
+        ("takes ownership of its argument", OwnedPosition),
+        ("cannot overwrite `#[manualAlloc]` binding", OverwriteManual),
+        ("cannot return `#[manualAlloc]` value", OverwriteManual),
+        // E04xx ownership is only through `#[manualAlloc]`; attributes.
+        ("`#[manualAlloc]` takes no arguments", ManualAlloc),
+        ("`#[manualAlloc]` attribute", ManualAlloc),
+        ("is not supported on static fields", ManualAlloc),
+        ("is not supported on constants", ManualAlloc),
+        ("requires an allocation initializer", ManualAlloc),
+        ("requires a class or struct type", ManualAlloc),
+        ("requires a class or struct return type", ManualAlloc),
+        ("must be a class or struct type", ManualAlloc),
+        ("owned field `", ManualAlloc),
+        ("unknown attribute `#[", Attribute),
+        ("attempt to call a non-function", CallNonFunction),
+        ("unknown generic function `", CallArity),
+        (" argument(s), found ", CallArity),
+        ("missing argument", CallArity),
+        ("too many arguments in call", CallArity),
+        ("named argument `", CallArity),
+        ("cannot access member `", MemberOnNonClass),
+        ("left side of `??` is not", Operator),
+        ("`?.` on a non-option value", Operator),
+        ("cannot unwrap non-option value", Operator),
+        ("requires numeric or string operands", Operator),
+        ("bitwise operators require", Operator),
+        ("unary `", Operator),
+        ("requires a numeric operand", Operator),
+        ("requires a `bool` operand", Operator),
+        ("requires an `int` operand", Operator),
+        ("of a scalar requires a local variable", Operator),
+        ("currently only supports class, struct, pointer", Operator),
+        ("cannot dereference a value of type", Operator),
+        ("`alloc(T, count)`", RawBuffer),
+        ("`alloc` element type", RawBuffer),
+        ("`alloc` count must be an `int`", RawBuffer),
+        ("`alloc` currently only supports scalar element types", RawBuffer),
+        ("`free(p)` takes one argument", RawBuffer),
+        ("`free` expects a pointer argument", RawBuffer),
+        ("`free()` takes no arguments", RawBuffer),
+        ("may only be used inside an `unsafe` block", UnsafeRequired),
+        // E03xx type checking.
+        ("type mismatch in ", TypeMismatch),
+        ("cannot return a value from a function with no return type", ReturnValue),
+        ("`if` branches have mismatched types", ReturnValue),
+        ("match arms produce inconsistent types", ReturnValue),
+        ("condition must be a `bool`", ConditionNotBool),
+        ("used outside of a loop", BreakOutsideLoop),
+        ("`for (x in ...)` requires a sequence", ForSequence),
+        ("map keys must be `string` values", MapKeyString),
+        ("index must be an `int`", Index),
+        ("map index must be a `string`", Index),
+        ("string index must be an `int`", Index),
+        ("pointer index must be an `int`", Index),
+        ("cannot index a value of type", Index),
+        ("index assignment target must be a List", Index),
+        ("indexing a pointer to a", Index),
+        ("storing through a pointer to a", Index),
+        ("use of undeclared name `", UndeclaredName),
+        ("cannot assign to undeclared name `", UndeclaredName),
+        ("no member `", NoMember),
+        ("no assignable member `", NoMember),
+        ("has no variant", EnumVariant),
+        ("payload field(s); use `", EnumVariant),
+        ("enum variant pattern requires a value of enum type", EnumVariant),
+        ("cannot be constructed directly", CannotConstruct),
+        ("cannot assign to a member of a non-class value", NonClassMemberAssign),
+        ("declares `implements", InterfaceConformance),
+        ("`this` used outside of a class body", ThisSuper),
+        ("`super` used outside of a class body", ThisSuper),
+        ("no parent to call `super`", ThisSuper),
+        ("can only be used as a named constructor's delegation", ThisSuper),
+        ("may only delegate to `this(...)`", ThisSuper),
+        ("cannot assign to immutable", Assignment),
+        ("must be assigned on an instance", Assignment),
+        ("must be assigned on the type", Assignment),
+        ("has no setter", Assignment),
+        ("assignment target must be a variable, member, or index", Assignment),
+        ("cannot write through an immutable reference", Assignment),
+        ("cannot write to a field", Assignment),
+        ("can never succeed", Cast),
+        ("cannot cast `", Cast),
+        // E02xx-adjacent reference rules surfaced by the checker.
+        ("references are supported only as function parameter types", RefParamOnly),
+        // E03xx pattern errors without a dedicated code stay unlisted on
+        // purpose: `tuple pattern does not match a tuple value` has no bucket
+        // that says exactly what happened, so it renders uncoded.
+    ];
+    for (sub, code) in TABLE {
+        if msg.contains(sub) {
+            return Some(*code);
+        }
+    }
+    None
+}
+
 /// A bound local variable inside a function body.
 #[derive(Debug, Clone)]
 struct Local {
@@ -387,12 +505,21 @@ impl<'a> Checker<'a> {
     }
 
     fn err(&self, span: Span, msg: impl Into<String>) {
-        self.diags.emit(Diagnostic::error_at(span, msg));
+        let msg = msg.into();
+        let mut d = Diagnostic::error_at(span, msg.clone());
+        if let Some(code) = classify_message(&msg) {
+            d.code = Some(code);
+        }
+        self.diags.emit(d);
     }
 
     fn err_note(&self, span: Span, msg: impl Into<String>, note: impl Into<String>) {
-        self.diags
-            .emit(Diagnostic::error_at(span, msg).note(note));
+        let msg = msg.into();
+        let mut d = Diagnostic::error_at(span, msg.clone()).note(note);
+        if let Some(code) = classify_message(&msg) {
+            d.code = Some(code);
+        }
+        self.diags.emit(d);
     }
 
     // ---- assignability -----------------------------------------------------

@@ -185,10 +185,13 @@ impl<'a> Resolver<'a> {
                     .clone()
                     .unwrap_or_else(|| path.last().cloned().unwrap_or_default());
                 if self.import_aliases.contains_key(&alias) {
-                    self.diags.emit(Diagnostic::error_at(
-                        imp.span,
-                        format!("duplicate import alias `{alias}`"),
-                    ));
+                    self.diags.emit(
+                        Diagnostic::error_at(
+                            imp.span,
+                            format!("duplicate import alias `{alias}`"),
+                        )
+                        .with_code(crate::error::ErrorCode::DuplicateImportAlias),
+                    );
                 }
                 self.import_aliases.insert(alias, path.clone());
             }
@@ -210,6 +213,7 @@ impl<'a> Resolver<'a> {
             if let Some(&first) = nmap.get(&name) {
                 self.diags.emit(
                     Diagnostic::error_at(item.span, format!("duplicate declaration `{name}`"))
+                        .with_code(crate::error::ErrorCode::DuplicateItem)
                         .note_at(first, "first declared here"),
                 );
                 continue;
@@ -476,6 +480,7 @@ impl<'a> TypeCtx<'a> {
         }
         self.diags.emit(
             Diagnostic::error_at(span, format!("unknown type `{}`", render_path(path)))
+                .with_code(crate::error::ErrorCode::UnknownType)
                 .note("expected a class, struct, enum, interface, or built-in type"),
         );
         Ty::Unknown
@@ -515,7 +520,8 @@ impl<'a> TypeCtx<'a> {
                             Diagnostic::error_at(
                                 span,
                                 "lists of `&T` references are not supported yet",
-                            ),
+                            )
+                            .with_code(crate::error::ErrorCode::ListOfRefs),
                         );
                     }
                 }
@@ -531,7 +537,7 @@ impl<'a> TypeCtx<'a> {
             }
             _ => {
                 self.diags
-                    .emit(Diagnostic::error_at(span, "type is not generic"));
+                    .emit(Diagnostic::error_at(span, "type is not generic").with_code(crate::error::ErrorCode::NotGeneric));
                 return bare.clone();
             }
         };
@@ -545,6 +551,7 @@ impl<'a> TypeCtx<'a> {
                         args.len()
                     ),
                 )
+                .with_code(crate::error::ErrorCode::WrongTypeArgs)
                 .note(format!("declared generic parameters: {}", render_list(&expected))),
             );
         }
@@ -600,10 +607,10 @@ impl<'a> Resolver<'a> {
         let extends = c.extends.as_ref().map(|e| self.resolve_ty(e, &generics));
         if let Some(t) = &extends {
             if !matches!(t, Ty::Class(..)) {
-                self.diags.emit(Diagnostic::error_at(
-                    c.span,
-                    format!("`{}` may only extend a class", c.name),
-                ));
+                self.diags.emit(
+                    Diagnostic::error_at(c.span, format!("`{}` may only extend a class", c.name))
+                        .with_code(crate::error::ErrorCode::InvalidExtends),
+                );
             }
         }
         let implements: Vec<Ty> = c
@@ -756,10 +763,13 @@ impl<'a> Resolver<'a> {
 
         let mut record = |name: &str, span: Span| {
             if seen.iter().any(|s| s == name) {
-                self.diags.emit(Diagnostic::error_at(
-                    span,
-                    format!("duplicate member `{name}` in `{class_name}`"),
-                ));
+                self.diags.emit(
+                    Diagnostic::error_at(
+                        span,
+                        format!("duplicate member `{name}` in `{class_name}`"),
+                    )
+                    .with_code(crate::error::ErrorCode::DuplicateMember),
+                );
             } else {
                 seen.push(name.to_string());
             }
@@ -844,10 +854,13 @@ impl<'a> Resolver<'a> {
                         }
                         None => {
                             if ctor.is_some() {
-                                self.diags.emit(Diagnostic::error_at(
-                                    cd.span,
-                                    format!("`{class_name}` already has a constructor"),
-                                ));
+                                self.diags.emit(
+                                    Diagnostic::error_at(
+                                        cd.span,
+                                        format!("`{class_name}` already has a constructor"),
+                                    )
+                                    .with_code(crate::error::ErrorCode::DuplicateConstructor),
+                                );
                             }
                             ctor = Some(info);
                         }
@@ -872,10 +885,13 @@ impl<'a> Resolver<'a> {
                 ClassMember::Init(_) => {}
                 ClassMember::Deinit(b) => {
                     if has_deinit {
-                        self.diags.emit(Diagnostic::error_at(
-                            b.span,
-                            format!("`{class_name}` already has a `deinit` block"),
-                        ));
+                        self.diags.emit(
+                            Diagnostic::error_at(
+                                b.span,
+                                format!("`{class_name}` already has a `deinit` block"),
+                            )
+                            .with_code(crate::error::ErrorCode::DuplicateDeinit),
+                        );
                     } else {
                         has_deinit = true;
                     }
@@ -912,10 +928,13 @@ impl<'a> Resolver<'a> {
     /// plus the parent class being real and direct.
     fn check_inheritance(&mut self, c: &ClassTable, parent: &str) {
         let TypeTableEntry::Class(pclass) = &self.types[parent] else {
-            self.diags.emit(Diagnostic::error_at(
-                c.span,
-                format!("`{}` cannot inherit from non-class type `{parent}`", c.name),
-            ));
+            self.diags.emit(
+                Diagnostic::error_at(
+                    c.span,
+                    format!("`{}` cannot inherit from non-class type `{parent}`", c.name),
+                )
+                .with_code(crate::error::ErrorCode::InvalidExtends),
+            );
             return;
         };
         let pname = pclass.name.clone();
@@ -939,6 +958,7 @@ impl<'a> Resolver<'a> {
                                     c.name, m.name, pname, m.name
                                 ),
                             )
+                            .with_code(crate::error::ErrorCode::OverrideSignature)
                             .note("an override must match the parent's parameter and return types exactly"),
                         );
                     }
@@ -949,14 +969,18 @@ impl<'a> Resolver<'a> {
                             m.span,
                             format!("method `{}` hides `{}.{}` without `override`", m.name, pname, pm.0),
                         )
+                        .with_code(crate::error::ErrorCode::MissingOverride)
                         .note("add `override` to override the inherited method, or rename this method"),
                     );
                 }
                 (None, true) => {
-                    self.diags.emit(Diagnostic::error_at(
-                        m.span,
-                        format!("`override` method `{}` has no matching method in `{pname}` or its parents", m.name),
-                    ));
+                    self.diags.emit(
+                        Diagnostic::error_at(
+                            m.span,
+                            format!("`override` method `{}` has no matching method in `{pname}` or its parents", m.name),
+                        )
+                        .with_code(crate::error::ErrorCode::OrphanOverride),
+                    );
                 }
                 (None, false) => {}
             }
