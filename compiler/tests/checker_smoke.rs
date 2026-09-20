@@ -743,3 +743,91 @@ fn rejects_const_misuse() {
         "missing const initializer type diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_named_constructor() {
+    // A named constructor is a static factory whose body is a single
+    // `this(...)` delegation to the primary constructor, including when the
+    // primary constructor is synthesized from the fields.
+    let d = check_str(
+        r#"class Point {
+            x: int
+            y: int = 10
+
+            constructor(x: int) {
+                this.x = x
+            }
+
+            constructor.origin() {
+                this(0)
+            }
+
+            constructor.diagonal(n: int) {
+                this(n * 2)
+            }
+        }
+
+        class Box {
+            w: int
+
+            constructor.square(s: int) {
+                this(s)
+            }
+        }
+
+        fn main() {
+            let a = Point.origin()
+            let b = Point.diagonal(3)
+            let c = Point(7)
+            let d = Box.square(5)
+            println(a.x)
+            println(a.y)
+            println(b.x)
+            println(c.x)
+            println(d.w)
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_named_constructor_misuse() {
+    // The body must be exactly one `this(...)` delegation, its arguments must
+    // match the primary constructor, names must be unique, and `this(...)` is
+    // not valid outside a named constructor.
+    let d = check_str(
+        r#"class A {
+            x: int
+            constructor(x: int) { this.x = x }
+            constructor.extra() {
+                this(1)
+                println("side")
+            }
+            constructor.wrong() { this("nope") }
+        }
+
+        class B {
+            constructor.dup() { this() }
+            constructor.dup() { this() }
+        }
+
+        fn main() { this(1) }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("named constructor body must be a single `this(...)` delegation"),
+        "missing delegation-shape diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("expected `int`, found `string`"),
+        "missing delegation-argument diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("duplicate member `dup`"),
+        "missing duplicate named-constructor diagnostic, got:\n{msgs}"
+    );
+    assert!(
+        msgs.contains("`this(...)` can only be used as a named constructor's delegation"),
+        "missing stray-delegation diagnostic, got:\n{msgs}"
+    );
+}

@@ -50,6 +50,9 @@ class Employee {
   modifies `this.health`); use `this` when a name needs to be explicit.
 - Constructors run field initializers first, then constructor body.
   `super(args)` may be called first in a subclass constructor.
+- A named constructor (`constructor.name(...)`) is a factory: its body is
+  exactly one `this(args)` delegation to the primary constructor, it is called
+  as `Type.name(args)`, and it returns a fully constructed instance.
 - `property` computes a value and/or intercepts assignment; no backing field
   is created. `get`/`set` bodies are small blocks or `=>` expressions.
 

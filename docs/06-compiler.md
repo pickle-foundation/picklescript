@@ -193,8 +193,7 @@ to symbol addresses; the pointer is never treated as a GC object.
 
 Lowering rules:
 
-- No `deinit`, no named constructors (`constructor.guest()`), no
-  generics/extends/implements
+- No `deinit`, no generics/extends/implements
   -> the class is *registered*. Anything else bails with
   "… in `{name}` are not lowered yet" so nothing miscompiles silently.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
@@ -209,6 +208,12 @@ Lowering rules:
   none), then any `init` blocks. `this` is live throughout, so initializers can
   read earlier fields and the body can assign any member. An initialized field
   therefore needs no constructor argument, but still occupies a slot.
+- A named constructor (`constructor.name(params) { this(...) }`) lowers to a
+  receiver-less factory `pkl_<TypeName>_nc_<name>(params) -> Ptr`. Its body must
+  be exactly one `this(args)` delegation to the primary constructor; the factory
+  evaluates the delegation arguments (option-wrapped like any call), calls
+  `pkl_<TypeName>_new`, and returns its pointer. `TypeName.name(args)` dispatches
+  to that factory; a named constructor creates no cell and no per-class state.
 - Instance methods compile to `pkl_<TypeName>_<m>`, with the receiver passed
   first as a managed pointer (IR param slot 0, declared as `this`); static
   methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/

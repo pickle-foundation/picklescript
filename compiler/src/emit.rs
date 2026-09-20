@@ -53,6 +53,7 @@ pub fn emit_ir(
         classes: Vec::new(),
         class_by_name: HashMap::new(),
         ctor_ids: HashMap::new(),
+        named_ctor_ids: HashMap::new(),
         method_ids: HashMap::new(),
         property_ids: HashMap::new(),
         static_property_ids: HashMap::new(),
@@ -103,6 +104,12 @@ enum FnSource<'a> {
         /// The explicit `constructor(...) { ... }` declaration, if any.
         ctor: Option<&'a ConstructorDecl>,
     },
+    /// A named constructor: a static factory that delegates to the primary
+    /// constructor via `this(...)`.
+    NamedCtor {
+        table: ClassTable,
+        ctor: &'a ConstructorDecl,
+    },
     /// A class/struct method (instance or static).
     Method { table: ClassTable, md: &'a MethodDecl },
     /// A property accessor: slot 0 is `this` (instance only; static
@@ -134,6 +141,23 @@ struct ClassPlan {
 /// i.e. the runtime slot index).
 fn instance_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
     table.fields.iter().filter(|f| !f.is_static).position(|f| f.name == name)
+}
+
+/// The single `this(...)` delegation expression of a named-constructor body, or
+/// `None` if the body is not exactly one such expression (as a statement or a
+/// block tail).
+fn named_ctor_delegation(body: &Block) -> Option<&Expr> {
+    fn this_call(e: &Expr) -> Option<&Expr> {
+        match &e.kind {
+            ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::This) => Some(e),
+            _ => None,
+        }
+    }
+    match (body.stmts.as_slice(), body.expr.as_deref()) {
+        ([], Some(e)) => this_call(e),
+        ([Stmt::Expr(e)], None) => this_call(e),
+        _ => None,
+    }
 }
 
 /// Static slot number of static field `name` (its position among static
@@ -190,6 +214,8 @@ struct Emitter<'a> {
     class_by_name: HashMap<String, u32>,
     /// Class id -> implicit-constructor function.
     ctor_ids: HashMap<u32, FuncId>,
+    /// (Class id, named-constructor name) -> redirect function.
+    named_ctor_ids: HashMap<(u32, String), FuncId>,
     /// (Class id, method name) -> (function, is_static).
     method_ids: HashMap<(u32, String), (FuncId, bool)>,
     /// (Class id, property name, is_setter) -> accessor function.
@@ -338,15 +364,9 @@ let bad = |e: &mut Self, what: &str| {
             return;
         }
         let ctor_decl = members.iter().find_map(|m| match m {
-            ClassMember::Constructor(cd) => Some(cd),
+            ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
             _ => None,
         });
-        if let Some(cd) = ctor_decl {
-            if cd.name.is_some() {
-                bad(self, "named constructors");
-                return;
-            }
-        }
         let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
         let mut init_blocks: Vec<&'a Block> = Vec::new();
         for m in members {
@@ -426,6 +446,25 @@ let bad = |e: &mut Self, what: &str| {
             },
         );
         self.ctor_ids.insert(cid, ctor_fid);
+
+        // Named constructors: `constructor.NAME(...) { this(...) }`. Each is a
+        // static factory `pkl_<Name>_nc_<NAME>` that evaluates the delegation
+        // arguments and calls the primary constructor.
+        for cd in members.iter().filter_map(|m| match m {
+            ClassMember::Constructor(cd) if cd.name.is_some() => Some(cd),
+            _ => None,
+        }) {
+            let cname = cd.name.clone().unwrap_or_default();
+            let fid = self.push_class_func(
+                &format!("{name}.{cname}"),
+                &format!("pkl_{name}_nc_{cname}"),
+                FnSource::NamedCtor {
+                    table: table.clone(),
+                    ctor: cd,
+                },
+            );
+            self.named_ctor_ids.insert((cid, cname), fid);
+        }
 
         // Methods: `pkl_<Name>_<m>` (instance) and `pkl_<Name>_sm_<m>` (static).
         for md in members.iter().filter_map(|m| match m {
@@ -601,6 +640,10 @@ let bad = |e: &mut Self, what: &str| {
             } => {
                 self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
                 let _ = self.build_ctor_body(&table, &inits, &init_blocks, ctor);
+            }
+            FnSource::NamedCtor { table, ctor } => {
+                self.owner = self.class_by_name.get(&table.name).copied().map(|x| x as i64);
+                let _ = self.build_named_ctor(&table, ctor);
             }
             FnSource::Method { table, md } => {
                 let Some(info) = self.finfo.get(&fid).cloned() else {
@@ -790,6 +833,74 @@ let bad = |e: &mut Self, what: &str| {
             let _ = self.expr(e);
         }
         self.pop_scope();
+        Ok(())
+    }
+
+    /// Lower a named constructor: a static factory that evaluates the
+    /// delegation arguments and calls the primary constructor.
+    fn build_named_ctor(
+        &mut self,
+        table: &ClassTable,
+        ctor: &'a ConstructorDecl,
+    ) -> Result<(), ()> {
+        let info = table
+            .named_ctors
+            .iter()
+            .find(|(n, _)| ctor.name.as_deref() == Some(n.as_str()))
+            .map(|(_, c)| c);
+        let params: Vec<ParamInfo> = info.map(|c| c.params.clone()).unwrap_or_default();
+        for (i, p) in params.iter().enumerate() {
+            let ir = self.map_ty(&p.ty, p.span).unwrap_or(IrTy::Ptr);
+            let slot = Slot(i as u32);
+            self.fslots.push(ir);
+            self.fparams.push(IrParam {
+                name: p.name.clone(),
+                ty: ir,
+            });
+            self.declare(&p.name, slot);
+        }
+        self.fret = IrTy::Ptr;
+
+        let Some(delegation) = named_ctor_delegation(&ctor.body) else {
+            return self.bad(
+                ctor.span,
+                "named constructor body must be a single `this(...)` delegation to the primary constructor",
+            );
+        };
+        let ExprKind::Call { args, .. } = &delegation.kind else {
+            return self.bad(ctor.span, "named constructor delegation is malformed");
+        };
+
+        let cid = self
+            .class_by_name
+            .get(&table.name)
+            .copied()
+            .unwrap_or(PICKLE_CLASS_USER_BASE as u32);
+        let Some(&primary) = self.ctor_ids.get(&cid) else {
+            return self.bad(ctor.span, format!("`{}` has no constructor", table.name));
+        };
+        let fparams = self.module.funcs[primary.0].params.clone();
+        let mut arg_temps = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            if a.spread {
+                return self.bad(a.span, "spread arguments are not lowered yet");
+            }
+            let t = self.expr(&a.value)?;
+            let t = if matches!(fparams.get(i).map(|p| p.ty), Some(IrTy::Ptr)) {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(t, &vt, a.value.span)?
+            } else {
+                t
+            };
+            arg_temps.push(t);
+        }
+        let dst = self.temp();
+        self.instr(IrInstr::Call {
+            dst: Some(dst),
+            callee: Callee::Func(primary),
+            args: arg_temps,
+        });
+        self.term(IrTerm::Return { v: Some(dst) });
         Ok(())
     }
 
@@ -3658,6 +3769,9 @@ let bad = |e: &mut Self, what: &str| {
         // `Type.staticMethod(...)`.
         if let ExprKind::Ident(tname) = &object.kind {
             if let Some(&cid) = self.class_by_name.get(tname) {
+                if let Some(&fid) = self.named_ctor_ids.get(&(cid, name.to_string())) {
+                    return self.call_method(e, fid, args, None);
+                }
                 if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
                     if !is_static {
                         return self.bad(

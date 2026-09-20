@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::resolve::{
-    CallableInfo, ClassTable, ResolvedProgram, TypeTableEntry,
+    CallableInfo, ClassTable, CtorInfo, ResolvedProgram, TypeTableEntry,
 };
 use crate::ty::Ty;
 
@@ -36,6 +36,23 @@ pub fn collect_expr_types(
     std::mem::take(&mut ck.types)
 }
 
+/// The single `this(...)` delegation expression of a named-constructor body, or
+/// `None` if the body is not exactly one such expression (as a statement or a
+/// block tail).
+fn named_ctor_delegation(body: &Block) -> Option<&Expr> {
+    fn this_call(e: &Expr) -> Option<&Expr> {
+        match &e.kind {
+            ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::This) => Some(e),
+            _ => None,
+        }
+    }
+    match (body.stmts.as_slice(), body.expr.as_deref()) {
+        ([], Some(e)) => this_call(e),
+        ([Stmt::Expr(e)], None) => this_call(e),
+        _ => None,
+    }
+}
+
 struct Checker<'a> {
     prog: &'a Program,
     resolved: &'a ResolvedProgram,
@@ -52,6 +69,11 @@ struct Checker<'a> {
     ret_ty: Ty,
     /// Current function's generic params (name only), for Var resolution.
     fn_generics: Vec<String>,
+    /// While checking a named constructor body: the primary constructor's
+    /// parameter types that the mandatory `this(...)` delegation must match.
+    named_ctor_params: Option<Vec<Ty>>,
+    /// Whether the current named constructor body has delegated via `this`.
+    named_ctor_delegated: bool,
     /// Loop depth for `break`/`continue` validation.
     loop_depth: usize,
 }
@@ -73,6 +95,8 @@ impl<'a> Checker<'a> {
             self_args: HashMap::new(),
             ret_ty: Ty::Empty,
             fn_generics: Vec::new(),
+            named_ctor_params: None,
+            named_ctor_delegated: false,
             loop_depth: 0,
         }
     }
@@ -405,6 +429,15 @@ impl<'a> Checker<'a> {
         table.properties.iter().find(|p| p.name == name).cloned()
     }
 
+    fn find_named_ctor(&self, class: &str, name: &str) -> Option<CtorInfo> {
+        let table = self.class_table(class)?;
+        table
+            .named_ctors
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, c)| c.clone())
+    }
+
     /// The instance field names that carry an initializer in the class/struct
     /// declaration, used to derive the synthesized constructor's parameters.
     fn initialized_fields(&self, name: &str) -> Vec<String> {
@@ -428,6 +461,42 @@ impl<'a> Checker<'a> {
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    /// Parameter types of the constructor a named constructor delegates to:
+    /// the explicit primary constructor, or the synthesized one over the fields
+    /// without initializers.
+    fn primary_ctor_param_tys(&self, table: &ClassTable) -> Vec<Ty> {
+        if let Some(c) = &table.ctor {
+            c.params.iter().map(|p| p.ty.clone()).collect()
+        } else {
+            let initialized = self.initialized_fields(&table.name);
+            table
+                .fields
+                .iter()
+                .filter(|f| !f.is_static && !initialized.contains(&f.name))
+                .map(|f| f.ty.clone())
+                .collect()
+        }
+    }
+
+    /// Check a named constructor: the body must be exactly one `this(...)`
+    /// delegation to the primary constructor, whose arguments are checked
+    /// against the primary constructor's parameters.
+    fn check_named_ctor_body(&mut self, cd: &ConstructorDecl, table: &ClassTable) {
+        let Some(call) = named_ctor_delegation(&cd.body) else {
+            self.err(
+                cd.span,
+                "named constructor body must be a single `this(...)` delegation to the primary constructor",
+            );
+            return;
+        };
+        let params = self.primary_ctor_param_tys(table);
+        self.named_ctor_params = Some(params);
+        self.named_ctor_delegated = false;
+        let _ = self.check_expr(call);
+        self.named_ctor_params = None;
+        self.named_ctor_delegated = false;
     }
 
     // ---- bodies ------------------------------------------------------------
@@ -743,6 +812,7 @@ impl<'a> Checker<'a> {
             methods: Vec::new(),
             properties: Vec::new(),
             ctor: None,
+            named_ctors: Vec::new(),
             consts: Vec::new(),
         });
         self.self_ty = Some(Ty::Class(c.name.clone(), table.generics.iter().cloned().map(Ty::Var).collect()));
@@ -795,7 +865,11 @@ impl<'a> Checker<'a> {
                         let pt = self.resolve_param_ty(p);
                         self.declare(&p.name, pt, true);
                     }
-                    self.check_block(&cd.body);
+                    if cd.name.is_some() {
+                        self.check_named_ctor_body(cd, &table);
+                    } else {
+                        self.check_block(&cd.body);
+                    }
                     self.pop_scope();
                 }
                 ClassMember::Init(b) => {
@@ -827,6 +901,7 @@ impl<'a> Checker<'a> {
             methods: Vec::new(),
             properties: Vec::new(),
             ctor: None,
+            named_ctors: Vec::new(),
             consts: Vec::new(),
         });
         self.self_ty = Some(Ty::Struct(s.name.clone(), table.generics.iter().cloned().map(Ty::Var).collect()));
@@ -1211,6 +1286,24 @@ impl<'a> Checker<'a> {
     }
 
     fn check_call(&mut self, e: &Expr, callee: &Expr, args: &[CallArg]) -> Ty {
+        // `this(...)` inside a named constructor delegates to the primary
+        // constructor; its arguments are checked against that signature.
+        if matches!(&callee.kind, ExprKind::This) {
+            let Some(params) = self.named_ctor_params.clone() else {
+                self.err(
+                    e.span,
+                    "`this(...)` can only be used as a named constructor's delegation",
+                );
+                return Ty::Unknown;
+            };
+            if self.named_ctor_delegated {
+                self.err(e.span, "a named constructor may only delegate to `this(...)` once");
+            }
+            self.named_ctor_delegated = true;
+            self.check_args(e, &params, args);
+            return Ty::Empty;
+        }
+
         // `Enum.Variant(...)` constructor call.
         if let ExprKind::Member { object, name } = &callee.kind {
             if let ExprKind::Ident(enum_name) = &object.kind {
@@ -1469,6 +1562,23 @@ impl<'a> Checker<'a> {
                     return Ty::Fn(
                         m.params.iter().map(|p| p.ty.clone()).collect(),
                         Box::new(m.ret.clone()),
+                    );
+                }
+                if let Some(nc) = self.find_named_ctor(&gname, name) {
+                    let ret = match entry {
+                        TypeTableEntry::Class(c) => Ty::Class(
+                            c.name.clone(),
+                            c.generics.iter().cloned().map(Ty::Var).collect(),
+                        ),
+                        TypeTableEntry::Struct(s) => Ty::Struct(
+                            s.name.clone(),
+                            s.generics.iter().cloned().map(Ty::Var).collect(),
+                        ),
+                        _ => Ty::Unknown,
+                    };
+                    return Ty::Fn(
+                        nc.params.iter().map(|p| p.ty.clone()).collect(),
+                        Box::new(ret),
                     );
                 }
                 // Bare enum variant access: `Color.Red` when the variant has

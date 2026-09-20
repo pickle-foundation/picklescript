@@ -1395,3 +1395,81 @@ fn emits_class_const_inlining() {
     assert!(dump.contains("binop.mul"), "DOUBLE inlines BASE * 2, dump:\n{dump}");
     assert!(dump.contains("binop.add"), "limit adds 1, dump:\n{dump}");
 }
+
+#[test]
+fn emits_named_constructor_redirect() {
+    // A named constructor lowers to a static factory `pkl_<Name>_nc_<NAME>`
+    // that evaluates the delegation arguments and calls the primary
+    // constructor, returning its pointer. It does not get a cell of its own.
+    let m = emit_str(
+        r#"class Point {
+            x: int
+
+            constructor(x: int) {
+                this.x = x
+            }
+
+            constructor.origin() {
+                this(0)
+            }
+
+            constructor.diagonal(n: int) {
+                this(n * 2)
+            }
+        }
+
+        fn main() {
+            let a = Point.origin()
+            let b = Point.diagonal(3)
+            println(a.x)
+            println(b.x)
+        }"#,
+    );
+    let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
+    assert!(syms.contains(&"pkl_Point_new".to_string()), "symbols: {syms:?}");
+    assert!(
+        syms.contains(&"pkl_Point_nc_origin".to_string()),
+        "symbols: {syms:?}"
+    );
+    assert!(
+        syms.contains(&"pkl_Point_nc_diagonal".to_string()),
+        "symbols: {syms:?}"
+    );
+
+    let ctor_fid = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Point_new")
+        .expect("primary ctor");
+    let ctor_fid = pickle_compiler::ir::FuncId(ctor_fid);
+
+    for sym in ["pkl_Point_nc_origin", "pkl_Point_nc_diagonal"] {
+        let f = m.funcs.iter().find(|f| f.symbol == sym).expect(sym);
+        assert_eq!(f.ret, IrTy::Ptr, "{sym} must return an instance pointer");
+        let calls_ctor = f.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+            matches!(
+                i,
+                IrInstr::Call {
+                    callee: Callee::Func(fid),
+                    ..
+                } if *fid == ctor_fid
+            )
+        });
+        assert!(calls_ctor, "{sym} must delegate to the primary constructor");
+    }
+
+    // `main` calls the named constructors.
+    let origin_fid = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Point_nc_origin")
+        .expect("origin");
+    let origin_fid = pickle_compiler::ir::FuncId(origin_fid);
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let main_calls = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if *fid == origin_fid));
+    assert!(main_calls, "main must call `pkl_Point_nc_origin`");
+}

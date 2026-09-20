@@ -70,6 +70,7 @@ pub struct ClassTable {
     pub methods: Vec<CallableInfo>,
     pub properties: Vec<PropertyInfo>,
     pub ctor: Option<CtorInfo>,
+    pub named_ctors: Vec<(String, CtorInfo)>,
     pub consts: Vec<FieldInfo>,
 }
 
@@ -576,6 +577,7 @@ struct MemberTables {
     methods: Vec<CallableInfo>,
     properties: Vec<PropertyInfo>,
     ctor: Option<CtorInfo>,
+    named_ctors: Vec<(String, CtorInfo)>,
     consts: Vec<FieldInfo>,
 }
 
@@ -612,6 +614,7 @@ impl<'a> Resolver<'a> {
                 methods: members.methods,
                 properties: members.properties,
                 ctor: members.ctor,
+                named_ctors: members.named_ctors,
                 consts: members.consts,
             }),
         );
@@ -638,6 +641,7 @@ impl<'a> Resolver<'a> {
                 methods: members.methods,
                 properties: members.properties,
                 ctor: members.ctor,
+                named_ctors: members.named_ctors,
                 consts: members.consts,
             }),
         );
@@ -734,6 +738,7 @@ impl<'a> Resolver<'a> {
         let mut methods = Vec::new();
         let mut properties = Vec::new();
         let mut ctor = None;
+        let mut named_ctors: Vec<(String, CtorInfo)> = Vec::new();
         let mut consts = Vec::new();
         let mut seen: Vec<String> = Vec::new();
 
@@ -812,17 +817,26 @@ impl<'a> Resolver<'a> {
                     });
                 }
                 ClassMember::Constructor(cd) => {
-                    if ctor.is_some() {
-                        self.diags.emit(Diagnostic::error_at(
-                            cd.span,
-                            format!("`{class_name}` already has a constructor"),
-                        ));
-                    }
-                    ctor = Some(CtorInfo {
+                    let info = CtorInfo {
                         span: cd.span,
                         visibility: cd.visibility,
                         params: self.resolve_params(&cd.params, generics),
-                    });
+                    };
+                    match &cd.name {
+                        Some(n) => {
+                            record(n, cd.span);
+                            named_ctors.push((n.clone(), info));
+                        }
+                        None => {
+                            if ctor.is_some() {
+                                self.diags.emit(Diagnostic::error_at(
+                                    cd.span,
+                                    format!("`{class_name}` already has a constructor"),
+                                ));
+                            }
+                            ctor = Some(info);
+                        }
+                    }
                 }
                 ClassMember::Property(p) => {
                     record(&p.name, p.span);
@@ -848,6 +862,7 @@ impl<'a> Resolver<'a> {
             methods,
             properties,
             ctor,
+            named_ctors,
             consts,
         }
     }
