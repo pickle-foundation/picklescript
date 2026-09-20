@@ -1505,13 +1505,13 @@ fn emits_deinit_finalizer_and_registration() {
     assert_eq!(f.params[0].ty, IrTy::Ptr);
     assert!(!f.is_main);
 
-    // The registration extern now takes a fifth (finalizer) argument.
+    // The registration extern now takes a sixth (parent id) argument.
     let reg = m
         .externs
         .iter()
         .find(|e| e.symbol == "pickle_class_register")
         .expect("pickle_class_register extern");
-    assert_eq!(reg.params.len(), 5, "register takes addr,len,fields,mask,finalizer");
+    assert_eq!(reg.params.len(), 6, "register takes addr,len,fields,mask,finalizer,parent");
     assert!(reg.params.iter().all(|t| *t == IrTy::Int));
     assert_eq!(reg.ret, IrTy::Unit);
 
@@ -1532,7 +1532,7 @@ fn emits_deinit_finalizer_and_registration() {
             _ => None,
         })
         .expect("class registration call");
-    assert_eq!(args.len(), 5);
+    assert_eq!(args.len(), 6);
     let fin = args[4];
     let is_addr = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
         matches!(i, IrInstr::Const { dst, c: IrConst::FuncAddr(g) } if *dst == fin && *g == fid)
@@ -1572,10 +1572,114 @@ fn class_without_deinit_registers_a_null_finalizer() {
             _ => None,
         })
         .expect("class registration call");
-    assert_eq!(args.len(), 5);
+    assert_eq!(args.len(), 6);
     let fin = args[4];
     let is_null = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
         matches!(i, IrInstr::Const { dst, c: IrConst::Int(0) } if *dst == fin)
     });
     assert!(is_null, "a class without `deinit` registers finalizer 0");
+}
+
+#[test]
+fn emits_inheritance_layout_and_super_call() {
+    let m = emit_str(
+        r#"class Animal {
+            name: string
+            legs: int = 4
+
+            fn label() -> string {
+                return this.name
+            }
+
+            fn baseTag() -> string {
+                return "animal"
+            }
+        }
+
+        class Dog extends Animal {
+            breed: string
+
+            fn tag() -> string {
+                return super.baseTag()
+            }
+        }
+
+        fn main() {
+            let d = Dog("Rex", "lab")
+            println(d.legs)
+            println(d.breed)
+            println(d.tag())
+        }"#,
+    );
+
+    // Both classes register; the superclass is registered first and the
+    // subclass records the superclass id as the sixth argument.
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let regs: Vec<Vec<pickle_compiler::ir::Temp>> = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| match i {
+            IrInstr::Call { callee: Callee::Extern(id), args, .. }
+                if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                    == Some("pickle_class_register") =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(regs.len(), 2, "one registration per class");
+    for r in &regs {
+        assert_eq!(r.len(), 6, "register takes addr,len,fields,mask,finalizer,parent");
+    }
+    let const_int = |t: pickle_compiler::ir::Temp| -> Option<i64> {
+        main.blocks.iter().flat_map(|b| b.instrs.iter()).find_map(|i| match i {
+            IrInstr::Const { dst, c: IrConst::Int(v) } if *dst == t => Some(*v),
+            _ => None,
+        })
+    };
+    let parents: Vec<i64> = regs.iter().filter_map(|r| const_int(r[5])).collect();
+    // The root has parent 0; the subclass points at the superclass id (8).
+    assert!(parents.contains(&0), "root class registers parent 0, got {parents:?}");
+    assert!(parents.contains(&8), "subclass registers superclass id 8, got {parents:?}");
+
+    // `super.baseTag()` lowers to a direct call of the superclass method
+    // (static dispatch on the shared object).
+    let base = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Animal_baseTag")
+        .expect("pkl_Animal_baseTag");
+    let tag = m.funcs.iter().find(|f| f.symbol == "pkl_Dog_tag").expect("pkl_Dog_tag");
+    let calls_parent = tag.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+        matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == base)
+    });
+    assert!(calls_parent, "`super.baseTag()` must call the superclass method:\n{m}");
+}
+
+#[test]
+fn emits_class_is_and_as_lowering() {
+    let m = emit_str(
+        r#"class Animal {
+            name: string
+        }
+
+        class Dog extends Animal {
+            breed: string
+        }
+
+        fn main() {
+            let d = Dog("Rex", "lab")
+            let a: Animal = d
+            if (a is Dog) {
+                println("dog")
+            }
+            let back: Dog = a as Dog
+            println(back.breed)
+        }"#,
+    );
+    let syms: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    assert!(syms.contains(&"pickle_class_is"), "downcast `is` needs the runtime test:\n{m}");
+    assert!(syms.contains(&"pickle_class_cast"), "downcast `as` needs the checked cast:\n{m}");
 }

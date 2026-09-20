@@ -944,6 +944,8 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_enum_field" => abi::pickle_enum_field as *const () as usize,
         "pickle_class_register" => abi::pickle_class_register as *const () as usize,
         "pickle_class_new" => abi::pickle_class_new as *const () as usize,
+        "pickle_class_is" => abi::pickle_class_is as *const () as usize,
+        "pickle_class_cast" => abi::pickle_class_cast as *const () as usize,
         "pickle_obj_slot_get" => abi::pickle_obj_slot_get as *const () as usize,
         "pickle_obj_slot_set" => abi::pickle_obj_slot_set as *const () as usize,
         "pickle_static_get" => abi::pickle_static_get as *const () as usize,

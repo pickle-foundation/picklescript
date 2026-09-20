@@ -184,13 +184,14 @@ managed object (`PickleObject`) whose runtime `ClassDescriptor` carries the
 name (for printing) and a field-validity mask. Descriptors are allocated *at
 runtime* rather than baked into the generated binary: `main`'s entry block
 opens with one `pickle_class_register(name_ptr, name_len, slot_count, mask,
-finalizer)` void call per class, in registration order, so descriptor id == call
-site id. Call sites inside constructors hardcode that id (`8 + emitted index`),
-so no id is threaded through the lowering; `pickle_class_register` returns the
-id but emitters discard it. `StrAddr` lowerings pull the name bytes from the
-data section (`pkl_strdata_N`) — AOT marks those externs as data, JIT lowers
-them to symbol addresses; the pointer is never treated as a GC object. The
-`finalizer` argument is the address of `pkl_<TypeName>_deinit`, or `0`.
+finalizer, parent)` void call per class, in registration order, so descriptor id
+== call site id. Call sites inside constructors hardcode that id (`8 + emitted
+index`), so no id is threaded through the lowering; `pickle_class_register`
+returns the id but emitters discard it. `StrAddr` lowerings pull the name bytes
+from the data section (`pkl_strdata_N`) — AOT marks those externs as data, JIT
+lowers them to symbol addresses; the pointer is never treated as a GC object.
+The `finalizer` argument is the address of `pkl_<TypeName>_deinit`, or `0`; the
+`parent` argument is the superclass id, or `0` for a root class.
 
 Lowering rules:
 
@@ -199,19 +200,35 @@ Lowering rules:
   the function's address is passed to `pickle_class_register` through a
   `FuncAddr` const (`addrof fn#N`, typed `int` so the raw code pointer never
   enters the GC trace frame). A class without `deinit` passes `0`.
-- Generics/extends/implements are not lowered: a class using them bails with
-  "… in `{name}` are not lowered yet" so nothing miscompiles silently.
+- Single inheritance (`class Child extends Parent`) is lowered for a subset:
+  state, methods, `super.m()`, and hierarchy casts. Classes must be registered
+  **ancestor-first** (the emitter pulls superclasses in before subclasses), so a
+  superclass always has a lower id. Instance fields are laid out
+  **parent-first**: a subclass's object slots begin with the superclass's
+  instance fields, then its own; the absolute slot is `parent_total + own_index`,
+  and the registration `slot_count` (and the constructor's `pickle_class_new`
+  field count) is the whole ancestry's total. A subclass inherits its parent's
+  method and property dispatch entries (its own declarations win) and derives
+  its synthesized constructor parameters from all instance fields without
+  initializers, superclass first. `super.m(...)` lowers to a direct call of the
+  superclass method on the same receiver.
+- Not-yet-lowered inheritance edges bail loudly instead of miscompiling:
+  generics, `implements`/interfaces, `override fn`, explicit or named
+  constructors in a hierarchy, and a subclass whose superclass is itself
+  unbounded. A class using one of these is skipped with a "… not lowered yet"
+  diagnostic.
 - `TypeName(args...)` compiles to `pkl_<TypeName>_new(args...)`: slot 0 of the
   object is `pickle_class_new(id, field_count)`, then each field value is boxed
   per the scalar list rules and stored with `pickle_obj_slot_set`. Only
   non-static fields occupy slots; a class with 64+ fields empties the mask.
 - Constructor parameters are the explicit `constructor(...)`'s parameters when
   one is declared; otherwise they are the instance fields *without*
-  initializers (declaration order). Fields with initializers (`var x: int = 0`)
-  and `init { ... }` blocks run during construction: field initializers in
-  declaration order, then the explicit constructor body (an implicit one has
-  none), then any `init` blocks. `this` is live throughout, so initializers can
-  read earlier fields and the body can assign any member. An initialized field
+  initializers (declaration order, superclass fields first). Fields with
+  initializers (`var x: int = 0`) and `init { ... }` blocks run during
+  construction: field initializers across the ancestry in root-first order, then
+  the explicit constructor body (an implicit one has none), then any `init`
+  blocks (also root-first). `this` is live throughout, so initializers can read
+  earlier fields and the body can assign any member. An initialized field
   therefore needs no constructor argument, but still occupies a slot.
 - A named constructor (`constructor.name(params) { this(...) }`) lowers to a
   receiver-less factory `pkl_<TypeName>_nc_<name>(params) -> Ptr`. Its body must
@@ -319,10 +336,14 @@ Casts lower for the statically-known subset:
   through `pickle_panic_none_unwrap`) then converts.
 - `x is T` is a presence test when `x: T?` and `T` is `x`'s inner type;
   otherwise it folds statically (`T is T` -> true, `int is float` -> false).
-- Class/interface `is`/`as` across an inheritance edge bails ("not lowered
-  yet"): `extends`/`implements` are not lowered, so there is no runtime
-  hierarchy to test against yet. The checker accepts such casts; only codegen
-  rejects them.
+- Class `is`/`as` across a lowered inheritance edge compile to runtime calls.
+  An upcast (the target is an ancestor of the static type) folds to the value
+  itself — `x is Ancestor` is `true`, `x as Ancestor` is the identity. A
+  downcast emits `pickle_class_is(obj, id) -> bool` for `is` and
+  `pickle_class_cast(obj, id) -> Ptr` for `as`, which walks the registered
+  parent chain and panics on a mismatch. Interface edges still bail ("not
+  lowered yet"), as do casts to unbounded classes; the checker accepts the
+  related type pairs and codegen decides.
 
 No semicolons, no headers, no Makefiles — `pickle build <file>` does all of
 the above.

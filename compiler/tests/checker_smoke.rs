@@ -884,3 +884,69 @@ fn rejects_duplicate_deinit() {
         "missing duplicate-deinit diagnostic, got:\n{msgs}"
     );
 }
+
+#[test]
+fn accepts_inheritance_and_hierarchy_casts() {
+    // Inherited fields/methods, `super.m()`, subclass-to-superclass
+    // assignability, and `is`/`as` across the hierarchy all type-check.
+    let d = check_str(
+        r#"class Animal {
+            name: string
+            legs: int = 4
+
+            fn label() -> string {
+                return this.name
+            }
+        }
+
+        class Dog extends Animal {
+            breed: string
+
+            fn tag() -> string {
+                return super.label()
+            }
+        }
+
+        fn describe(a: Animal) -> string {
+            return a.label()
+        }
+
+        fn main() {
+            let d = Dog("Rex", "lab")
+            println(d.legs)
+            println(d.tag())
+            println(describe(d))
+            if (d is Dog) {
+                println("dog")
+            }
+            if (d is Animal) {
+                println("animal")
+            }
+            let a: Animal = d
+            let back: Dog = a as Dog
+            println(back.breed)
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected a clean program, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_unknown_member_in_subclass() {
+    let d = check_str(
+        r#"class Animal {
+            name: string
+        }
+
+        class Dog extends Animal {
+            breed: string
+        }
+
+        fn main() {
+            let d = Dog("Rex", "lab")
+            println(d.missing)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(msgs.contains("missing"), "expected a member diagnostic, got:\n{msgs}");
+}

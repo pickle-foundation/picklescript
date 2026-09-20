@@ -44,6 +44,10 @@ static COLLECTIONS: AtomicU32 = AtomicU32::new(0);
 pub struct Gc {
     pub heap: Heap,
     pub descriptors: DescriptorTable,
+    /// Superclass of each registered class, indexed by class id (0 = none).
+    /// Builtins are never a superclass of a user class, so 0 doubles as the
+    /// "no parent" sentinel; the compiler passes the parent id on registration.
+    class_parents: Vec<u32>,
     /// Total live object bytes (updated at sweep).
     pub live_bytes: AtomicU32,
 }
@@ -53,6 +57,7 @@ impl Gc {
         Gc {
             heap: Heap::new(),
             descriptors: DescriptorTable::new(),
+            class_parents: Vec::new(),
             live_bytes: AtomicU32::new(0),
         }
     }
@@ -93,7 +98,23 @@ impl Gc {
 
     /// Register a class descriptor; returns its class id (index).
     pub fn register_class(&mut self, d: crate::object::ClassDescriptor) -> u32 {
-        self.descriptors.register(d)
+        let id = self.descriptors.register(d);
+        self.class_parents.push(0);
+        id
+    }
+
+    /// Record the superclass id of a registered class.
+    pub fn set_class_parent(&mut self, class_id: u32, parent: u32) {
+        let idx = class_id as usize;
+        if self.class_parents.len() <= idx {
+            self.class_parents.resize(idx + 1, 0);
+        }
+        self.class_parents[idx] = parent;
+    }
+
+    /// Superclass id of `class_id` (0 = none / builtin).
+    pub fn class_parent(&self, class_id: u32) -> u32 {
+        self.class_parents.get(class_id as usize).copied().unwrap_or(0)
     }
 
     /// Run a full mark-and-sweep cycle.

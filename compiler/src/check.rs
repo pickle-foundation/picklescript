@@ -480,6 +480,40 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Synthesized-constructor parameter types for `name`: every non-static
+    /// field without a declared initializer, superclass fields first (the same
+    /// order the emitter lays out instance slots and constructor params).
+    fn synthesized_ctor_param_tys(&self, name: &str) -> Vec<Ty> {
+        let mut chain = vec![name.to_string()];
+        let mut cur = name.to_string();
+        while let Some(p) = self.class_table(&cur).and_then(|t| {
+            t.extends
+                .as_ref()
+                .and_then(|e| e.named().map(str::to_string))
+        }) {
+            chain.push(p.clone());
+            cur = p;
+            if chain.len() > 64 {
+                break;
+            }
+        }
+        chain.reverse();
+        let mut out = Vec::new();
+        for cname in chain {
+            let initialized = self.initialized_fields(&cname);
+            if let Some(t) = self.class_table(&cname) {
+                for f in t
+                    .fields
+                    .iter()
+                    .filter(|f| !f.is_static && !initialized.contains(&f.name))
+                {
+                    out.push(f.ty.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// Check a named constructor: the body must be exactly one `this(...)`
     /// delegation to the primary constructor, whose arguments are checked
     /// against the primary constructor's parameters.
@@ -1368,14 +1402,9 @@ impl<'a> Checker<'a> {
                         self.check_args(e, &params, args);
                     } else {
                         // Synthesized constructor: parameters are the fields
-                        // without initializers (those run during construction).
-                        let initialized = self.initialized_fields(cname);
-                        let params: Vec<Ty> = c
-                            .fields
-                            .iter()
-                            .filter(|f| !f.is_static && !initialized.contains(&f.name))
-                            .map(|f| f.ty.clone())
-                            .collect();
+                        // without initializers (those run during construction),
+                        // superclass fields first.
+                        let params: Vec<Ty> = self.synthesized_ctor_param_tys(cname);
                         self.check_args(e, &params, args);
                     }
                 }

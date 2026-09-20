@@ -57,6 +57,13 @@ operations (places compiled code already spills), plus an explicit
 
 - **GC**: see memory model (non-moving mark-and-sweep, shadow stack, size
   classes, weak refs, finalizers).
+- **Object model**: a user-class instance is a `PickleObject` whose header
+  names its class id; a per-class `ClassDescriptor` carries the name, the
+  field-validity mask, and the optional `deinit` finalizer. `pickle_class_register`
+  records a class's superclass id (its sixth argument, `0` for a root) in a
+  registry side table, and `class_is`/`pickle_class_is` plus
+  `pickle_class_cast` walk that parent chain to implement
+  `x is T` / `x as T` across an inheritance hierarchy.
 - **Allocator interface**: default allocator (VirtualAlloc arenas on
   Windows, mmap elsewhere) with pluggable global allocator and arena API.
 - **Strings**: rope? no — contiguous UTF-8 with cached length; concat &

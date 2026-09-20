@@ -216,6 +216,8 @@ pub mod abi {
 
     pub use crate::class::pickle_class_new;
     pub use crate::class::pickle_class_register;
+    pub use crate::class::pickle_class_is;
+    pub use crate::class::pickle_class_cast;
     pub use crate::class::pickle_obj_slot_get;
     pub use crate::class::pickle_obj_slot_set;
 

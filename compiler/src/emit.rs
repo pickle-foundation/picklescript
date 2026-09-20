@@ -52,6 +52,8 @@ pub fn emit_ir(
         finfo: HashMap::new(),
         classes: Vec::new(),
         class_by_name: HashMap::new(),
+        class_decls: HashMap::new(),
+        class_attempted: Vec::new(),
         ctor_ids: HashMap::new(),
         named_ctor_ids: HashMap::new(),
         deinit_ids: HashMap::new(),
@@ -141,13 +143,9 @@ enum FnSource<'a> {
 struct ClassPlan {
     name: String,
     class_id: u32,
+    /// Superclass id for a class that `extends` another, else `None`.
+    parent: Option<u32>,
     table: ClassTable,
-}
-
-/// Slot number of instance field `name` (its position among non-static fields,
-/// i.e. the runtime slot index).
-fn instance_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
-    table.fields.iter().filter(|f| !f.is_static).position(|f| f.name == name)
 }
 
 /// The single `this(...)` delegation expression of a named-constructor body, or
@@ -219,6 +217,12 @@ struct Emitter<'a> {
     classes: Vec<ClassPlan>,
     /// Class/struct name -> assigned runtime class id (registered only).
     class_by_name: HashMap<String, u32>,
+    /// Class name -> its declaration (for ancestor field initializers /
+    /// `init` blocks and ancestor-first registration).
+    class_decls: HashMap<String, &'a ClassDecl>,
+    /// Names whose registration has been attempted, so ancestors are pulled in
+    /// before descendants exactly once (and cycles terminate).
+    class_attempted: Vec<String>,
     /// Class id -> implicit-constructor function.
     ctor_ids: HashMap<u32, FuncId>,
     /// (Class id, named-constructor name) -> redirect function.
@@ -263,13 +267,16 @@ impl<'a> Emitter<'a> {
             if let ItemKind::Const(c) = &item.kind {
                 self.consts_inits.insert(c.name.clone(), &c.value);
             }
+            if let ItemKind::Class(c) = &item.kind {
+                self.class_decls.insert(c.name.clone(), c);
+            }
         }
         let prog = self.prog;
         for item in &prog.items {
             match &item.kind {
                 ItemKind::Fn(f) => self.register_fn(f, false),
                 ItemKind::Test(f) => self.register_fn(f, true),
-                ItemKind::Class(c) => self.register_class_item(c),
+                ItemKind::Class(c) => self.register_class_by_name(&c.name),
                 ItemKind::Struct(s) => self.register_struct_item(s),
                 _ => {}
             }
@@ -335,12 +342,31 @@ impl<'a> Emitter<'a> {
 
     // ---- class/struct registration ---------------------------------------
 
-    fn register_class_item(&mut self, c: &'a ClassDecl) {
-        let table = match self.resolved.types.get(&c.name) {
+    /// Register a class and, first, its ancestors, so a superclass always has a
+    /// lower class id than its subclasses (field layout and the runtime parent
+    /// links rely on it).
+    fn register_class_by_name(&mut self, name: &str) {
+        if self.class_attempted.iter().any(|n| n == name) {
+            return;
+        }
+        self.class_attempted.push(name.to_string());
+        let Some(decl) = self.class_decls.get(name).copied() else {
+            return;
+        };
+        let table = match self.resolved.types.get(name) {
             Some(TypeTableEntry::Class(t)) => t.clone(),
             _ => return,
         };
-        self.maybe_register_class(&c.name, &c.members, table, c.span);
+        if let Some(p) = table
+            .extends
+            .as_ref()
+            .and_then(|t| t.named().map(str::to_string))
+        {
+            if self.class_decls.contains_key(&p) {
+                self.register_class_by_name(&p);
+            }
+        }
+        self.maybe_register_class(name, &decl.members, table, decl.span);
     }
 
     fn register_struct_item(&mut self, s: &'a StructDecl) {
@@ -351,44 +377,217 @@ impl<'a> Emitter<'a> {
         self.maybe_register_class(&s.name, &s.members, table, s.span);
     }
 
+    // ---- inheritance layout helpers ---------------------------------------
+
+    /// The class/struct table for `name`, from the resolver.
+    fn table_of(&self, name: &str) -> Option<ClassTable> {
+        match self.resolved.types.get(name) {
+            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
+    /// The superclass name of `name`, when it extends another class.
+    fn parent_name(&self, name: &str) -> Option<String> {
+        self.table_of(name)?
+            .extends
+            .as_ref()
+            .and_then(|t| t.named().map(str::to_string))
+    }
+
+    /// Ancestry from the rootmost superclass down to `name` inclusive.
+    fn ancestry(&self, name: &str) -> Vec<String> {
+        let mut chain = vec![name.to_string()];
+        let mut cur = name.to_string();
+        for _ in 0..64 {
+            match self.parent_name(&cur) {
+                Some(p) => {
+                    chain.push(p.clone());
+                    cur = p;
+                }
+                None => break,
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
+    fn own_instance_fields(&self, name: &str) -> Vec<FieldInfo> {
+        self.table_of(name)
+            .map(|t| t.fields.into_iter().filter(|f| !f.is_static).collect())
+            .unwrap_or_default()
+    }
+
+    /// Instance fields of `name` and every ancestor, root first (the runtime
+    /// slot order: superclass fields occupy the low slots).
+    fn all_instance_fields(&self, name: &str) -> Vec<FieldInfo> {
+        let mut out = Vec::new();
+        for cname in self.ancestry(name) {
+            out.extend(self.own_instance_fields(&cname));
+        }
+        out
+    }
+
+    /// Total instance-field slot count of `name` including inherited fields.
+    fn total_instance_slot_count(&self, name: &str) -> usize {
+        self.ancestry(name)
+            .iter()
+            .map(|c| self.own_instance_fields(c).len())
+            .sum()
+    }
+
+    /// Absolute (parent-first) slot of instance field `field` reachable from
+    /// `name`, whether declared on `name` or inherited.
+    fn abs_instance_field_slot(&self, name: &str, field: &str) -> Option<usize> {
+        let mut base = 0usize;
+        for cname in self.ancestry(name) {
+            let own = self.own_instance_fields(&cname);
+            if let Some(i) = own.iter().position(|f| f.name == field) {
+                return Some(base + i);
+            }
+            base += own.len();
+        }
+        None
+    }
+
+    /// Instance-field initializers for `name` and its ancestors, root first,
+    /// recorded at absolute slot numbers.
+    fn collect_instance_inits(&self, name: &str) -> Vec<(usize, &'a Expr)> {
+        let mut out = Vec::new();
+        let mut base = 0usize;
+        for cname in self.ancestry(name) {
+            let own = self.own_instance_fields(&cname);
+            if let Some(decl) = self.class_decls.get(&cname).copied() {
+                for m in &decl.members {
+                    if let ClassMember::Field {
+                        name: fname,
+                        init: Some(x),
+                        is_static: false,
+                        ..
+                    } = m
+                    {
+                        if let Some(i) = own.iter().position(|f| &f.name == fname) {
+                            out.push((base + i, x));
+                        }
+                    }
+                }
+            }
+            base += own.len();
+        }
+        out
+    }
+
+    /// `init` blocks for `name` and its ancestors, root first.
+    fn collect_init_blocks(&self, name: &str) -> Vec<&'a Block> {
+        let mut out = Vec::new();
+        for cname in self.ancestry(name) {
+            if let Some(decl) = self.class_decls.get(&cname).copied() {
+                for m in &decl.members {
+                    if let ClassMember::Init(b) = m {
+                        out.push(b);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// True when `anc` is `desc` itself or one of its ancestors.
+    fn is_ancestor(&self, anc: &str, desc: &str) -> bool {
+        self.ancestry(desc).iter().any(|c| c == anc)
+    }
+
+    /// A non-generic user class type resolved to its registered runtime id.
+    fn user_class_id(&self, ty: &Ty) -> Option<(String, u32)> {
+        if let Ty::Class(n, args) = ty {
+            if args.is_empty() {
+                if let Some(&cid) = self.class_by_name.get(n) {
+                    return Some((n.clone(), cid));
+                }
+            }
+        }
+        None
+    }
+
     /// Register one class/struct: reserve its class id, its implicit-constructor
     /// function, and its method functions. Members outside the slice are
-    /// rejected loudly rather than miscompiled; generic / inheriting /
-    /// interface-implementing classes are skipped entirely (unused types).
+    /// rejected loudly rather than miscompiled. Single inheritance is lowered
+    /// (parent-first field layout, inherited methods, hierarchy casts); generic
+    /// and interface-implementing classes are still skipped entirely.
     fn maybe_register_class(
         &mut self,
         name: &str,
         members: &'a [ClassMember],
         table: ClassTable,
-        _span: Span,
+        span: Span,
     ) {
-        if !table.generics.is_empty() || table.extends.is_some() || !table.implements.is_empty() {
+        if !table.generics.is_empty() || !table.implements.is_empty() {
             return;
+        }
+        if members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Method(md) if md.is_override))
+        {
+            let _: Result<(), ()> = self.bad(
+                span,
+                format!("`{name}` uses `override`, which is not lowered yet"),
+            );
+            return;
+        }
+        let parent = table
+            .extends
+            .as_ref()
+            .and_then(|t| t.named().map(str::to_string));
+        let parent_cid = match &parent {
+            Some(p) => match self.class_by_name.get(p) {
+                Some(&pcid) => Some(pcid),
+                // The superclass itself was not lowerable (generic/interface).
+                None => return,
+            },
+            None => None,
+        };
+        // Explicit constructors plus inheritance need `super(...)` chaining,
+        // which is not lowered yet: require the whole hierarchy to use the
+        // synthesized constructor.
+        if let Some(p) = &parent {
+            let ancestor_has_ctor = self
+                .table_of(p)
+                .map(|pt| pt.ctor.is_some() || !pt.named_ctors.is_empty())
+                .unwrap_or(false);
+            if ancestor_has_ctor {
+                let _: Result<(), ()> = self.bad(
+                    span,
+                    format!(
+                        "`{name}` cannot extend `{p}` while it declares explicit constructors (not lowered yet)"
+                    ),
+                );
+                return;
+            }
         }
         let ctor_decl = members.iter().find_map(|m| match m {
             ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
             _ => None,
         });
-        let mut inits: Vec<(usize, &'a Expr)> = Vec::new();
-        let mut init_blocks: Vec<&'a Block> = Vec::new();
-        let mut deinit_block: Option<&'a Block> = None;
-        for m in members {
-            match m {
-                ClassMember::Field {
-                    name,
-                    init: Some(x),
-                    is_static: false,
-                    ..
-                } => {
-                    if let Some(slot) = instance_field_slot(&table, name) {
-                        inits.push((slot, x));
-                    }
-                }
-                ClassMember::Init(b) => init_blocks.push(b),
-                ClassMember::Deinit(b) => deinit_block = Some(b),
-                _ => {}
-            }
+        let has_named_ctor = members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor(cd) if cd.name.is_some()));
+        if parent.is_some() && (ctor_decl.is_some() || has_named_ctor) {
+            let _: Result<(), ()> = self.bad(
+                span,
+                format!(
+                    "`{name}` cannot declare an explicit constructor in a hierarchy (not lowered yet)"
+                ),
+            );
+            return;
         }
+        // Instance-field initializers across the whole hierarchy, root first,
+        // at absolute (parent-first) slot numbers.
+        let inits: Vec<(usize, &'a Expr)> = self.collect_instance_inits(name);
+        let init_blocks: Vec<&'a Block> = self.collect_init_blocks(name);
+        let deinit_block: Option<&'a Block> = members.iter().find_map(|m| match m {
+            ClassMember::Deinit(b) => Some(b),
+            _ => None,
+        });
 
         // Every static field gets an initializer entry: the declared value, or
         // `None` for the default (zero/null) so a read never dereferences the
@@ -565,9 +764,30 @@ impl<'a> Emitter<'a> {
             }
         }
 
+        // Inherit the superclass's method and property slots; a member the
+        // subclass declares itself wins (`or_insert`).
+        if let Some(pcid) = parent_cid {
+            for ((id, mname), v) in self.method_ids.clone() {
+                if id == pcid {
+                    self.method_ids.entry((cid, mname)).or_insert(v);
+                }
+            }
+            for ((id, pname, is_set), fid) in self.property_ids.clone() {
+                if id == pcid {
+                    self.property_ids.entry((cid, pname, is_set)).or_insert(fid);
+                }
+            }
+            for ((id, pname, is_set), fid) in self.static_property_ids.clone() {
+                if id == pcid {
+                    self.static_property_ids.entry((cid, pname, is_set)).or_insert(fid);
+                }
+            }
+        }
+
         self.classes.push(ClassPlan {
             name: name.to_string(),
             class_id: cid,
+            parent: parent_cid,
             table,
         });
         self.class_by_name.insert(name.to_string(), cid);
@@ -749,7 +969,9 @@ impl<'a> Emitter<'a> {
         init_blocks: &[&'a Block],
         ctor: Option<&'a ConstructorDecl>,
     ) -> Result<(), ()> {
-        let ifields: Vec<&FieldInfo> = table.fields.iter().filter(|f| !f.is_static).collect();
+        // All instance fields, superclass first, so the object's slots and the
+        // synthesized constructor parameters cover inherited state too.
+        let ifields: Vec<FieldInfo> = self.all_instance_fields(&table.name);
         // `(name, ty, span, field_slot)`: synthesized constructor parameters
         // carry the field slot they must be stored into; explicit constructor
         // parameters are plain locals assigned by the body.
@@ -1028,27 +1250,29 @@ impl<'a> Emitter<'a> {
 
     /// Register every user class descriptor at the top of `main`'s entry block.
     /// Each is a
-    /// `pickle_class_register(name_ptr, name_len, slot_count, mask, finalizer)`
-    /// void call; the returned id is discarded (call sites hardcode it).
-    /// `finalizer` is the address of the class's `pkl_<Name>_deinit` function,
-    /// or 0 when it has no `deinit` block.
+    /// `pickle_class_register(name_ptr, name_len, slot_count, mask, finalizer,
+    /// parent)` void call; the returned id is discarded (call sites hardcode
+    /// it). `finalizer` is the address of the class's `pkl_<Name>_deinit`
+    /// function, or 0 when it has no `deinit` block; `parent` is the
+    /// superclass id, or 0 for a root class.
     fn inject_class_registrations(&mut self) {
         if self.classes.is_empty() {
             return;
         }
-        let plans: Vec<(String, usize, u32)> = self
+        let plans: Vec<(String, usize, u32, u32)> = self
             .classes
             .iter()
             .map(|p| {
                 (
                     p.name.clone(),
-                    p.table.fields.iter().filter(|f| !f.is_static).count(),
+                    self.total_instance_slot_count(&p.name),
                     p.class_id,
+                    p.parent.unwrap_or(0),
                 )
             })
             .collect();
         let mut instrs: Vec<IrInstr> = Vec::new();
-        for (name, field_count, cid) in plans {
+        for (name, field_count, cid, parent) in plans {
             let sid = StrId(self.intern_string(&name));
             let addr = self.temp();
             instrs.push(IrInstr::Const {
@@ -1077,15 +1301,27 @@ impl<'a> Emitter<'a> {
                 None => IrConst::Int(0),
             };
             instrs.push(IrInstr::Const { dst: fin, c });
+            let par = self.temp();
+            instrs.push(IrInstr::Const {
+                dst: par,
+                c: IrConst::Int(parent as i64),
+            });
             let ex = self.module.extern_id(IrExtern {
                 symbol: "pickle_class_register".to_string(),
-                params: vec![IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int],
+                params: vec![
+                    IrTy::Int,
+                    IrTy::Int,
+                    IrTy::Int,
+                    IrTy::Int,
+                    IrTy::Int,
+                    IrTy::Int,
+                ],
                 ret: IrTy::Unit,
             });
             instrs.push(IrInstr::Call {
                 dst: None,
                 callee: Callee::Extern(ex),
-                args: vec![addr, len, n, mask, fin],
+                args: vec![addr, len, n, mask, fin, par],
             });
         }
         if let Some(fid) = self.static_init_id {
@@ -1688,7 +1924,10 @@ impl<'a> Emitter<'a> {
                 r
             }
             ExprKind::This => self.this_value(e),
-            ExprKind::Super => self.bad(e.span, "`super` is not lowered yet"),
+            // `super` denotes the same receiver as `this`; the checker types it
+            // as the superclass, so `super.m(...)` statically dispatches to the
+            // superclass's method on the same object.
+            ExprKind::Super => self.this_value(e),
             ExprKind::Member { object, name } => self.member_value(e, object, name),
             ExprKind::Index { object, index } => self.index_read(e, object, index),
             ExprKind::OptAccess { object, name } => self.opt_access(e, object, name),
@@ -2230,6 +2469,26 @@ impl<'a> Emitter<'a> {
             // `int is float` etc. is a static mismatch; `v` was evaluated above.
             return Ok(self.bool_const(false));
         }
+        // Class/struct types along the inheritance chain: an upcast (the target
+        // is an ancestor of the static type) always holds; a downcast needs a
+        // runtime identity test; unrelated classes can never match.
+        if let (Some((sn, _)), Some((dn, dcid))) =
+            (self.user_class_id(&base_src), self.user_class_id(&base_dst))
+        {
+            if self.is_ancestor(&dn, &sn) {
+                return Ok(self.bool_const(true));
+            }
+            if self.is_ancestor(&sn, &dn) {
+                let dc = self.int_const(dcid as i64);
+                return self.extern_call_t1(
+                    "pickle_class_is",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Bool,
+                    vec![v, dc],
+                );
+            }
+            return Ok(self.bool_const(false));
+        }
         self.bad(
             e.span,
             format!("`{src} is {dst}` is not lowered yet (class/interface tests need inheritance)"),
@@ -2315,6 +2574,22 @@ impl<'a> Emitter<'a> {
             };
             self.instr(instr);
             return Ok(dst);
+        }
+        // Class/struct casts: an upcast reinterprets the same object; a
+        // downcast is checked by the runtime and panics on a mismatch.
+        if let (Some((sn, _)), Some((dn, dcid))) =
+            (self.user_class_id(from), self.user_class_id(to))
+        {
+            if self.is_ancestor(&dn, &sn) {
+                return Ok(v);
+            }
+            let dc = self.int_const(dcid as i64);
+            return self.extern_call_t1(
+                "pickle_class_cast",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![v, dc],
+            );
         }
         self.bad(
             span,
@@ -3718,11 +3993,11 @@ impl<'a> Emitter<'a> {
         self.bad(e.span, "member access is not lowered yet")
     }
 
-    /// The index of instance field `name` of class `cid` (among instance-only
-    /// fields, i.e. the runtime slot number), when registered.
+    /// The runtime slot of instance field `name` on class `cid`, following the
+    /// parent-first layout, when registered.
     fn instance_field_index(&self, cid: i64, name: &str) -> Option<usize> {
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
-        instance_field_slot(&plan.table, name)
+        self.abs_instance_field_slot(&plan.name, name)
     }
 
     /// The static slot of static field `name` on class `cid`, with its declared
@@ -3763,11 +4038,15 @@ impl<'a> Emitter<'a> {
         Some(t)
     }
 
-    fn field_at(&self, cid: i64, idx: usize) -> &FieldInfo {
-        self.classes
+    fn field_at(&self, cid: i64, idx: usize) -> FieldInfo {
+        let plan = self
+            .classes
             .iter()
             .find(|p| p.class_id as i64 == cid)
-            .and_then(|p| p.table.fields.iter().filter(|f| !f.is_static).nth(idx))
+            .unwrap_or_else(|| unreachable!("field index on an unregistered class"));
+        self.all_instance_fields(&plan.name)
+            .into_iter()
+            .nth(idx)
             .unwrap_or_else(|| unreachable!("field index out of range"))
     }
 

@@ -81,7 +81,8 @@ pub fn class_set_slot(obj: *mut PickleObject, index: i64, value: *mut PickleObje
 /// Register one user-class descriptor (copies the name and mask into stable
 /// heap memory) and return its assigned class id. `finalizer` is the raw
 /// address of the compiled `pkl_<T>_deinit` function, or 0 when the class has
-/// no `deinit` block.
+/// no `deinit` block. `parent` is the superclass id, or 0 when the class has no
+/// superclass (builtins are never a superclass of a user class).
 #[no_mangle]
 pub extern "C" fn pickle_class_register(
     name_ptr: *const u8,
@@ -89,8 +90,9 @@ pub extern "C" fn pickle_class_register(
     slot_count: usize,
     mask: u64,
     finalizer: usize,
+    parent: u32,
 ) -> u32 {
-    class_register(name_ptr, name_len, slot_count, mask, finalizer)
+    class_register(name_ptr, name_len, slot_count, mask, finalizer, parent)
 }
 
 fn class_register(
@@ -99,6 +101,7 @@ fn class_register(
     slot_count: usize,
     mask: u64,
     finalizer: usize,
+    parent: u32,
 ) -> u32 {
     let name: Box<[u8]> = if name_ptr.is_null() || name_len == 0 {
         Box::default()
@@ -137,7 +140,30 @@ fn class_register(
         finalizer,
     };
     let g = crate::gc::gc_mut();
-    g.register_class(d)
+    let id = g.register_class(d);
+    g.set_class_parent(id, parent);
+    id
+}
+
+/// True when `obj` is an instance of `target` or of any class that inherits
+/// (directly or transitively) from `target`. Uses the registry's parent links,
+/// which the compiler emits at class registration.
+pub fn class_is(obj: *const PickleObject, target: u32) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    // SAFETY: a live managed object always has a readable header.
+    let mut cid = unsafe { (*obj).class_id };
+    loop {
+        if cid == target {
+            return true;
+        }
+        let parent = crate::gc::gc_mut().class_parent(cid);
+        if parent == 0 {
+            return false;
+        }
+        cid = parent;
+    }
 }
 
 /// Allocate an instance of user `class_id` with `slot_count` null field slots.
@@ -170,6 +196,26 @@ pub extern "C" fn pickle_obj_slot_set(
     value: *mut PickleObject,
 ) {
     class_set_slot(obj, slot, value)
+}
+
+/// Runtime type test for `x is T` across an inheritance hierarchy: true when
+/// `obj` is an instance of user class `class_id` or a descendant of it.
+#[no_mangle]
+pub extern "C" fn pickle_class_is(obj: *const PickleObject, class_id: i64) -> bool {
+    if class_id < 0 {
+        return false;
+    }
+    class_is(obj, class_id as u32)
+}
+
+/// Runtime downcast for `x as T`: returns `obj` when it is an instance of
+/// `class_id` (or a descendant), otherwise aborts with a panic.
+#[no_mangle]
+pub extern "C" fn pickle_class_cast(obj: *mut PickleObject, class_id: i64) -> *mut PickleObject {
+    if class_id >= 0 && class_is(obj, class_id as u32) {
+        return obj;
+    }
+    crate::panic::pickle_panic_cstr(b"pickle: invalid class cast\0".as_ptr())
 }
 
 #[cfg(test)]
@@ -215,7 +261,7 @@ mod tests {
         let _guard = crate::gc::test_begin();
         crate::pickle_runtime_init();
         let name = b"Hero".to_vec();
-        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0);
+        let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0, 0);
         assert!(id >= PICKLE_CLASS_USER_BASE, "user classes come after the builtins");
         let g = crate::gc::gc_mut();
         assert_eq!(g.class_name(id).map(|b| b.to_vec()), Some(b"Hero".to_vec()));
@@ -273,5 +319,22 @@ mod tests {
         }
         let _ = heap;
         let _ = gc;
+    }
+
+    #[test]
+    fn class_is_walks_parent_chain() {
+        let _guard = crate::gc::test_begin();
+        crate::pickle_runtime_init();
+        let animal = pickle_class_register(b"Animal".as_ptr(), 6, 1, 0b1, 0, 0);
+        let dog = pickle_class_register(b"Dog".as_ptr(), 3, 1, 0b1, 0, animal);
+        let gc = crate::gc::gc_mut();
+        let d = class_new(dog as u64, 1, gc);
+        let a = class_new(animal as u64, 1, gc);
+        assert!(class_is(d, dog), "an instance is its own class");
+        assert!(class_is(d, animal), "a subclass instance is-an ancestor");
+        assert!(!class_is(a, dog), "a superclass instance is not the subclass");
+        assert!(!class_is(a, 0), "id 0 is never a user ancestor");
+        assert!(pickle_class_is(d, dog as i64));
+        assert!(!pickle_class_is(a, dog as i64));
     }
 }
