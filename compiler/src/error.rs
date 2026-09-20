@@ -33,6 +33,7 @@ pub enum ErrorCode {
     OverrideSignature,
     MissingOverride,
     OrphanOverride,
+    MixedMethodKind,
     // E0301..E03xx: type checking.
     TypeMismatch,
     ReturnValue,
@@ -91,6 +92,7 @@ impl ErrorCode {
             OverrideSignature => "E0221",
             MissingOverride => "E0222",
             OrphanOverride => "E0223",
+            MixedMethodKind => "E0224",
             TypeMismatch => "E0308",
             ReturnValue => "E0310",
             BreakOutsideLoop => "E0320",
@@ -231,6 +233,12 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         title: "orphan override",
         rule: "a method is marked `override` but no parent in the class chain declares it.",
         example: "class B extends A { override fn n() {} }  // A has no n",
+    },
+    CatalogueEntry {
+        code: ErrorCode::MixedMethodKind,
+        title: "mixed method kind",
+        rule: "a class cannot redeclare an inherited method under the opposite kind: a `static` method cannot shadow an inherited instance method, and an instance method cannot shadow an inherited `static` method.",
+        example: "class B extends A { static fn m() {} }  // A.m is an instance method",
     },
     CatalogueEntry {
         code: ErrorCode::TypeMismatch,

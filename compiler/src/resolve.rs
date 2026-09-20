@@ -958,11 +958,34 @@ impl<'a> Resolver<'a> {
         };
         let pname = pclass.name.clone();
 
-        let parent_methods: Vec<(String, Vec<ParamInfo>, Ty)> =
+        let parent_methods: Vec<(String, Vec<ParamInfo>, Ty, bool)> =
             self.collect_methods_rec(&pname, &mut Vec::new());
 
         for m in &c.methods {
             let found = parent_methods.iter().find(|(n, ..)| n == &m.name);
+            if let Some(pm) = found {
+                // A redeclaration cannot switch kind. `static` and instance
+                // methods share one name table, so an opposite-kind shadow
+                // would route calls to the wrong function.
+                if pm.3 != m.is_static {
+                    self.diags.emit(
+                        Diagnostic::error_at(
+                            m.span,
+                            format!(
+                                "`{} {}` is `{}` but `{}.{}` is an {} method; a redeclaration must keep the same kind",
+                                c.name,
+                                m.name,
+                                if m.is_static { "static" } else { "instance" },
+                                pname,
+                                pm.0,
+                                if pm.3 { "static" } else { "instance" }
+                            ),
+                        )
+                        .with_code(crate::error::ErrorCode::MixedMethodKind),
+                    );
+                    continue;
+                }
+            }
             match (found, m.is_override) {
                 (Some(pm), true) => {
                     // Signature compatibility check.
@@ -1006,12 +1029,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Collect all method signatures from a class and its ancestors (name -> (params, ret)).
+    /// Collect all method signatures from a class and its ancestors
+    /// (name -> (params, ret, is_static)).
     fn collect_methods_rec(
         &self,
         class: &str,
         visited: &mut Vec<String>,
-    ) -> Vec<(String, Vec<ParamInfo>, Ty)> {
+    ) -> Vec<(String, Vec<ParamInfo>, Ty, bool)> {
         if visited.contains(&class.to_string()) {
             return Vec::new();
         }
@@ -1019,7 +1043,7 @@ impl<'a> Resolver<'a> {
         let mut out = Vec::new();
         if let Some(TypeTableEntry::Class(t)) = self.types.get(class) {
             for m in &t.methods {
-                out.push((m.name.clone(), m.params.clone(), m.ret.clone()));
+                out.push((m.name.clone(), m.params.clone(), m.ret.clone(), m.is_static));
             }
             if let Some(parent) = t.extends.as_ref().and_then(|e| e.named().map(str::to_string)) {
                 out.extend(self.collect_methods_rec(&parent, visited));

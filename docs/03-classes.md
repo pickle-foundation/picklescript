@@ -102,7 +102,14 @@ Rules:
 > Named constructors in a hierarchy delegate through their class's primary
 > constructor, which handles the chain. A class that relies on the synthesized
 > constructor still cannot sit below a class that declares an explicit
-> constructor. **Not yet lowered** (a loud "not lowered yet" diagnostic, never
+> constructor. Static fields and `const` members are inherited: `Child.parent
+> field`/`Child.PARENT_CONST` resolves the ancestor that declares them (an own
+> field of the same name wins and shares the declaring class's runtime cell).
+> An instance method used as a bound value (`let f = c.m`) dispatches on the
+> receiver's runtime class, so overriding still applies through the value. A
+> class cannot redeclare an inherited method under the opposite kind — a
+> `static fn` cannot shadow an inherited instance method or vice versa
+> (E0224). **Not yet lowered** (a loud "not lowered yet" diagnostic, never
 > a silent miscompile): interfaces/`implements`. Generic classes
 > (`class Box<T>`) are lowered on their own (see 04-types.md), but **not inside
 > a hierarchy**: an instantiated generic class using

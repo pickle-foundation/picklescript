@@ -103,6 +103,7 @@ pub fn emit_ir(
         lambda_exprs: HashMap::new(),
         next_closure: 0,
         tramp_fids: HashMap::new(),
+        method_tramp_fids: HashMap::new(),
         fn_tramp: HashMap::new(),
         fname: String::new(),
         symbol: String::new(),
@@ -213,11 +214,14 @@ enum FnSource<'a> {
     /// 2..N; the body loads the receiver and calls `target` with it first, then
     /// returns the result. This gives a bound method the same `(env, ...)` ABI
     /// as a hoisted lambda body, so `fn_value_call` dispatches to it uniformly.
+    /// When the method is overridden (`branches` non-empty), the body dispatches
+    /// on the runtime class of the loaded receiver exactly like a virtual call.
     MethodTrampoline {
         span: Span,
         target: FuncId,
         pty: Vec<Ty>,
         ret: Ty,
+        branches: Vec<(u32, FuncId)>,
     },
     /// The synthesized `pkl_test_setup` function: registers every user class
     /// and runs `pkl_static_init` before the test runner starts (test modules
@@ -500,6 +504,11 @@ struct Emitter<'a> {
     /// so a function referenced as a value is wrapped once regardless of how many
     /// sites reference it.
     tramp_fids: HashMap<FuncId, FuncId>,
+    /// Method bound-value trampolines, keyed by (static receiver class, method
+    /// name, resolved fid): a bound instance method used as a value needs one
+    /// forwarder per receiver class/method, and the forwarder dispatches
+    /// virtually when that method is overridden.
+    method_tramp_fids: HashMap<(u32, String, FuncId), FuncId>,
     /// Span of a module-fn value reference -> its trampoline function, assigned
     /// during pre-registration (parallel to `lambda_fids`).
     fn_tramp: HashMap<Span, FuncId>,
@@ -841,7 +850,7 @@ impl<'a> Emitter<'a> {
                                 if !is_static
                                     && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
                                 {
-                                    self.register_method_trampoline(e.span, fid);
+                                    self.register_method_trampoline(e.span, fid, cid, name);
                                 }
                             }
                         }
@@ -1036,9 +1045,7 @@ impl<'a> Emitter<'a> {
                 }
                 // Statics/consts resolve by the declaring class alone.
                 if self.static_field(cid, name).is_some()
-                    || self
-                        .class_consts
-                        .contains_key(&(cid as u32, name.to_string()))
+                    || self.class_const_defined(cid, name)
                 {
                     continue;
                 }
@@ -1361,9 +1368,11 @@ impl<'a> Emitter<'a> {
     /// instance method bound to a receiver be used as a value: it accepts the
     /// closure as slot 0, loads the bound receiver from closure slot 1, then
     /// forwards the real arguments to the target method. One trampoline per
-    /// target method; every value-reference site of that method is mapped to it
-    /// in `fn_tramp`.
-    fn register_method_trampoline(&mut self, span: Span, fid: FuncId) {
+    /// (receiver class, method); every value-reference site of that method is
+    /// mapped to it in `fn_tramp`. When `(cid, name)` has overrides recorded, the
+    /// forwarder dispatches on the receiver's runtime class instead of calling
+    /// `fid` outright.
+    fn register_method_trampoline(&mut self, span: Span, fid: FuncId, cid: u32, name: &str) {
         let Some(Ty::Fn(pty, ret)) = self.types.get(&span).cloned() else {
             return;
         };
@@ -1373,20 +1382,27 @@ impl<'a> Emitter<'a> {
         if self.map_ty(&ret, span).is_err() {
             return;
         }
-        let tramp = match self.tramp_fids.get(&fid) {
+        let branches = self
+            .virtual_dispatch
+            .get(&(cid, name.to_string()))
+            .cloned()
+            .unwrap_or_default();
+        let key = (cid, name.to_string(), fid);
+        let tramp = match self.method_tramp_fids.get(&key) {
             Some(&t) => t,
             None => {
                 let t = self.push_class_func(
                     "fn.method.value",
-                    &format!("pkl_mtramp_{}", fid.0),
+                    &format!("pkl_mtramp_{}_{}_{}", cid, name, fid.0),
                     FnSource::MethodTrampoline {
                         span,
                         target: fid,
                         pty,
                         ret: *ret,
+                        branches,
                     },
                 );
-                self.tramp_fids.insert(fid, t);
+                self.method_tramp_fids.insert(key, t);
                 t
             }
         };
@@ -2320,9 +2336,15 @@ impl<'a> Emitter<'a> {
                 self.owner = None;
                 self.build_trampoline(span, target, &pty, &ret);
             }
-            FnSource::MethodTrampoline { span, target, pty, ret } => {
+            FnSource::MethodTrampoline {
+                span,
+                target,
+                pty,
+                ret,
+                branches,
+            } => {
                 self.owner = None;
-                self.build_method_trampoline(span, target, &pty, &ret);
+                self.build_method_trampoline(span, target, &pty, &ret, &branches);
             }
             FnSource::Ctor {
                 table,
@@ -2579,7 +2601,14 @@ fn build_lambda_body(
     /// result. This lets `c.method` (an instance method used as a value) be a
     /// one-capture closure object, dispatching uniformly through
     /// `fn_value_call`.
-    fn build_method_trampoline(&mut self, span: Span, target: FuncId, pty: &[Ty], ret: &Ty) {
+    fn build_method_trampoline(
+        &mut self,
+        span: Span,
+        target: FuncId,
+        pty: &[Ty],
+        ret: &Ty,
+        branches: &[(u32, FuncId)],
+    ) {
         let _ = self.map_ty(ret, span).map(|ir| self.fret = ir);
         let env_ir = IrTy::Ptr;
         let env_slot = self.new_slot(env_ir);
@@ -2601,7 +2630,7 @@ fn build_lambda_body(
             Ok(t) => t,
             Err(()) => return,
         };
-        let mut args = vec![receiver];
+        let mut real: Vec<Temp> = Vec::new();
         for (i, t) in pty.iter().enumerate() {
             let ir = self.map_ty(t, span).unwrap_or(IrTy::Ptr);
             let slot = self.new_slot(ir);
@@ -2611,24 +2640,82 @@ fn build_lambda_body(
                 ty: ir,
             });
             self.declare(&pname, slot);
-            args.push(self.load(slot));
+            real.push(self.load(slot));
         }
-        if matches!(self.fret, IrTy::Unit) {
-            self.instr(IrInstr::Call {
-                dst: None,
-                callee: Callee::Func(target),
-                args,
-            });
-            self.term(IrTerm::Return { v: None });
-        } else {
-            let dst = self.temp();
-            self.instr(IrInstr::Call {
-                dst: Some(dst),
-                callee: Callee::Func(target),
-                args,
-            });
-            self.term(IrTerm::Return { v: Some(dst) });
+        if branches.is_empty() {
+            let mut args = vec![receiver];
+            args.extend(real);
+            if matches!(self.fret, IrTy::Unit) {
+                self.instr(IrInstr::Call {
+                    dst: None,
+                    callee: Callee::Func(target),
+                    args,
+                });
+                self.term(IrTerm::Return { v: None });
+            } else {
+                let dst = self.temp();
+                self.instr(IrInstr::Call {
+                    dst: Some(dst),
+                    callee: Callee::Func(target),
+                    args,
+                });
+                self.term(IrTerm::Return { v: Some(dst) });
+            }
+            return;
         }
+        // Overridden: dispatch on the runtime class of the captured receiver,
+        // exactly like `virtual_method_call`, then fall back to `target`.
+        let anchor = Expr {
+            span,
+            kind: ExprKind::Ident(String::new()),
+        };
+        let ret_slot = self.new_slot(self.fret);
+        let join = self.new_block();
+        for &(dcid, dfid) in branches {
+            let cb = self.new_block();
+            let next = self.new_block();
+
+            let dc = self.int_const(dcid as i64);
+            let found = match self.extern_call_t1(
+                "pickle_class_is",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Bool,
+                vec![receiver, dc],
+            ) {
+                Ok(t) => t,
+                Err(()) => return,
+            };
+            self.term(IrTerm::BranchIf {
+                cond: found,
+                then: cb,
+                else_: next,
+            });
+
+            self.cur = cb;
+            let mut args = vec![receiver];
+            args.extend(real.iter().copied());
+            let val = match self.emit_call_to(dfid, args, &anchor) {
+                Ok(v) => v,
+                Err(()) => return,
+            };
+            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.term(IrTerm::Branch { target: join });
+
+            self.cur = next;
+        }
+        let mut args = vec![receiver];
+        args.extend(real.iter().copied());
+        let val = match self.emit_call_to(target, args, &anchor) {
+            Ok(v) => v,
+            Err(()) => return,
+        };
+        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+        self.term(IrTerm::Branch { target: join });
+
+        self.cur = join;
+        let dst = self.temp();
+        self.instr(IrInstr::LoadSlot { dst, slot: ret_slot });
+        self.term(IrTerm::Return { v: Some(dst) });
     }
 
     /// Lower a constructor. Parameters are the explicit `constructor(...)`'s
@@ -3966,8 +4053,8 @@ fn build_lambda_body(
                 return self.call_method(e, fid, &[], Some(this));
             }
             // A bare name may also be a static field of the enclosing class.
-            if let Some((slot, info)) = self.static_field(cid, name) {
-                return self.static_read(e.span, cid as u32, slot, &info.ty);
+            if let Some((dcid, slot, info)) = self.static_field(cid, name) {
+                return self.static_read(e.span, dcid, slot, &info.ty);
             }
             // ... or a constant of the enclosing class.
             if let Some(r) = self.read_class_const(e.span, cid, name) {
@@ -4647,14 +4734,14 @@ fn build_lambda_body(
                 return self.field_assign(e.span, op, this, &field_ty, idx, v, &vt, owned);
             }
             // A bare name may also be a static field of the enclosing class.
-            if let Some((slot, info)) = self.static_field(cid, name) {
+            if let Some((dcid, slot, info)) = self.static_field(cid, name) {
                 if !info.mutable {
                     return self.bad(
                         span,
                         format!("cannot assign to immutable static field `{name}`"),
                     );
                 }
-                return self.static_assign(span, op, cid as u32, slot, &info.ty, v, &vt);
+                return self.static_assign(span, op, dcid, slot, &info.ty, v, &vt);
             }
         }
         self.bad(span, format!("cannot assign to `{name}`"))
@@ -4697,7 +4784,7 @@ fn build_lambda_body(
                     });
                     return Ok(v);
                 }
-                if let Some((slot, info)) = self.static_field(cid as i64, name) {
+                if let Some((dcid, slot, info)) = self.static_field(cid as i64, name) {
                     if !info.mutable {
                         return self.bad(
                             e.span,
@@ -4706,7 +4793,7 @@ fn build_lambda_body(
                     }
                     let v = self.expr(value)?;
                     let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
-                    return self.static_assign(e.span, op, cid, slot, &info.ty, v, &vt);
+                    return self.static_assign(e.span, op, dcid, slot, &info.ty, v, &vt);
                 }
                 return self.bad(
                     e.span,
@@ -7623,20 +7710,6 @@ fn build_lambda_body(
                         format!("static method `{name}` cannot be used as a value"),
                     );
                 }
-                if self
-                    .virtual_dispatch
-                    .get(&(cid, name.to_string()))
-                    .map(|b| !b.is_empty())
-                    .unwrap_or(false)
-                {
-                    return self.bad(
-                        e.span,
-                        format!(
-                            "overridden method `{name}` of `{}` cannot be used as a bound value yet (not lowered)",
-                            self.class_name_of(cid)
-                        ),
-                    );
-                }
                 return self.bound_method_value(e, object);
             }
             return self.bad(
@@ -7651,8 +7724,8 @@ fn build_lambda_body(
                 if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), false)) {
                     return self.call_method(e, fid, &[], None);
                 }
-                if let Some((slot, info)) = self.static_field(cid as i64, name) {
-                    return self.static_read(e.span, cid, slot, &info.ty);
+                if let Some((dcid, slot, info)) = self.static_field(cid as i64, name) {
+                    return self.static_read(e.span, dcid, slot, &info.ty);
                 }
                 if let Some(r) = self.read_class_const(e.span, cid as i64, name) {
                     return r;
@@ -7676,41 +7749,78 @@ fn build_lambda_body(
     }
 
     /// The static slot of static field `name` on class `cid`, with its declared
-    /// type, when the class is registered and the field exists.
-    fn static_field(&self, cid: i64, name: &str) -> Option<(usize, FieldInfo)> {
+    /// type and the *declaring* class's id, when the class is registered and
+    /// the field exists. Static fields live in the declaring class's cells, so
+    /// a subclass reference resolves the ancestor that declares the field
+    /// (own declarations win, then up the ancestry).
+    fn static_field(&self, cid: i64, name: &str) -> Option<(u32, usize, FieldInfo)> {
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
-        let slot = static_field_slot(&plan.table, name)?;
-        let info = static_field_info(&plan.table, name)?;
-        Some((slot, info))
+        let ancestry = self.ancestry(&plan.name);
+        for cn in ancestry.iter().rev() {
+            let Some(table) = self.table_of(cn) else { continue };
+            let Some(slot) = static_field_slot(&table, name) else { continue };
+            let Some(info) = static_field_info(&table, name) else { continue };
+            let Some(&dcid) = self.class_by_name.get(cn) else { continue };
+            return Some((dcid, slot, info));
+        }
+        None
+    }
+
+    /// Whether `name` is a `const` declared on `cid` or any ancestor (own
+    /// declarations win, then up the ancestry).
+    fn class_const_defined(&self, cid: i64, name: &str) -> bool {
+        let Some(plan) = self.classes.iter().find(|p| p.class_id as i64 == cid) else {
+            return false;
+        };
+        let ancestry = self.ancestry(&plan.name);
+        ancestry.iter().rev().any(|cn| {
+            self.class_by_name
+                .get(cn)
+                .and_then(|dcid| self.class_consts.get(&(*dcid, name.to_string())))
+                .is_some()
+        })
     }
 
     /// Inline a class constant's initializer at a use site. Returns `None` when
-    /// `name` is not a constant of class `cid`; `Some(Err)` on a cyclic constant.
+    /// `name` is not a constant of class `cid` (or an ancestor); `Some(Err)` on
+    /// a cyclic constant.
     fn read_class_const(
         &mut self,
         span: Span,
         cid: i64,
         name: &str,
     ) -> Option<Result<Temp, ()>> {
-        let (_, value) = self
-            .class_consts
-            .get(&(cid as u32, name.to_string()))?
-            .clone();
-        let key = format!("{}.{}", self.class_name_of(cid as u32), name);
-        if self.const_inlining.iter().any(|n| n == &key) {
-            return Some(
-                self.bad(span, format!("cyclic `const` initialization of `{key}`")),
-            );
+        let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
+        let ancestry = self.ancestry(&plan.name);
+        for cn in ancestry.iter().rev() {
+            let Some(&dcid) = self.class_by_name.get(cn) else {
+                continue;
+            };
+            let Some((_, value)) = self
+                .class_consts
+                .get(&(dcid, name.to_string()))
+                .cloned()
+            else {
+                continue;
+            };
+            let key = format!("{}.{}", self.class_name_of(dcid), name);
+            if self.const_inlining.iter().any(|n| n == &key) {
+                return Some(
+                    self.bad(span, format!("cyclic `const` initialization of `{key}`")),
+                );
+            }
+            self.const_inlining.push(key);
+            // Constant initializers are evaluated in the declaring class's
+            // scope so a constant can reference another constant of the same
+            // class by name.
+            let saved_owner = self.owner;
+            self.owner = Some(dcid as i64);
+            let t = self.expr(value);
+            self.owner = saved_owner;
+            self.const_inlining.pop();
+            return Some(t);
         }
-        self.const_inlining.push(key);
-        // Constant initializers are evaluated in the declaring class's scope so
-        // a constant can reference another constant of the same class by name.
-        let saved_owner = self.owner;
-        self.owner = Some(cid);
-        let t = self.expr(value);
-        self.owner = saved_owner;
-        self.const_inlining.pop();
-        Some(t)
+        None
     }
 
     fn field_at(&self, cid: i64, idx: usize) -> FieldInfo {

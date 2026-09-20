@@ -163,6 +163,7 @@ fn catalogue_entries_are_unique_and_stable() {
         ErrorCode::OverrideSignature,
         ErrorCode::MissingOverride,
         ErrorCode::OrphanOverride,
+        ErrorCode::MixedMethodKind,
         ErrorCode::TypeMismatch,
         ErrorCode::ReturnValue,
         ErrorCode::BreakOutsideLoop,

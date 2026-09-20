@@ -1,0 +1,61 @@
+class Store {
+    static var count: int = 1
+    static var val: int = 10
+    const LIMIT: int = 99
+}
+
+class Warehouse extends Store {
+    static var count: int = 5
+    static var bonus: int = 7
+}
+
+class Animal {
+    fn speak() -> string {
+        return "generic"
+    }
+}
+
+class Dog extends Animal {
+    override fn speak() -> string {
+        return "woof"
+    }
+}
+
+describe("inherited statics and consts", {
+    test("own static field wins", {
+        expect(Store.count).toBe(1)
+        expect(Warehouse.count).toBe(5)
+    })
+
+    test("inherited static field resolves to the declaring cell", {
+        expect(Warehouse.val).toBe(10)
+        Warehouse.val = 30
+        expect(Store.val).toBe(30)
+        expect(Warehouse.val).toBe(30)
+    })
+
+    test("inherited const resolves", {
+        expect(Warehouse.LIMIT).toBe(99)
+        expect(Store.LIMIT).toBe(99)
+    })
+
+    test("own static field after inherited", {
+        expect(Warehouse.bonus).toBe(7)
+    })
+})
+
+describe("overridden methods used as bound values", {
+    test("plain receiver uses the base implementation", {
+        let f: fn () -> string = Animal().speak
+        expect(f()).toBe("generic")
+    })
+
+    test("overridden receiver dispatches virtually", {
+        let dog: Animal = Dog()
+        let g = dog.speak
+        expect(g()).toBe("woof")
+
+        let h = Animal().speak
+        expect(h()).toBe("generic")
+    })
+})

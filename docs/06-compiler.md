@@ -392,14 +392,28 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
   `op=` go through the cell (scalars box/unbox on the boundary), and a bare
   static-field name inside the class's own static method resolves to the same
   cell. The checker enforces direction: a static field is reached through the
-  type name, an instance field only through an instance.
+  type name, an instance field only through an instance. A subclass reference
+  resolves the ancestor that declares the field: `Child.field` reads/writes the
+  declaring class's cell (own declarations win), and the `static_field` helper
+  walks the ancestry (own class first, then up) returning the declaring class's
+  id, slot, and field info so reads/writes target the right cells.
 - `const` members are compile-time values: the emitter inlines their
   initializer at every read (`Type.NAME`, or the bare name inside the class
   body), evaluating it in the declaring class's scope so one constant may
   reference another. No cell or static-init entry is created; the emitted code
   is the same as writing the literal at the use site. Assigning a constant and
   reaching one through an instance are rejected by the checker, and a cyclic
-  constant is a codegen error ("cyclic `const` initialization").
+  constant is a codegen error ("cyclic `const` initialization"). Constants are
+  inherited like static fields: reads walk the ancestry (own declarations win)
+  and evaluate the initializer in the declaring class's scope.
+- Bound instance-method values (`let f = c.m`) build a one-capture closure
+  (`FnSource::MethodTrampoline`): slot 0 is a forwarder `pkl_mtramp_*`, slot 1
+  the packed receiver. When the method is overridden somewhere, the forwarder
+  dispatches on the receiver's runtime class (`pickle_class_is` cascade,
+  exactly like `virtual_method_call`) before falling back to the statically
+  resolved implementation; otherwise it calls the target method directly. The
+  forwarder is cached per (receiver class, method name, fid) so virtual and
+  non-virtual sites share one function each.
 - `char` values are boxed/unboxed exactly like the other scalars: the runtime
   provides a dedicated `char` box class (id 6), so `char` fields, `List<char>`
   elements, and `char` map *values* store `pickle_box_char`/`pickle_unbox_char`
