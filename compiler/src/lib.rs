@@ -4,6 +4,7 @@ pub mod diag;
 pub mod emit;
 pub mod error;
 pub mod front;
+pub mod history;
 pub mod ir;
 pub mod lexer;
 pub mod parser;

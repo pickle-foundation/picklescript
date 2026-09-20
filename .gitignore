@@ -8,6 +8,9 @@
 *.o
 *.obj
 
+# picklescript compiler history cache
+/.pickle/
+
 # Editors
 .vscode/
 .idea/

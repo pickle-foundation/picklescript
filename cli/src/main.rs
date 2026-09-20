@@ -9,6 +9,7 @@ use pickle_compiler::diag::SourceMap;
 use std::io::IsTerminal;
 
 mod build;
+mod history_cli;
 mod jit;
 
 #[derive(Parser)]
@@ -46,6 +47,26 @@ enum Command {
     Explain {
         /// Error code to explain
         code: Option<String>,
+        /// Also show, oldest first, every committed version of a `*.pkl`
+        /// file that produced this code
+        #[arg(long)]
+        history: bool,
+    },
+    /// Show how public types and dependencies evolved across git history
+    History {
+        /// Only show history for this file
+        #[arg(long)]
+        file: Option<String>,
+        /// Number of versions to show per file
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Show, newest first, which committed versions compiled and which
+    /// failed, with the error codes of the failures
+    Builds {
+        /// Number of builds to show overall
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Compile a module with the JIT and run it
     Run {
@@ -118,14 +139,15 @@ fn run() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Explain { code } => match code {
+        Command::Explain { code, history } => match code {
             Some(code) => {
                 let id = format!(
                     "E{}",
                     code.trim().to_uppercase().trim_start_matches('E')
                 );
-                match pickle_compiler::error::explain(&id) {
-                    Some(entry) => {
+                let entry = pickle_compiler::error::explain(&id);
+                if *history {
+                    if let Some(entry) = entry {
                         println!("error[{}] -- {}", entry.code.id(), entry.title);
                         println!();
                         println!("{}", entry.rule);
@@ -134,9 +156,29 @@ fn run() -> Result<()> {
                         for line in entry.example.lines() {
                             println!("    {line}");
                         }
+                        println!();
+                    } else {
+                        println!("(not in the error catalogue -- checking its history anyway)");
+                        println!();
                     }
-                    None => {
-                        anyhow::bail!("unknown error code `{id}`");
+                    let root = history_cli::git_root(&std::env::current_dir()?)?;
+                    let all = history_cli::history_for(&root)?;
+                    history_cli::render_explain_history(&all, &id);
+                } else {
+                    match entry {
+                        Some(entry) => {
+                            println!("error[{}] -- {}", entry.code.id(), entry.title);
+                            println!();
+                            println!("{}", entry.rule);
+                            println!();
+                            println!("example:");
+                            for line in entry.example.lines() {
+                                println!("    {line}");
+                            }
+                        }
+                        None => {
+                            anyhow::bail!("unknown error code `{id}`");
+                        }
                     }
                 }
             }
@@ -150,6 +192,24 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Command::History { file, limit } => {
+            let root = history_cli::git_root(&std::env::current_dir()?)?;
+            let all = history_cli::history_for(&root)?;
+            if all.is_empty() {
+                println!("no `*.pkl` files in git history yet");
+            } else {
+                history_cli::render_history(&all, file.as_deref(), *limit);
+            }
+        }
+        Command::Builds { limit } => {
+            let root = history_cli::git_root(&std::env::current_dir()?)?;
+            let all = history_cli::history_for(&root)?;
+            if all.is_empty() {
+                println!("no `*.pkl` files in git history yet");
+            } else {
+                history_cli::render_builds(&all, *limit);
+            }
+        }
         Command::Ast { file } => {
             let (source, mut map, diags) = load(file)?;
             if let Some(out) = frontend(&file.display().to_string(), &source, &mut map, &diags) {
