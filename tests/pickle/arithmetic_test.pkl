@@ -14,3 +14,24 @@ test fn strings_are_utf8() {
     let s = "hello, world"
     assert(len(s) == 12, "wrong length")
 }
+
+test fn mixed_numeric_comparisons() {
+    assert(1 < 2)
+    assert(2.5 > 2)
+    assert(3 >= 3.0)
+    assert(1 != 1.5)
+}
+
+test fn char_comparisons() {
+    assert('a' < 'z')
+    assert('z' >= 'a')
+    assert('m' != 'M')
+}
+
+test fn string_and_bool_equality() {
+    let s = "abc"
+    assert(s == "abc")
+    assert(s != "abd")
+    assert(true != false)
+    assert((1 < 2) == true)
+}

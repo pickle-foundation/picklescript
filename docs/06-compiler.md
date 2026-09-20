@@ -178,6 +178,15 @@ Lowering rules:
 - Numeric promotion at mixed float/int operands (`r > 0`, `f * i`) inserts an
   `itof` (i64 -> f64) conversion instruction on the int side before the binop,
   so the JIT and AOT always see same-width operands.
+- Comparison operators are the only binops whose result is `bool` but whose
+  operand types vary (`int`/`float`/`char`/`bool` args). The checker gates
+  them with `check_comparison` (numbers, chars, and `==`/`!=` on identical
+  types only), and the emitter has a belt-and-suspenders `cmp_types_compatible`
+  guard in `binary()` that bails "comparison ... with incompatible operand
+  types is not lowered yet" rather than emit a mismatched-width `icmp` (which
+  the Cranelift verifier would reject: `i8` bool vs `i64` int), e.g. the bug
+  `x < 3 > x / 2` parsed as `(x < 3) > (x / 2)`. `char` is an `I32`-width
+  operand for ordering ops.
 
 Classes use the same object-model extern path. A class instance is a plain
 managed object (`PickleObject`) whose runtime `ClassDescriptor` carries the

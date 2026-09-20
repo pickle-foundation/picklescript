@@ -535,6 +535,100 @@ fn rejects_op_type_mismatch() {
 }
 
 #[test]
+fn rejects_bool_compared_with_int() {
+    // A chained comparison `x < 3 > x / 2` is `(x < 3) > (x / 2)` — a `bool`
+    // compared with an `int`. This used to sail through the checker and crash
+    // the JIT verifier on a mismatched-width `icmp` (i8 vs i64).
+    let d = check_str(
+        r#"fn f(x: int) -> bool {
+            if (x < 3 > x / 2) { true } else { false }
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected an error for `bool` compared with `int`, got:\n{}",
+        error_msgs(&d)
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("requires comparable operands, found `bool` and `int`"),
+        "wrong diagnostics:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_char_compared_with_int() {
+    let d = check_str(
+        r#"fn main() {
+            let b = 'a' < 65
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected an error for `char` compared with `int`, got:\n{}",
+        error_msgs(&d)
+    );
+    assert!(
+        error_msgs(&d).contains("requires comparable operands, found `char` and `int`"),
+        "wrong diagnostics:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_string_ordering() {
+    // String `<`/`>` is not lowered (only `==`/`!=` via `pickle_str_cmp`).
+    let d = check_str(
+        r#"fn main() {
+            let b = "a" < "b"
+        }"#,
+    );
+    assert!(has_errors(&d), "expected an error for string ordering, got:\n{}", error_msgs(&d));
+    assert!(
+        error_msgs(&d).contains("operator `Lt` is not supported for `string` operands"),
+        "wrong diagnostics:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_bool_ordering() {
+    let d = check_str(
+        r#"fn main() {
+            let b = false > true
+        }"#,
+    );
+    assert!(has_errors(&d), "expected an error for bool ordering, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn accepts_valid_comparisons() {
+    // Numbers (mixed int/float too), chars, string/bool equality, and
+    // enum `==`/`!=` (match guards) all stay valid.
+    let d = check_str(
+        r#"enum Color {
+            Red
+            Blue
+        }
+
+        fn main() {
+            let a = 1 < 2
+            let b = 2.5 > 2
+            let c = 'a' < 'z'
+            let d = "x" == "x"
+            let e = true != false
+            let f = Color.Red != Color.Blue
+            print(a, b, c, d, e, f)
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "unexpected errors:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn rejects_option_type_mix() {
     let d = check_str(
         r#"fn main() {

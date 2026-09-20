@@ -3200,7 +3200,10 @@ impl<'a> Checker<'a> {
                 let _ = rt;
                 Ty::Int
             }
-            Eq | Ne | Lt | Le | Gt | Ge => Ty::Bool,
+            Eq | Ne | Lt | Le | Gt | Ge => {
+                self.check_comparison(e, op, &lt, &rt);
+                Ty::Bool
+            }
             And | Or => {
                 self.check_bool_cond(lhs);
                 self.check_bool_cond(rhs);
@@ -3240,6 +3243,48 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Bool
             }
+        }
+    }
+
+    /// Comparison operands must actually be comparable. Concrete rules:
+    /// numbers compare with every operator (mixed `int`/`float` included);
+    /// `char` pairs compare with every operator; `==`/`!=` may additionally
+    /// pair identical types (string, bool, enum, class, struct, option, list,
+    /// fn, ...). Everything else — ordering strings or bools, a `bool`
+    /// compared with an `int`, a `char` with an `int`, mismatched shapes —
+    /// is an error rather than silently lowering an ill-typed `icmp`/`fcmp`
+    /// (a `bool > int` used to reach the JIT verifier and crash). Unresolved
+    /// types (a generic `T`) skip the gate; the emitter sees them only under
+    /// a concrete substitution.
+    fn check_comparison(&mut self, e: &Expr, op: BinOp, lt: &Ty, rt: &Ty) {
+        if *lt == Ty::Unknown
+            || *rt == Ty::Unknown
+            || lt.has_var()
+            || rt.has_var()
+        {
+            return;
+        }
+        let eq_only = matches!(op, BinOp::Eq | BinOp::Ne);
+        let scalar = lt.is_numeric() && rt.is_numeric()
+            || matches!((lt, rt), (Ty::Char, Ty::Char));
+        if scalar {
+            return;
+        }
+        if eq_only && lt == rt {
+            return; // identity/equality on identical types (strings, enums, ...)
+        }
+        if lt == rt {
+            self.err(
+                e.span,
+                format!("operator `{op:?}` is not supported for `{lt}` operands"),
+            );
+        } else {
+            self.err(
+                e.span,
+                format!(
+                    "operator `{op:?}` requires comparable operands, found `{lt}` and `{rt}`"
+                ),
+            );
         }
     }
 

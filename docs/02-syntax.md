@@ -144,6 +144,12 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
 
 - `==` is structural for structs and enums, identity for classes unless
   overridden (`operator == (other) -> bool`).
+- Comparison operators (`==` `!=` `<` `<=` `>` `>=`) are checked against the
+  operand types: numbers (mixed `int`/`float`) and `char` pairs support every
+  operator; `==`/`!=` additionally accept identical types (string, bool, enum,
+  struct, class, option, list, fn). Ordering strings/bools or comparing
+  mismatched types (e.g. `bool > int` from a chained `x < 3 > x / 2`) is a
+  checker error.
 - `is` type test; `in` membership / map key test.
 - `?` postfix on `T?`: `let x = maybe?.field` (short-circuit `none`).
 - `a ?? b`: `a` if present, else `b`.

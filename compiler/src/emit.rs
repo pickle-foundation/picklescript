@@ -3759,6 +3759,27 @@ fn build_lambda_body(
             self.instr(IrInstr::Itof { dst: t, v: a });
             a = t;
         }
+        // Defensive: a comparison whose operand IR types cannot share an
+        // `icmp`/`fcmp` (bool vs int, char vs int, ...) must never reach the
+        // verifier. The checker rejects these; anything slipping through here
+        // (e.g. under a substitution) bails loudly instead of miscompiling.
+        if matches!(
+            op,
+            AstBinOp::Lt
+                | AstBinOp::Le
+                | AstBinOp::Gt
+                | AstBinOp::Ge
+                | AstBinOp::Eq
+                | AstBinOp::Ne
+        ) && !cmp_types_compatible(aty, bty)
+        {
+            return self.bad(
+                e.span,
+                format!(
+                    "comparison `{op:?}` with incompatible operand types is not lowered yet"
+                ),
+            );
+        }
         let dst = self.temp();
         self.instr(IrInstr::BinOp {
             dst,
@@ -7921,6 +7942,25 @@ fn binary_opcode(op: AstBinOp) -> IrBinOp {
         AstBinOp::Eq => IrBinOp::Eq,
         AstBinOp::Ne => IrBinOp::Ne,
         _ => IrBinOp::Add,
+    }
+}
+
+/// Can two comparison operands share one `icmp`/`fcmp`? The scalar mix
+/// `int`/`float` is handled by the `Itof` promotion that slices float limbs
+/// onto either side, so it counts as compatible; everything else must be the
+/// same IR type (both `int`, both `bool`, both pointers, ...). Unknown or
+/// unresolved types are treated as compatible so substitution-time programs
+/// keep flowing to their concrete form.
+fn cmp_types_compatible(a: Option<IrTy>, b: Option<IrTy>) -> bool {
+    match (a, b) {
+        (Some(va), Some(vb)) => {
+            if va == IrTy::Float || vb == IrTy::Float {
+                true
+            } else {
+                va == vb
+            }
+        }
+        _ => true,
     }
 }
 
