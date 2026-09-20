@@ -868,6 +868,7 @@ impl<'a> Emitter<'a> {
                     return;
                 };
                 self.declare_params(&info.params);
+                self.adopt_manual_params(&f.params);
                 self.fret = self.map_ty(&info.ret, f.span).unwrap_or(IrTy::Unit);
                 self.emit_body(&f.body);
             }
@@ -4509,6 +4510,26 @@ impl<'a> Emitter<'a> {
     fn pop_scope(&mut self) {
         self.env.pop();
         self.manual_env.pop();
+    }
+
+    /// Adopt every `#[manualAlloc]` parameter at function entry so the callee
+    /// owns (and is responsible for freeing) the incoming allocation.
+    fn adopt_manual_params(&mut self, params: &'a [Param]) {
+        for p in params {
+            if !p.attrs.iter().any(|a| a.name == "manualAlloc") {
+                continue;
+            }
+            let Some(slot) = self.lookup(&p.name) else {
+                continue;
+            };
+            let v = self.load(slot);
+            if let Ok(a) =
+                self.extern_call_t1("pickle_manual_adopt", vec![IrTy::Ptr], IrTy::Ptr, vec![v])
+            {
+                self.instr(IrInstr::StoreSlot { slot, v: a });
+            }
+            self.declare_manual(&p.name);
+        }
     }
 
     fn declare(&mut self, name: &str, slot: Slot) {

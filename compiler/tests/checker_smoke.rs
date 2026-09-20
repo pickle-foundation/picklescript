@@ -1067,7 +1067,7 @@ fn rejects_manual_alloc_with_arguments() {
 #[test]
 fn rejects_item_level_attributes() {
     let d = check_str(
-        r#"#[manualAlloc]
+        r#"#[foo]
         fn main() {
         }"#,
     );
@@ -1076,6 +1076,22 @@ fn rejects_item_level_attributes() {
     assert!(
         msgs.contains("not lowered yet"),
         "expected an item-attribute diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn rejects_manual_alloc_function_without_instance_return() {
+    let d = check_str(
+        r#"#[manualAlloc]
+        fn makes() -> int {
+            return 1
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("requires a class or struct return type"),
+        "expected a return-type diagnostic, got:\n{msgs}"
     );
 }
 
@@ -1249,6 +1265,131 @@ fn rejects_overwriting_live_manual_binding() {
         msgs.contains("overwrite") || msgs.contains("unknown attribute"),
         "expected an overwrite diagnostic, got:\n{msgs}"
     );
+}
+
+#[test]
+fn accepts_owned_param_from_move() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn consume(#[manualAlloc] w: Widget) {
+            w.free()
+        }
+
+        fn main() {
+            #[manualAlloc] let w = Widget(1)
+            consume(w)
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn accepts_owned_param_from_fresh_allocation() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn consume(#[manualAlloc] w: Widget) {
+            w.free()
+        }
+
+        fn main() {
+            consume(Widget(1))
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_owned_param_from_managed_binding() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        fn consume(#[manualAlloc] w: Widget) {
+            w.free()
+        }
+
+        fn main() {
+            let w = Widget(1)
+            consume(w)
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("takes ownership"),
+        "expected an ownership diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn accepts_manual_return_consumed_by_binding() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        #[manualAlloc]
+        fn make() -> Widget {
+            return Widget(1)
+        }
+
+        fn main() {
+            #[manualAlloc] let w = make()
+            w.free()
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_leaked_manual_return() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        #[manualAlloc]
+        fn make() -> Widget {
+            return Widget(1)
+        }
+
+        fn main() {
+            make()
+        }"#,
+    );
+    let msgs = error_msgs(&d);
+    assert!(has_errors(&d), "expected an error, got none");
+    assert!(
+        msgs.contains("owned by the caller"),
+        "expected a leak diagnostic, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn accepts_returning_owned_call_from_manual_fn() {
+    let d = check_str(
+        r#"class Widget {
+            value: int
+        }
+
+        #[manualAlloc]
+        fn make() -> Widget {
+            return Widget(1)
+        }
+
+        #[manualAlloc]
+        fn make2() -> Widget {
+            return make()
+        }"#,
+    );
+    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
 }
 
 #[test]

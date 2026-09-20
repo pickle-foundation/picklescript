@@ -627,6 +627,7 @@ impl<'a> Parser<'a> {
         }
         loop {
             let start = self.span();
+            let attrs = self.parse_attributes()?;
             let rest = self.eat(&Tok::Ellipsis);
             let name = self.expect_ident("parameter")?;
             let ty = if self.eat(&Tok::Colon) {
@@ -644,6 +645,7 @@ impl<'a> Parser<'a> {
                 ty,
                 default,
                 rest,
+                attrs,
                 span: start.to(self.prev_span()),
             });
             if self.eat(&Tok::Comma) {
@@ -1818,6 +1820,7 @@ impl<'a> Parser<'a> {
                     ty,
                     default: None,
                     rest,
+                    attrs: Vec::new(),
                     span: ps.to(self.prev_span()),
                 });
                 if self.eat(&Tok::Comma) {

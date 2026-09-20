@@ -124,6 +124,7 @@ pub struct Param {
     pub ty: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub rest: bool,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 

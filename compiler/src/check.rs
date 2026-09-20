@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
@@ -63,6 +63,28 @@ fn named_ctor_delegation(body: &Block) -> Option<&Expr> {
     }
 }
 
+/// Free functions annotated `#[manualAlloc]` (result owned by the caller) and,
+/// for each, which positional parameters are `#[manualAlloc]` (owned).
+fn collect_manual_fns(prog: &Program) -> (HashSet<String>, HashMap<String, Vec<bool>>) {
+    let mut rets = HashSet::new();
+    let mut params = HashMap::new();
+    for item in &prog.items {
+        let f = match &item.kind {
+            ItemKind::Fn(f) | ItemKind::Test(f) => f,
+            _ => continue,
+        };
+        let has = |attrs: &[Attribute]| attrs.iter().any(|a| a.name == "manualAlloc");
+        if has(&item.attrs) {
+            rets.insert(f.name.clone());
+        }
+        let flags: Vec<bool> = f.params.iter().map(|p| has(&p.attrs)).collect();
+        if flags.iter().any(|b| *b) {
+            params.insert(f.name.clone(), flags);
+        }
+    }
+    (rets, params)
+}
+
 struct Checker<'a> {
     prog: &'a Program,
     resolved: &'a ResolvedProgram,
@@ -89,6 +111,14 @@ struct Checker<'a> {
     /// Whether the current function is `#[manualAlloc]`, i.e. returns ownership
     /// of its result to the caller.
     ret_manual: bool,
+    /// Free functions marked `#[manualAlloc]`: their result is owned by the
+    /// caller and must be consumed into an owned position.
+    manual_ret_fns: HashSet<String>,
+    /// For each free function, which positional parameters are `#[manualAlloc]`.
+    manual_param_fns: HashMap<String, Vec<bool>>,
+    /// Spans of `#[manualAlloc]`-returning calls whose result has not yet been
+    /// consumed in the current statement.
+    pending_owned_calls: HashSet<Span>,
 }
 
 impl<'a> Checker<'a> {
@@ -98,6 +128,7 @@ impl<'a> Checker<'a> {
         diags: &'a DiagnosticSink,
     ) -> Checker<'a> {
         let scopes: Vec<HashMap<String, Local>> = vec![HashMap::new()];
+        let (manual_ret_fns, manual_param_fns) = collect_manual_fns(prog);
         Checker {
             prog,
             resolved,
@@ -112,24 +143,34 @@ impl<'a> Checker<'a> {
             named_ctor_delegated: false,
             loop_depth: 0,
             ret_manual: false,
+            manual_ret_fns,
+            manual_param_fns,
+            pending_owned_calls: HashSet::new(),
         }
     }
 
     fn check(&mut self) {
         // Item bodies: fn / test / const values.
         for item in &self.prog.items {
+            let is_fn = matches!(item.kind, ItemKind::Fn(_) | ItemKind::Test(_));
             for a in &item.attrs {
-                self.err(
-                    a.span,
-                    format!(
-                        "attributes on declarations are not lowered yet (`#[{}]`)",
-                        a.name
-                    ),
-                );
+                if is_fn && a.name == "manualAlloc" {
+                    if !a.args.is_empty() {
+                        self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                    }
+                } else {
+                    self.err(
+                        a.span,
+                        format!(
+                            "attributes on declarations are not lowered yet (`#[{}]`)",
+                            a.name
+                        ),
+                    );
+                }
             }
             match &item.kind {
-                ItemKind::Fn(f) => self.check_fn_signature_bodies(f),
-                ItemKind::Test(f) => self.check_fn_signature_bodies(f),
+                ItemKind::Fn(f) => self.check_fn_signature_bodies(f, &item.attrs),
+                ItemKind::Test(f) => self.check_fn_signature_bodies(f, &item.attrs),
                 ItemKind::Const(c) => {
                     let ty = self
                         .resolved
@@ -234,6 +275,56 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+    /// Mark a pending `#[manualAlloc]`-returning call as consumed by the
+    /// enclosing owned position.
+    fn consume_owned(&mut self, e: &Expr) {
+        self.pending_owned_calls.remove(&e.span);
+    }
+
+    /// Is `e` a fresh allocation that an owned position may take directly:
+    /// a class/struct constructor call, or a call to a `#[manualAlloc]`
+    /// function.
+    fn is_fresh_allocation(&self, e: &Expr) -> bool {
+        if self.pending_owned_calls.contains(&e.span) {
+            return true;
+        }
+        if let ExprKind::Call { callee, .. } = &e.kind {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if self.resolved.types.contains_key(name) {
+                    return matches!(
+                        self.types.get(&e.span),
+                        Some(Ty::Class(..) | Ty::Struct(..))
+                    );
+                }
+            }
+        }
+        false
+    }
+
+    /// Check the arguments at an owned-parameter boundary: each owned parameter
+    /// receives a `#[manualAlloc]` binding (moved) or a fresh allocation.
+    fn check_manual_args(&mut self, flags: &[bool], args: &[CallArg]) {
+        for (i, a) in args.iter().enumerate() {
+            if !flags.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(name) = self.manual_move_source(&a.value) {
+                self.mark_moved(&name);
+            } else if self.is_fresh_allocation(&a.value) {
+                self.consume_owned(&a.value);
+            } else {
+                self.err_note(
+                    a.span,
+                    format!(
+                        "parameter #{} is `#[manualAlloc]` and takes ownership of its argument",
+                        i + 1
+                    ),
+                    "pass a `#[manualAlloc]` binding or a fresh allocation",
+                );
+            }
+        }
     }
 
     /// Snapshot the consumption state (`moved`, `freed`) of every live local,
@@ -675,7 +766,7 @@ impl<'a> Checker<'a> {
 
     // ---- bodies ------------------------------------------------------------
 
-    fn check_fn_signature_bodies(&mut self, f: &FnDecl) {
+    fn check_fn_signature_bodies(&mut self, f: &FnDecl, attrs: &[Attribute]) {
         self.push_scope();
         self.fn_generics = f.generics.iter().map(|g| g.name.clone()).collect();
         self.ret_ty = self
@@ -685,9 +776,31 @@ impl<'a> Checker<'a> {
             .and_then(|fns| fns.first())
             .map(|c| c.ret.clone())
             .unwrap_or(Ty::Empty);
+        self.ret_manual = attrs.iter().any(|a| a.name == "manualAlloc");
+        if self.ret_manual && !matches!(self.ret_ty, Ty::Class(..) | Ty::Struct(..)) {
+            self.err_note(
+                f.span,
+                "`#[manualAlloc]` on a function requires a class or struct return type",
+                "the caller receives ownership of the returned instance",
+            );
+        }
         for p in &f.params {
+            let manual = self.check_param_attributes(p);
             let ty = self.resolve_param_ty(p);
-            self.declare(&p.name, ty, true);
+            self.declare(&p.name, ty.clone(), true);
+            if manual {
+                if !matches!(ty, Ty::Class(..) | Ty::Struct(..)) {
+                    self.err_note(
+                        p.span,
+                        format!(
+                            "`#[manualAlloc]` parameter `{}` must be a class or struct type",
+                            p.name
+                        ),
+                        "ownership applies to class/struct instances",
+                    );
+                }
+                self.mark_manual(&p.name);
+            }
             if let Some(d) = &p.default {
                 let dt = self.check_expr(d);
                 self.check_assignable(
@@ -702,8 +815,30 @@ impl<'a> Checker<'a> {
             self.check_fn_body(body);
         }
         self.ret_ty = Ty::Empty;
+        self.ret_manual = false;
         self.fn_generics = Vec::new();
         self.pop_scope();
+    }
+
+    /// Validate `#[...]` attributes on a parameter and report whether it is
+    /// `#[manualAlloc]` (the function takes ownership of the argument).
+    fn check_param_attributes(&mut self, p: &Param) -> bool {
+        let mut manual = false;
+        for a in &p.attrs {
+            match a.name.as_str() {
+                "manualAlloc" => {
+                    if !a.args.is_empty() {
+                        self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                    }
+                    if manual {
+                        self.err(a.span, "duplicate `#[manualAlloc]` attribute");
+                    }
+                    manual = true;
+                }
+                other => self.err(a.span, format!("unknown attribute `#[{other}]`")),
+            }
+        }
+        manual
     }
 
     fn resolve_param_ty(&self, p: &Param) -> Ty {
@@ -746,11 +881,29 @@ impl<'a> Checker<'a> {
             FnBody::Block(b) => {
                 let expr_ty = self.check_block(b);
                 self.check_return_expr(&expr_ty, b.span);
+                if let Some(e) = &b.expr {
+                    self.check_owned_tail(e);
+                }
             }
             FnBody::Expr(e) => {
                 let t = self.check_expr(e);
                 self.check_return_expr(&t, e.span);
+                self.check_owned_tail(e);
             }
+        }
+    }
+
+    /// Handle a block/expression tail value as an ownership position: either it
+    /// is the owned return of a `#[manualAlloc]` function, or a leaked result.
+    fn check_owned_tail(&mut self, e: &Expr) {
+        if self.ret_manual {
+            self.consume_owned(e);
+        } else if self.pending_owned_calls.remove(&e.span) {
+            self.err_note(
+                e.span,
+                "result of a `#[manualAlloc]` function is owned by the caller",
+                "bind it with `#[manualAlloc] let`, pass it to an owned parameter, or return it",
+            );
         }
     }
 
@@ -777,7 +930,29 @@ impl<'a> Checker<'a> {
         last
     }
 
+    /// Check one statement, then report any `#[manualAlloc]`-returning call
+    /// whose result was not consumed into an owned position within it.
     fn check_stmt(&mut self, s: &Stmt) -> Ty {
+        let before = self.pending_owned_calls.clone();
+        let t = self.check_stmt_inner(s);
+        let leaked: Vec<Span> = self
+            .pending_owned_calls
+            .iter()
+            .filter(|sp| !before.contains(sp))
+            .copied()
+            .collect();
+        for sp in leaked {
+            self.err_note(
+                sp,
+                "result of a `#[manualAlloc]` function is owned by the caller",
+                "bind it with `#[manualAlloc] let`, pass it to an owned parameter, or return it",
+            );
+            self.pending_owned_calls.remove(&sp);
+        }
+        t
+    }
+
+    fn check_stmt_inner(&mut self, s: &Stmt) -> Ty {
         match s {
             Stmt::Let {
                 pattern,
@@ -818,6 +993,9 @@ impl<'a> Checker<'a> {
                             format!("`#[manualAlloc]` requires a class or struct type, found `{final_ty}`"),
                             "manual allocation applies to class/struct instances",
                         );
+                    } else if let Some(init) = init {
+                        // A `#[manualAlloc]` function result is consumed here.
+                        self.consume_owned(init);
                     }
                 } else if let Some(src) = &moved_from {
                     self.err_note(
@@ -864,6 +1042,12 @@ impl<'a> Checker<'a> {
                                 "mark the function `#[manualAlloc]` to transfer `{src}` to the caller"
                             ),
                         );
+                    }
+                } else if self.ret_manual {
+                    // A `#[manualAlloc]` function may return a fresh allocation
+                    // or another owned call directly.
+                    if let Some(e) = value {
+                        self.consume_owned(e);
                     }
                 }
                 if self.ret_ty == Ty::Empty {
@@ -1647,6 +1831,12 @@ impl<'a> Checker<'a> {
                     .cloned()
                     .unwrap_or_else(|| fns[0].clone());
                 self.check_args_info(e, &first.params, args);
+                if let Some(flags) = self.manual_param_fns.get(cname).cloned() {
+                    self.check_manual_args(&flags, args);
+                }
+                if self.manual_ret_fns.contains(cname) {
+                    self.pending_owned_calls.insert(e.span);
+                }
                 return first.ret.clone();
             }
         }

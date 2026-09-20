@@ -50,13 +50,43 @@ Rules:
 - `free()` is only valid on a manual binding. Annotating a binding whose type
   is not a class/struct, passing arguments to the attribute, or using an
   unknown attribute is a compile error.
-- Attributes on declarations (a class, `fn`, ...) are not lowered yet and are
-  rejected with a clear message.
 
-There are no lifetimes and no borrow checker: the model is "one owner, free it
-once". Cross-tier transfers (moving a manual object into a GC graph and back)
-and manual *fields*, *parameters* and *returns* are the next step; raw
-pointers live in `unsafe`.
+A manual object can be **moved** to another owner. Assigning it to a new
+`#[manualAlloc]` binding, passing it to a `#[manualAlloc]` parameter, or
+returning it from a `#[manualAlloc]` function transfers ownership; the old
+binding can no longer be used:
+
+```
+#[manualAlloc]
+let mesh = Mesh("terrain")
+#[manualAlloc]
+let other = mesh              // moves out of `mesh`
+// mesh.load()                // error: use after move
+other.free()
+```
+
+A function can own what it receives and what it returns:
+
+```
+fn consume(#[manualAlloc] w: Widget) {
+    w.free()                  // callee owns `w`
+}
+
+#[manualAlloc]
+fn make() -> Widget {
+    return Widget(1)          // caller now owns the result
+}
+```
+
+A `#[manualAlloc]` function result must be consumed into an owned position — a
+`#[manualAlloc] let`, an owned parameter, or an owned return — otherwise it is
+reported as a leak. You can call an owned parameter with a fresh allocation
+directly (`consume(Widget(1))`); the callee adopts it at entry.
+
+Owned **fields** (a manual field inside a class, freed recursively) and
+cross-tier transfers into GC graphs are the next step; raw pointers live in
+`unsafe`. There are no lifetimes and no borrow checker: the model is "one
+owner, free it once".
 
 ## Collector
 
