@@ -89,6 +89,7 @@ pub fn emit_ir(
         named_ctor_ids: HashMap::new(),
         deinit_ids: HashMap::new(),
         method_ids: HashMap::new(),
+        virtual_dispatch: HashMap::new(),
         property_ids: HashMap::new(),
         static_property_ids: HashMap::new(),
         static_inits: Vec::new(),
@@ -436,6 +437,14 @@ struct Emitter<'a> {
     deinit_ids: HashMap<u32, FuncId>,
     /// (Class id, method name) -> (function, is_static).
     method_ids: HashMap<(u32, String), (FuncId, bool)>,
+    /// (Static receiver class id, method name) -> dispatch-cascade entries for
+    /// an instance method that is overridden somewhere in the program, ordered
+    /// deepest-derived first. Each entry is `(descendant class id, its own
+    /// implementation)`. A call through an ancestor-typed receiver must route
+    /// on the runtime class id (`pickle_class_is`), so it falls into the first
+    /// branch whose class the receiver is an instance of; `super.m(...)` and
+    /// non-overridden methods stay direct static calls. Absent here = direct.
+    virtual_dispatch: HashMap<(u32, String), Vec<(u32, FuncId)>>,
     /// (Class id, property name, is_setter) -> accessor function.
     property_ids: HashMap<(u32, String, bool), FuncId>,
     /// (Class id, static property name, is_setter) -> accessor function.
@@ -534,6 +543,11 @@ impl<'a> Emitter<'a> {
                 _ => {}
             }
         }
+        // Every class is now registered and `method_ids` holds each method's
+        // static resolution. Discover which instance methods are overridden
+        // somewhere in the program so calls through an ancestor-typed receiver
+        // can route them on the runtime class id.
+        self.build_virtual_dispatch();
         // Static fields are initialized once at program start. Register the
         // initializer only after every class id is assigned, and before the
         // build loop so `main`'s preamble can call it.
@@ -1504,6 +1518,101 @@ impl<'a> Emitter<'a> {
         self.ancestry(desc).iter().any(|c| c == anc)
     }
 
+    /// Discover every instance method that is overridden somewhere in the
+    /// program and record, per static receiver class, the descendant classes
+    /// that provide a different implementation (deepest-derived first). A call
+    /// whose receiver is statically typed as one of these classes must dispatch
+    /// on the receiver's runtime class id; all other calls keep the current
+    /// direct static call. Runs once after every class is registered (generic
+    /// classes cannot extend, so they never contribute descendants here).
+    fn build_virtual_dispatch(&mut self) {
+        let classes: Vec<(u32, String)> = self
+            .classes
+            .iter()
+            .map(|p| (p.class_id, p.name.clone()))
+            .collect();
+        // The instance methods visible at each static receiver class. `method_ids`
+        // already carries inheritance (a subclass copies every ancestor entry with
+        // `or_insert`), so a class that merely inherits `m` resolves it exactly as
+        // a call through it would — including deeper overrides, which is the point.
+        let mut visible: HashMap<u32, Vec<(String, FuncId)>> = HashMap::new();
+        for (&(rcid, ref mname), &(fid, is_static)) in &self.method_ids {
+            if !is_static {
+                visible.entry(rcid).or_default().push((mname.clone(), fid));
+            }
+        }
+        let mut mixed_static_override: Option<(String, String)> = None;
+        for (cid, cname) in &classes {
+            let Some(names) = visible.get(cid) else {
+                continue;
+            };
+            for (mname, rfid) in names {
+                // Own-defined overrides of `mname` among the descendants of
+                // `cname` only — a descendant that merely inherits the method
+                // resolves to its nearest defining ancestor, which
+                // `pickle_class_is` already covers through that ancestor's
+                // branch (an inheriting descendant is never a branch target).
+                let mut branches: Vec<(u32, i64, FuncId)> = Vec::new();
+                for (dcid, dname) in &classes {
+                    if *dcid == *cid || !self.is_ancestor(cname, dname) {
+                        continue;
+                    }
+                    let Some(dt) = self.table_of(dname) else {
+                        continue;
+                    };
+                    if !dt.methods.iter().any(|di| di.name == *mname) {
+                        continue;
+                    }
+                    let Some(&(dfid, dstatic)) =
+                        self.method_ids.get(&(*dcid, mname.clone()))
+                    else {
+                        continue;
+                    };
+                    if dstatic {
+                        if mixed_static_override.is_none() {
+                            mixed_static_override = Some((dname.clone(), mname.clone()));
+                        }
+                        continue;
+                    }
+                    if dfid == *rfid {
+                        // Same implementation the receiver resolves to (e.g. a
+                        // deferred declaration): adds no dispatch.
+                        continue;
+                    }
+                    let depth = self
+                        .ancestry(dname)
+                        .iter()
+                        .position(|c| c == cname)
+                        .map(|i| (self.ancestry(dname).len() - 1 - i) as i64)
+                        .unwrap_or(0);
+                    branches.push((*dcid, depth, dfid));
+                }
+                if branches.is_empty() {
+                    continue;
+                }
+                branches.sort_by_key(|(_, depth, _)| std::cmp::Reverse(*depth));
+                self.virtual_dispatch.insert(
+                    (*cid, mname.clone()),
+                    branches
+                        .into_iter()
+                        .map(|(dcid, _, dfid)| (dcid, dfid))
+                        .collect(),
+                );
+            }
+        }
+        if let Some((cname, mname)) = mixed_static_override {
+            let span = self
+                .class_decls
+                .get(&cname)
+                .map(|d| d.span)
+                .unwrap_or_else(|| Span::new(crate::diag::FileId(0), 0, 0));
+            let _: Result<(), ()> = self.bad(
+                span,
+                format!("`override` mixing static and instance methods (`{cname}.{mname}`) is not lowered yet"),
+            );
+        }
+    }
+
     /// A non-generic user class type resolved to its registered runtime id.
     fn user_class_id(&self, ty: &Ty) -> Option<(String, u32)> {
         if let Ty::Class(n, args) = ty {
@@ -1540,16 +1649,6 @@ impl<'a> Emitter<'a> {
             let _: Result<(), ()> = self.bad(
                 span,
                 format!("`{name}` implements interfaces, which are not lowered yet"),
-            );
-            return;
-        }
-        if members
-            .iter()
-            .any(|m| matches!(m, ClassMember::Method(md) if md.is_override))
-        {
-            let _: Result<(), ()> = self.bad(
-                span,
-                format!("`{name}` uses `override`, which is not lowered yet"),
             );
             return;
         }
@@ -1722,7 +1821,7 @@ impl<'a> Emitter<'a> {
             ClassMember::Method(md) => Some(md),
             _ => None,
         }) {
-            if md.is_async || md.is_override || md.body.is_none() || !md.generics.is_empty() {
+            if md.is_async || md.body.is_none() || !md.generics.is_empty() {
                 continue;
             }
             let Some(info) = table.methods.iter().find(|m| m.name == md.name) else {
@@ -7349,6 +7448,20 @@ fn build_lambda_body(
                         format!("static method `{name}` cannot be used as a value"),
                     );
                 }
+                if self
+                    .virtual_dispatch
+                    .get(&(cid, name.to_string()))
+                    .map(|b| !b.is_empty())
+                    .unwrap_or(false)
+                {
+                    return self.bad(
+                        e.span,
+                        format!(
+                            "overridden method `{name}` of `{}` cannot be used as a bound value yet (not lowered)",
+                            self.class_name_of(cid)
+                        ),
+                    );
+                }
                 return self.bound_method_value(e, object);
             }
             return self.bad(
@@ -7526,6 +7639,20 @@ fn build_lambda_body(
                     );
                 }
                 let receiver = self.expr(object)?;
+                // An instance method that is overridden somewhere in the program
+                // dispatches on the receiver's runtime class id — unless the
+                // receiver expression is `super`, which must stay statically
+                // bound to this class's own implementation.
+                let virtual_branches = if !matches!(&object.kind, ExprKind::Super) {
+                    self.virtual_dispatch.get(&(cid, name.to_string())).cloned()
+                } else {
+                    None
+                };
+                if let Some(branches) = virtual_branches {
+                    if !branches.is_empty() {
+                        return self.virtual_method_call(e, fid, args, receiver, &branches);
+                    }
+                }
                 return self.call_method(e, fid, args, Some(receiver));
             }
             // A fn-typed field (`h.f(...)` where `f` is a function field) loads
@@ -7612,6 +7739,19 @@ fn build_lambda_body(
         args: &[CallArg],
         receiver: Option<Temp>,
     ) -> Result<Temp, ()> {
+        let call_args = self.marshal_method_args(_e, fid, args, receiver)?;
+        self.emit_call_to(fid, call_args, _e)
+    }
+
+    /// Marshal a method call's receiver (first for instance methods) and
+    /// argument values into the callee's calling-convention temp list.
+    fn marshal_method_args(
+        &mut self,
+        _e: &Expr,
+        fid: FuncId,
+        args: &[CallArg],
+        receiver: Option<Temp>,
+    ) -> Result<Vec<Temp>, ()> {
         let fparams = self.module.funcs[fid.0].params.clone();
         let mut call_args = match receiver {
             Some(r) => vec![r],
@@ -7630,12 +7770,72 @@ fn build_lambda_body(
             };
             call_args.push(t);
         }
+        Ok(call_args)
+    }
+
+    /// Emit the call instruction for an already-marshaled method call.
+    fn emit_call_to(&mut self, fid: FuncId, call_args: Vec<Temp>, _e: &Expr) -> Result<Temp, ()> {
         let dst = self.temp();
         self.instr(IrInstr::Call {
             dst: Some(dst),
             callee: Callee::Func(fid),
             args: call_args,
         });
+        Ok(dst)
+    }
+
+    /// Lower an instance call to a method that is overridden somewhere in the
+    /// program: `pickle_class_is(receiver, D_cid)` checks deepest-derived-first,
+    /// each branching to that descendant's own implementation and joining on
+    /// a result slot; a receiver that is an instance of no overriding
+    /// descendant falls through to the statically-resolved `fallback_fid`. The
+    /// receiver is borrowed once up front, so the checks and every branch
+    /// share it.
+    fn virtual_method_call(
+        &mut self,
+        e: &Expr,
+        fallback_fid: FuncId,
+        args: &[CallArg],
+        receiver: Temp,
+        branches: &[(u32, FuncId)],
+    ) -> Result<Temp, ()> {
+        let ret_ty = self.irty(e.span)?;
+        let ret_slot = self.new_slot(ret_ty);
+        let join = self.new_block();
+        for &(dcid, dfid) in branches {
+            let cb = self.new_block();
+            let next = self.new_block();
+
+            let dc = self.int_const(dcid as i64);
+            let found = self.extern_call_t1(
+                "pickle_class_is",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Bool,
+                vec![receiver, dc],
+            )?;
+            self.term(IrTerm::BranchIf {
+                cond: found,
+                then: cb,
+                else_: next,
+            });
+
+            self.cur = cb;
+            let call_args = self.marshal_method_args(e, dfid, args, Some(receiver))?;
+            let val = self.emit_call_to(dfid, call_args, e)?;
+            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.term(IrTerm::Branch { target: join });
+
+            self.cur = next;
+        }
+        // Fall back to the receiver's own statically-resolved implementation.
+        let call_args = self.marshal_method_args(e, fallback_fid, args, Some(receiver))?;
+        let val = self.emit_call_to(fallback_fid, call_args, e)?;
+        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+        self.term(IrTerm::Branch { target: join });
+
+        self.cur = join;
+        let dst = self.temp();
+        self.instr(IrInstr::LoadSlot { dst, slot: ret_slot });
         Ok(dst)
     }
 

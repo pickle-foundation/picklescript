@@ -210,10 +210,10 @@ Lowering rules:
   `FuncAddr` const (`addrof fn#N`, typed `int` so the raw code pointer never
   enters the GC trace frame). A class without `deinit` passes `0`.
 - Single inheritance (`class Child extends Parent`) is lowered for a subset:
-  state, methods, `super.m()`, and hierarchy casts. Classes must be registered
-  **ancestor-first** (the emitter pulls superclasses in before subclasses), so a
-  superclass always has a lower id. Instance fields are laid out
-  **parent-first**: a subclass's object slots begin with the superclass's
+  state, methods, `override fn`, `super.m()`, and hierarchy casts. Classes must
+  be registered **ancestor-first** (the emitter pulls superclasses in before
+  subclasses), so a superclass always has a lower id. Instance fields are laid
+  out **parent-first**: a subclass's object slots begin with the superclass's
   instance fields, then its own; the absolute slot is `parent_total + own_index`,
   and the registration `slot_count` (and the constructor's `pickle_class_new`
   field count) is the whole ancestry's total. A subclass inherits its parent's
@@ -221,8 +221,23 @@ Lowering rules:
   its synthesized constructor parameters from all instance fields without
   initializers, superclass first. `super.m(...)` lowers to a direct call of the
   superclass method on the same receiver.
+- A method redefined lower down with `override fn` is called through a
+  **virtual dispatch cascade**. `build_virtual_dispatch` runs once after all
+  classes register and, for every static receiver class, records the
+  descendants that *own-define* a different implementation of each visible
+  (own or inherited) instance method, deepest-derived first. A call whose
+  method has a cascade entry (`virtual_method_call`) tests the receiver's
+  runtime class id against each branch with `pickle_class_is` and calls the
+  matching implementation, falling back to the statically-resolved fid — which
+  is always the nearest owning ancestor's body, so a plain `WorkingDog()`
+  instance inherits `Dog`'s implementation even though the dispatch table has
+  an entry for `WorkingDog`. Keying by the *static receiver class* (not only
+  the defining class) is what makes a mid-hierarchy receiver that merely
+  inherits the method still reach a deeper override at runtime. `super.m(...)`
+  bypasses the cascade (it always calls this class's implementation) and a
+  method with no cascade entry is an ordinary direct call.
 - Not-yet-lowered inheritance edges bail loudly instead of miscompiling:
-  `implements`/interfaces, `override fn`, explicit or named
+  `implements`/interfaces, explicit or named
   constructors in a hierarchy, and a subclass whose superclass is itself
   unbounded. A class using one of these is skipped with a "… not lowered yet"
   diagnostic. Generic classes target these same edges when instantiated:
@@ -321,9 +336,10 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
   to that factory; a named constructor creates no cell and no per-class state.
 - Instance methods compile to `pkl_<TypeName>_<m>`, with the receiver passed
   first as a managed pointer (IR param slot 0, declared as `this`); static
-  methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/
-  override/body-less methods and methods with default/rest params are
-  skipped like their top-level counterparts. Methods of a generic class
+  methods compile to `pkl_<TypeName>_sm_<m>` with no receiver. Async/body-less
+  methods and methods with default/rest params are skipped like their
+  top-level counterparts; `override fn` methods lower with the same shape (and
+  drive the dispatch cascade described above). Methods of a generic class
   instantiation follow the same shapes under the mangled symbols above
   (`pkl_Box_read_int`, `pkl_<T>_sm_<m>_<suffix>`).
 - `this` loads the receiver slot. An undefined identifier inside an instance

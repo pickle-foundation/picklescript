@@ -1893,6 +1893,131 @@ fn emits_inheritance_layout_and_super_call() {
 }
 
 #[test]
+fn emits_override_dispatch_cascade() {
+    // `describe` is overridden down the hierarchy: a call through an
+    // ancestor-typed receiver dispatches on the receiver's runtime class id
+    // via `pickle_class_is`, deepest-derived first, with the receiver's own
+    // implementation as the fallback. `super.describe()` always calls this
+    // class's implementation directly, and a never-overridden method (`age`)
+    // stays a plain direct call. A mid-hierarchy class that merely inherits
+    // `describe` (WorkingDog) still dispatches, because its visible method
+    // resolves to the nearest defining ancestor (Animal) while Poodle, deeper
+    // down, overrides it.
+    let m = emit_str(
+        r#"class Animal {
+            fn age() -> int {
+                return 3
+            }
+
+            fn describe() -> string {
+                return "animal"
+            }
+        }
+
+        class Dog extends Animal {
+            override fn describe() -> string {
+                return "dog"
+            }
+
+            fn superDescribe() -> string {
+                return super.describe()
+            }
+        }
+
+        class WorkingDog extends Dog {}
+
+        class Poodle extends WorkingDog {
+            override fn describe() -> string {
+                return "poodle"
+            }
+        }
+
+        fn main() {
+            let a: Animal = Animal()
+            let d: Animal = Dog()
+            let p: Animal = Poodle()
+            let w: WorkingDog = WorkingDog()
+            let wp: WorkingDog = Poodle()
+            println(a.age())
+            println(a.describe())
+            println(d.describe())
+            println(p.describe())
+            println(w.describe())
+            println(wp.describe())
+        }"#,
+    );
+
+    let symbols: Vec<&str> = m.funcs.iter().map(|f| f.symbol.as_str()).collect();
+    for sym in [
+        "pkl_Animal_age",
+        "pkl_Animal_describe",
+        "pkl_Dog_superDescribe",
+        "pkl_Dog_describe",
+        "pkl_Poodle_describe",
+    ] {
+        assert!(symbols.contains(&sym), "symbols: {symbols:?}");
+    }
+
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let is_extern = |i: &IrInstr| -> bool {
+        if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_is")
+        } else {
+            false
+        }
+    };
+
+    // Four dispatch-eligible calls: `a` (Animal: Poodle, Dog = 2 checks),
+    // `d` (Animal: 2 checks), `p` (Animal: 2 checks), `w`/`wp`
+    // (WorkingDog: Poodle = 1 check each).
+    let is_calls = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter(|i| is_extern(i))
+        .count();
+    assert_eq!(is_calls, 8, "five calls need 8 class-id checks:\n{m}");
+
+    // The never-overridden `age` method is called directly, no branching.
+    let age_pos = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Animal_age")
+        .expect("pkl_Animal_age");
+    let fast = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == age_pos));
+    assert!(fast, "non-overridden methods must stay direct calls:\n{m}");
+
+    // `super.describe()` inside a method is always the superclass
+    // implementation, never a dispatch cascade.
+    let super_describe = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Dog_superDescribe")
+        .expect("pkl_Dog_superDescribe");
+    let describe_pos = m
+        .funcs
+        .iter()
+        .position(|f| f.symbol == "pkl_Animal_describe")
+        .expect("pkl_Animal_describe");
+    let direct_super = super_describe
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == describe_pos));
+    let no_is = !super_describe
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(is_extern);
+    assert!(direct_super, "`super.describe()` must call the superclass impl:\n{m}");
+    assert!(no_is, "`super.describe()` must not dispatch:\n{m}");
+}
+
+#[test]
 fn emits_class_is_and_as_lowering() {
     let m = emit_str(
         r#"class Animal {

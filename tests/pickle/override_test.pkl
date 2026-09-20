@@ -1,0 +1,69 @@
+class Animal {
+    fn describe() -> string {
+        return "animal"
+    }
+
+    fn age() -> int {
+        return 3
+    }
+}
+
+class Dog extends Animal {
+    override fn describe() -> string {
+        return "dog"
+    }
+
+    fn superDescribe() -> string {
+        return super.describe()
+    }
+}
+
+class WorkingDog extends Dog {
+}
+
+class Poodle extends WorkingDog {
+    override fn describe() -> string {
+        return "poodle"
+    }
+}
+
+describe("method override dispatch", {
+    test("receiver statically typed as the defining class", {
+        let a: Animal = Animal()
+        expect(a.describe()).toBe("animal")
+    })
+
+    test("receiver statically typed as an ancestor", {
+        let d: Animal = Dog()
+        expect(d.describe()).toBe("dog")
+        let p: Animal = Poodle()
+        expect(p.describe()).toBe("poodle")
+    })
+
+    test("receiver statically typed as an inheriting mid-class", {
+        // WorkingDog swallows Dog's `describe` override; a plain instance
+        // resolves to the nearest defining ancestor (Dog), while a Poodle
+        // bound to the same static type dispatches to the deeper override.
+        let w: WorkingDog = WorkingDog()
+        expect(w.describe()).toBe("dog")
+        let wp: WorkingDog = Poodle()
+        expect(wp.describe()).toBe("poodle")
+    })
+
+    test("override down a three-level chain", {
+        let p: Poodle = Poodle()
+        expect(p.describe()).toBe("poodle")
+        let a: Animal = p
+        expect(a.describe()).toBe("poodle")
+    })
+
+    test("super call binds the superclass implementation", {
+        expect(Dog().superDescribe()).toBe("animal")
+        expect(Poodle().superDescribe()).toBe("animal")
+    })
+
+    test("never-overridden methods call directly", {
+        let a: Animal = Poodle()
+        expect(a.age()).toBe(3)
+    })
+})

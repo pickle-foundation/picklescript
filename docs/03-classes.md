@@ -84,18 +84,22 @@ Rules:
   (`fn review()`) in a class; often via an `interface` instead.
 
 > **Implemented subset (current compiler).** `extends` is lowered for state,
-> methods, `super.m()`, and `is`/`as`. Fields are laid out parent-first
-> (superclass slots occupy the low indices), a subclass inherits its parent's
-> methods, and its synthesized constructor takes every non-initialized instance
-> field superclass-first. Classes must be registered ancestor-first, so a
-> superclass always has a lower runtime id. `x is T` / `x as T` test the
-> runtime class chain: an upcast is statically true/identity, a downcast is a
-> checked runtime test (`as` panics on a bad cast). **Not yet lowered** (a loud
-> "not lowered yet" diagnostic, never a silent miscompile): `override fn`,
-> `super(...)` constructor chaining, explicit or named constructors anywhere in
-> a hierarchy, and interfaces/`implements`. Generic classes (`class Box<T>`)
-> are lowered on their own (see 04-types.md), but **not inside a hierarchy**:
-> an instantiated generic class using `extends`/`implements`/`override` bails.
+> methods, `override fn`, `super.m()`, and `is`/`as`. Fields are laid out
+> parent-first (superclass slots occupy the low indices), a subclass inherits
+> its parent's methods, and its synthesized constructor takes every
+> non-initialized instance field superclass-first. Classes must be registered
+> ancestor-first, so a superclass always has a lower runtime id. A method that
+> is overridden somewhere in the program dispatches on the receiver's runtime
+> class (`after : Animal`, `p : Poodle` both call `Poodle.describe`), while
+> `super.m()` stays bound to the superclass implementation and never-overridden
+> methods call statically. `x is T` / `x as T` test the runtime class chain: an
+> upcast is statically true/identity, a downcast is a checked runtime test
+> (`as` panics on a bad cast). **Not yet lowered** (a loud "not lowered yet"
+> diagnostic, never a silent miscompile): `super(...)` constructor chaining,
+> explicit or named constructors anywhere in a hierarchy, and
+> interfaces/`implements`. Generic classes (`class Box<T>`) are lowered on
+> their own (see 04-types.md), but **not inside a hierarchy**: an instantiated
+> generic class using `extends`/`implements`/`override` bails.
 
 ## Interfaces
 
