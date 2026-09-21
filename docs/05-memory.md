@@ -255,8 +255,10 @@ untracked one:
 
 **Arenas (`Arena<T>`).** Compose the traced slab into a bump region:
 
-1. `arena Arena<T> {}` in the stdlib reserves the *syntax* above (`docs/02
-   -syntax`);
+1. `arena Arena<T> {}` in the stdlib uses the *proposed* declaration form
+   shown under "Custom allocators and arenas" below — note that no `arena`
+   lexer keyword or grammar exists today, so the form is documented only,
+   not yet parseable;
 2. an arena is a GC-managed slab chain: `arena.alloc(v)` bump-writes `v` at
    the next slot (traced, so pointees stay alive) and grows by chaining a new
    slab; `arena.free()` drops the whole chain at once;
@@ -344,7 +346,9 @@ let item = scratch.alloc(Vec<Collider>())
 Design: `Arena<T>` is a class in the stdlib; custom *global* allocators are
 registered through the runtime (`SetGlobalAllocator`) and participate in GC
 as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
-`unsafe`-gated. (Current status: arena *syntax* is reserved; the lowering
+`unsafe`-gated. (Current status: arena *syntax* is proposed as a future
+stdlib keyword — no `arena` token/grammar exists in the compiler today, so
+the declaration form above is documented but not yet parseable; the lowering
 design — a bump region over a traced slab chain — is described in
 "Managed-pointee buffers and arenas — plan" above. Arenas are a
 post-self-hosting stdlib feature, not a compiler-core dependency.)
