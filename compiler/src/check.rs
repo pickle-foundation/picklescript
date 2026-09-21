@@ -4632,7 +4632,20 @@ impl<'a> Checker<'a> {
                 Ty::Bool
             }
             CastKind::As | CastKind::TryAs => {
-                if src != Ty::Unknown && target != Ty::Unknown && !self.cast_related(&src, &target)
+                if src != Ty::Unknown
+                    && target != Ty::Unknown
+                    && !self.cast_related(&src, &target)
+                    // Casts between the char scalar and an integer scalar
+                    // reinterpret the code point value (`char as int`,
+                    // `int as char`, including `byte`). `is` does not use
+                    // this relation: a char has no sub/supertype.
+                    && !matches!(
+                        (&src, &target),
+                        (Ty::Char, Ty::Int)
+                            | (Ty::Char, Ty::Byte)
+                            | (Ty::Int, Ty::Char)
+                            | (Ty::Byte, Ty::Char)
+                    )
                 {
                     self.err_note(
                         e.span,

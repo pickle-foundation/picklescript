@@ -280,6 +280,12 @@ fn analyze(func: &IrFunc, module: &IrModule) -> Plan {
                 IrInstr::Ftoi { dst, .. } => {
                     tt.insert(dst.0, IrTy::Int);
                 }
+                IrInstr::Chartoi { dst, .. } => {
+                    tt.insert(dst.0, IrTy::Int);
+                }
+                IrInstr::Itochar { dst, .. } => {
+                    tt.insert(dst.0, IrTy::Char);
+                }
                 IrInstr::LoadSlot { dst, slot } => {
                     let t = func
                         .slots
@@ -755,6 +761,16 @@ fn lower_instr(
         IrInstr::Ftoi { dst, v } => {
             let x = *values.get(&v.0).context("ftoi operand")?;
             let vv = builder.ins().fcvt_to_sint_sat(types::I64, x);
+            values.insert(dst.0, vv);
+        }
+        IrInstr::Chartoi { dst, v } => {
+            let x = *values.get(&v.0).context("chartoi operand")?;
+            let vv = builder.ins().uextend(types::I64, x);
+            values.insert(dst.0, vv);
+        }
+        IrInstr::Itochar { dst, v } => {
+            let x = *values.get(&v.0).context("itochar operand")?;
+            let vv = builder.ins().ireduce(types::I32, x);
             values.insert(dst.0, vv);
         }
         IrInstr::LoadSlot { dst, slot } => {

@@ -171,6 +171,10 @@ pub enum IrInstr {
     Itof { dst: Temp, v: Temp },
     /// Float -> int conversion (saturating cast).
     Ftoi { dst: Temp, v: Temp },
+    /// Char (code point, i32) -> int (i64): scalar reinterpreting cast.
+    Chartoi { dst: Temp, v: Temp },
+    /// Int (i64) -> char (i32): scalar reinterpreting cast (narrowing).
+    Itochar { dst: Temp, v: Temp },
     LoadSlot { dst: Temp, slot: Slot },
     StoreSlot { slot: Slot, v: Temp },
     /// Raw address (`Int`) of a scalar local's stack storage. Only valid for
@@ -308,6 +312,8 @@ impl fmt::Display for IrInstr {
             IrInstr::Copy { dst, v } => write!(f, "{} = copy {}", temp_name(*dst), temp_name(*v)),
             IrInstr::Itof { dst, v } => write!(f, "{} = itof {}", temp_name(*dst), temp_name(*v)),
             IrInstr::Ftoi { dst, v } => write!(f, "{} = ftoi {}", temp_name(*dst), temp_name(*v)),
+            IrInstr::Chartoi { dst, v } => write!(f, "{} = chartoi {}", temp_name(*dst), temp_name(*v)),
+            IrInstr::Itochar { dst, v } => write!(f, "{} = itochar {}", temp_name(*dst), temp_name(*v)),
             IrInstr::LoadSlot { dst, slot } => {
                 write!(f, "{} = load slot s{}", temp_name(*dst), slot.0)
             }

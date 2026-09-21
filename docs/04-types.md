@@ -202,6 +202,10 @@ Inference is bidirectional and unification-based:
   `toInt()`, `toFloat()`, `toString()`... — hmm. Decide: numeric conversion
   uses one syntax: `value as int` (try semantics for lossless? No, plain
   truncating cast) — `as` is the single numeric conversion operator too.
+- `char` casts reinterpret the code point scalar: `char as int` / `char as
+  byte` read it, and `int as char` / `byte as char` (re)narrow a value to a
+  code point. A `char is int` test stays an error (`is` uses no scalar
+  relations).
 - Operator overloading goes through `operator name` methods; builtin
   operators are never silently replaced for primitives.
 

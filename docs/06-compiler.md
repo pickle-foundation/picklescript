@@ -543,8 +543,13 @@ Options lower as a managed pointer with no dedicated allocation:
 Casts lower for the statically-known subset:
 
 - `x as float` / `x as int` emit `itof` / `ftoi` (the latter saturating, so
-  NaN/out-of-range clamps instead of trapping). `char` is not numeric, so
-  `char`/`int` casts are rejected by the checker.
+  NaN/out-of-range clamps instead of trapping).
+- Scalar reinterpret casts between the integer families and `char`: `int`/`byte`
+  share one machine domain, so `int as byte` / `byte as int` fold to an identity
+  move; `char as int` / `char as byte` zero-extend the i32 code point to a word
+  (`chartoi`), and `int as char` / `byte as char` narrow a word down to the i32
+  code point (`itochar`). `is` does not use that relation — a char value is
+  neither an int nor a byte — so `x is int` on a char still rejects.
 - Casting to an option — `x as? T`, or `as T?` — always yields `T?` and never
   panics: a present value is converted (numeric) and boxed, `none` stays
   `none`. The checker types `as?` as `T?`.

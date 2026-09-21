@@ -5379,6 +5379,11 @@ fn build_lambda_body(
             return Ok(v);
         }
         if from.is_numeric() && to.is_numeric() {
+            // `int` and `byte` share the same machine `Int` domain, so
+            // int<->byte casts are identity register moves.
+            if matches!((from, to), (Ty::Int, Ty::Byte) | (Ty::Byte, Ty::Int)) {
+                return Ok(v);
+            }
             let dst = self.temp();
             let instr = match (from, to) {
                 (Ty::Int, Ty::Float) => IrInstr::Itof { dst, v },
@@ -5386,6 +5391,20 @@ fn build_lambda_body(
                 _ => return self.bad(span, format!("cannot cast `{from}` to `{to}`")),
             };
             self.instr(instr);
+            return Ok(dst);
+        }
+        // Char <-> integer casts reinterpret the code point scalar: `char as
+        // int` zero-extends the i32 code point to a word; `int as char`
+        // narrows the word down to the i32 code point (the frontend keeps
+        // values in range by construction).
+        if matches!((from, to), (Ty::Char, Ty::Int) | (Ty::Char, Ty::Byte)) {
+            let dst = self.temp();
+            self.instr(IrInstr::Chartoi { dst, v });
+            return Ok(dst);
+        }
+        if matches!((from, to), (Ty::Int, Ty::Char) | (Ty::Byte, Ty::Char)) {
+            let dst = self.temp();
+            self.instr(IrInstr::Itochar { dst, v });
             return Ok(dst);
         }
         // Class/struct casts: an upcast reinterprets the same object; a

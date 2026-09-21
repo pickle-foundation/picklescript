@@ -295,7 +295,10 @@ fn f() { let x = 1  x = 2 }
 ### E0363 · invalid cast or is
 
 The cast/`is` target is unrelated to the source type (no numeric
-conversion, option relationship, or inheritance).
+conversion, option relationship, or inheritance). `char`/`int` casts are
+allowed (scalar reinterpreting; see the `chartoi`/`itochar` notes in
+`06-compiler.md`) but `is` between a `char` and an integer still rejects —
+a char value is neither an int nor a byte.
 
 ```
 let n = 5 as bool
