@@ -593,8 +593,8 @@ impl<'a> Emitter<'a> {
         let prog = self.prog;
         for item in &prog.items {
             match &item.kind {
-                ItemKind::Fn(f) => self.register_fn(f, false),
-                ItemKind::Test(f) => self.register_fn(f, true),
+                ItemKind::Fn(f) => self.register_fn(f, false, &item.attrs),
+                ItemKind::Test(f) => self.register_fn(f, true, &item.attrs),
                 ItemKind::Class(c) => self.register_class_by_name(&c.name),
                 ItemKind::Struct(s) => self.register_struct_item(s),
                 _ => {}
@@ -1270,7 +1270,36 @@ impl<'a> Emitter<'a> {
 
     // ---- registration -----------------------------------------------------
 
-    fn register_fn(&mut self, f: &'a FnDecl, is_test: bool) {
+    /// Collect the `#[tag("…")]` values from an item's attributes. Arguments
+    /// that are not plain string literals are ignored (the checker reports
+    /// them; the emitter runs without checking on some paths).
+    fn item_tags(&self, attrs: &[Attribute]) -> Vec<String> {
+        let mut out = Vec::new();
+        for a in attrs {
+            if a.name != "tag" {
+                continue;
+            }
+            for arg in &a.args {
+                if let ExprKind::Lit(Lit::String(parts)) = &arg.kind {
+                    if parts.iter().all(|p| matches!(p, StrPart::Text(_))) {
+                        let text: String = parts
+                            .iter()
+                            .map(|p| match p {
+                                StrPart::Text(t) => t.clone(),
+                                StrPart::Expr(_) => String::new(),
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            out.push(text);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn register_fn(&mut self, f: &'a FnDecl, is_test: bool, attrs: &[Attribute]) {
         if f.is_async || !f.generics.is_empty() {
             return;
         }
@@ -1303,6 +1332,7 @@ impl<'a> Emitter<'a> {
             blocks: Vec::new(),
             is_main: !is_test && f.name == "main",
             is_test,
+            tags: self.item_tags(attrs),
         });
         self.fid_list.push(fid);
         self.fsource.insert(fid, FnSource::TopLevel(f));
@@ -2576,6 +2606,7 @@ impl<'a> Emitter<'a> {
             blocks: Vec::new(),
             is_main: false,
             is_test: false,
+            tags: Vec::new(),
         });
         self.fid_list.push(fid);
         self.fsource.insert(fid, src);
@@ -2785,6 +2816,7 @@ impl<'a> Emitter<'a> {
             blocks: std::mem::take(&mut self.blocks),
             is_main: self.module.funcs[fid.0].is_main,
             is_test: self.module.funcs[fid.0].is_test,
+            tags: std::mem::take(&mut self.module.funcs[fid.0].tags),
         };
     }
 
@@ -9326,6 +9358,7 @@ fn build_lambda_body(
             blocks: Vec::new(),
             is_main: false,
             is_test: false,
+            tags: Vec::new(),
         });
         self.fid_list.push(fid);
         self.fsource.insert(fid, FnSource::TopLevel(f));

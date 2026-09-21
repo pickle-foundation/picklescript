@@ -132,8 +132,10 @@ pub struct IrFunc {
     pub blocks: Vec<IrBlock>,
     /// `true` for `main`.
     pub is_main: bool,
-    /// `true` for `test fn`.
+    /// `true` for tests.
     pub is_test: bool,
+    /// `#[tag("…")]` tags carried by test items (empty for non-tests).
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

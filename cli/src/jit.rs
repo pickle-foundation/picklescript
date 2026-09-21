@@ -1305,6 +1305,7 @@ mod tests {
             }],
             is_main: true,
             is_test: false,
+            tags: Vec::new(),
         });
         module
     }
@@ -1365,6 +1366,7 @@ mod tests {
             }],
             is_main: true,
             is_test: false,
+            tags: Vec::new(),
         });
 
         // The collectable runner does its own bring-up like the binary.

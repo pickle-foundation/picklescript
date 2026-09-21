@@ -30,6 +30,16 @@ Filter by test name substring (`--filter`/`-f`) — useful while iterating:
 pickle test tests/pickle --filter "commutes"
 ```
 
+Filter by tag: put `#[tag("name")]` (repeatable) on a test item, then pass
+`--tag` (repeatable; a test runs when it carries any requested tag):
+
+```
+pickle test tests/pickle --tag slow
+pickle test tests/pickle --tag math --tag integration
+```
+
+`--tag` and `--filter` combine with AND semantics.
+
 Run everything with:
 
 ```

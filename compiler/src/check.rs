@@ -43,6 +43,7 @@ pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
         ("must be a class or struct type", ManualAlloc),
         ("owned field `", ManualAlloc),
         ("unknown attribute `#[", Attribute),
+        ("`#[tag", Attribute),
         ("attempt to call a non-function", CallNonFunction),
         ("unknown generic function `", CallArity),
         (" argument(s), found ", CallArity),
@@ -291,19 +292,56 @@ impl<'a> Checker<'a> {
         // Item bodies: fn / test / const values.
         for item in &self.prog.items {
             let is_fn = matches!(item.kind, ItemKind::Fn(_) | ItemKind::Test(_));
+            let is_test = matches!(item.kind, ItemKind::Test(_));
             for a in &item.attrs {
-                if is_fn && a.name == "manualAlloc" {
-                    if !a.args.is_empty() {
-                        self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                match a.name.as_str() {
+                    "manualAlloc" if is_fn => {
+                        if !a.args.is_empty() {
+                            self.err(a.span, "`#[manualAlloc]` takes no arguments");
+                        }
                     }
-                } else {
-                    self.err(
-                        a.span,
-                        format!(
-                            "attributes on declarations are not lowered yet (`#[{}]`)",
-                            a.name
-                        ),
-                    );
+                    "tag" if is_test => {
+                        if a.args.is_empty() {
+                            self.err(a.span, "`#[tag(...)]` needs at least one tag");
+                        }
+                        for arg in &a.args {
+                            if let ExprKind::Lit(Lit::String(parts)) = &arg.kind {
+                                let is_plain = parts
+                                    .iter()
+                                    .all(|p| matches!(p, crate::ast::StrPart::Text(_)));
+                                let text: String = parts
+                                    .iter()
+                                    .map(|p| match p {
+                                        crate::ast::StrPart::Text(t) => t.clone(),
+                                        crate::ast::StrPart::Expr(_) => String::new(),
+                                    })
+                                    .collect();
+                                if !is_plain || text.is_empty() {
+                                    self.err(
+                                        arg.span,
+                                        "`#[tag(...)]` arguments must be non-empty string literals",
+                                    );
+                                }
+                            } else {
+                                self.err(
+                                    arg.span,
+                                    "`#[tag(...)]` arguments must be string literals",
+                                );
+                            }
+                        }
+                    }
+                    "tag" => {
+                        self.err(a.span, "`#[tag(...)]` is only allowed on test items");
+                    }
+                    _ => {
+                        self.err(
+                            a.span,
+                            format!(
+                                "attributes on declarations are not lowered yet (`#[{}]`)",
+                                a.name
+                            ),
+                        );
+                    }
                 }
             }
             match &item.kind {

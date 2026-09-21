@@ -81,10 +81,10 @@ enum Command {
         /// Run only tests whose name (after `test `) contains this substring
         #[arg(long, short)]
         filter: Option<String>,
-        /// Run only tests carrying this tag (accepted for CLI compatibility;
-        /// tag filtering is not implemented yet)
+        /// Run only tests carrying this tag; repeatable, a test matches any
+        /// requested tag (combined with `--filter` with AND semantics)
         #[arg(long)]
-        tag: Option<String>,
+        tag: Vec<String>,
     },
     /// Compile a module to a native executable, linking the runtime
     Build {
@@ -274,11 +274,6 @@ fn run() -> Result<()> {
             filter,
             tag,
         } => {
-            if tag.as_deref().map(str::trim).is_some_and(|t| !t.is_empty()) {
-                eprintln!(
-                    "note: `--tag` filtering is not implemented yet; running all matching tests"
-                );
-            }
             let target = target.clone().unwrap_or_else(|| PathBuf::from("tests"));
             let files: Vec<PathBuf> = if target.is_dir() {
                 let mut out: Vec<PathBuf> = std::fs::read_dir(&target)
@@ -328,17 +323,16 @@ fn run() -> Result<()> {
                     continue;
                 }
                 let filter = filter.as_deref().filter(|f| !f.is_empty());
-                let tests = if filter.is_some() {
-                    test_fns
-                        .iter()
-                        .copied()
-                        .filter(|f| {
-                            filter.is_some_and(|p| f.name.contains(p))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    test_fns
-                };
+                let tags: Vec<&str> = tag.iter().map(String::as_str).collect();
+                let tests = test_fns
+                    .iter()
+                    .copied()
+                    .filter(|f| {
+                        let name_ok = filter.is_none_or(|p| f.name.contains(p));
+                        let tag_ok = tags.is_empty() || tags.iter().any(|t| f.tags.iter().any(|g| g == t));
+                        name_ok && tag_ok
+                    })
+                    .collect::<Vec<_>>();
                 if tests.is_empty() {
                     eprintln!("note: {} has no matching tests", file.display());
                     continue;

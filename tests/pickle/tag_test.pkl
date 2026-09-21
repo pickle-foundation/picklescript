@@ -1,0 +1,27 @@
+// `#[tag("...")]` on test items; `--tag` filters by it. A test may carry
+// several tags, and the attribute works on both the `test("desc")` and the
+// `test fn name` forms. Untagged tests never match a tag filter.
+
+fn triple(n: int) -> int {
+    n * 3
+}
+
+#[tag("fast")]
+test("fast single tag", {
+    expect(triple(2)).toBe(6)
+})
+
+#[tag("slow")]
+#[tag("math")]
+test("slow with two tags", {
+    expect(triple(10)).toBe(30)
+})
+
+#[tag("integration")]
+test fn plain_fn_test() {
+    expect(triple(3)).toBe(9)
+}
+
+test("no tags at all", {
+    expect(triple(4)).toBe(12)
+})

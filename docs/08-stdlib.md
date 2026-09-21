@@ -228,7 +228,9 @@ per group. `expect(value).matcher(...)` (e.g. `.toBe`, `.toEqual`,
 `.toContain`, `.toBeGreaterThan`) gives readable failure output. Assertions:
 `assert(cond, msg?)`; `std.test` provides asserts and timing for longer-term
 plans. `pickle test` discovers `*_test.pkl`/`*.test.pkl` files and runs them,
-reporting per-module, per-group results.
+reporting per-module, per-group results. `#[tag("name")]` on a test item
+attaches tags (repeatable) and `pickle test --tag name` runs only the tests
+carrying one.
 
 ## Release plan
 

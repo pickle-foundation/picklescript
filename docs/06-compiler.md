@@ -569,7 +569,7 @@ the above.
 - `pickle check`   — parse + resolve + typecheck only (fast CI gate).
 - `pickle ast`     — dump AST.
 - `pickle ir`      — dump typed IR.
-- `pickle test`  — discover test modules under `tests/` (or a given path) and JIT-compile, run, report. Directory targets only pick up `*_test.pkl` / `*.test.pkl` files. Supports `test fn name()` and `test("desc", ...)`/`it` suites with `describe` groups and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks; `--filter` narrows by test-name substring (matches the desugared path, so `describe`/`test` names both filter). `--tag` is accepted for CLI compatibility but not yet filtering.
+- `pickle test`  — discover test modules under `tests/` (or a given path) and JIT-compile, run, report. Directory targets only pick up `*_test.pkl` / `*.test.pkl` files. Supports `test fn name()` and `test("desc", ...)`/`it` suites with `describe` groups and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks; `--filter` narrows by test-name substring (matches the desugared path, so `describe`/`test` names both filter). `#[tag("name")]` on a test item attaches test tags (repeatable); `--tag name` runs only tests carrying it (repeatable, any-tag match, AND-combined with `--filter`).
 - `pickle repl`    — incremental front end + JIT.
 
 ## Error philosophy
