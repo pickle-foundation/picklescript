@@ -2653,6 +2653,38 @@ fn accepts_bytes_and_str_byte_bridge() {
 }
 
 #[test]
+fn accepts_map_remove_option() {
+    let d = check_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            let v: int? = m.remove("a")
+            let w = m.remove("a") ?? -1
+            if (let some(x) = m.remove("a")) {
+                print("{x}")
+            } else {
+                print("none")
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_map_remove_arity() {
+    let d = check_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            let v = m.remove()
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `remove` arity error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn rejects_bytes_non_string_arg() {
     let d = check_str(
         r#"fn main() {

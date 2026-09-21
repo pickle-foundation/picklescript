@@ -998,6 +998,7 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_map_set" => abi::pickle_map_set as *const () as usize,
         "pickle_map_get_boxed" => abi::pickle_map_get_boxed as *const () as usize,
         "pickle_map_has" => abi::pickle_map_has as *const () as usize,
+        "pickle_map_remove" => abi::pickle_map_remove as *const () as usize,
         "pickle_map_len" => abi::pickle_map_len as *const () as usize,
         "pickle_map_keys" => abi::pickle_map_keys as *const () as usize,
         "pickle_map_values" => abi::pickle_map_values as *const () as usize,

@@ -283,6 +283,7 @@ pub mod abi {
     pub use crate::map::pickle_map_keys;
     pub use crate::map::pickle_map_len;
     pub use crate::map::pickle_map_new;
+    pub use crate::map::pickle_map_remove;
     pub use crate::map::pickle_map_set;
     pub use crate::map::pickle_map_values;
 

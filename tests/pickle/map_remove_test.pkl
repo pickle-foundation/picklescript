@@ -1,0 +1,68 @@
+test fn map_remove_present_int() {
+    let m = {"a": 1, "b": 2}
+    let removed = m.remove("a")
+    if (let some(v) = removed) {
+        expect(v).toBe(1)
+    } else {
+        expect("unexpected").toBe("map_remove_present_int: remove returned none for a present key")
+    }
+    expect(m.has("a")).toBe(false)
+    expect(m.has("b")).toBe(true)
+    expect(len(m.values())).toBe(1)
+}
+
+test fn map_remove_absent_is_none() {
+    let m = {"a": 7}
+    let removed = m.remove("missing")
+    if (let some(_v) = removed) {
+        expect("unexpected").toBe("map_remove_absent_is_none: remove returned some for an absent key")
+    } else {
+        expect(true).toBe(true)
+    }
+    expect(m.has("a")).toBe(true)
+}
+
+test fn map_remove_none_coalecess() {
+    let m = {"x": 42}
+    let v = m.remove("nope") ?? -1
+    expect(v).toBe(-1)
+    let w = m.remove("x") ?? -1
+    expect(w).toBe(42)
+}
+
+test fn map_remove_string_value() {
+    let m = {"k": "hello", "j": "world"}
+    let removed = m.remove("k")
+    if (let some(v) = removed) {
+        expect(v).toBe("hello")
+    } else {
+        expect("unexpected").toBe("map_remove_string_value: remove returned none for a present key")
+    }
+    expect(m.has("k")).toBe(false)
+}
+
+test fn map_remove_bool_and_double_removal() {
+    let m = {"yes": true, "n": false}
+    let a = m.remove("yes")
+    if (let some(v) = a) {
+        expect(v).toBe(true)
+    } else {
+        expect("unexpected").toBe("map_remove_bool_and_double_removal: remove returned none for a present key")
+    }
+    let again = m.remove("yes")
+    if (let some(_v) = again) {
+        expect("unexpected").toBe("map_remove_bool_and_double_removal: a second remove should return none")
+    } else {
+        expect(true).toBe(true)
+    }
+}
+
+test fn map_remove_float_value() {
+    let m = {"pi": 3.14}
+    let removed = m.remove("pi")
+    if (let some(v) = removed) {
+        expect(v).toBe(3.14)
+    } else {
+        expect("unexpected").toBe("map_remove_float_value: remove returned none for a present key")
+    }
+}

@@ -253,6 +253,17 @@ pub extern "C" fn pickle_map_has(map: *const PickleObject, key: *const PickleObj
     !map_get(map, key).is_null()
 }
 
+/// Remove `key`; returns the removed value (a boxed scalar or managed
+/// pointer) when present, else null — exactly the `T?` option representation,
+/// so compiled code can hand the result straight to an option-typed slot.
+#[no_mangle]
+pub extern "C" fn pickle_map_remove(
+    map: *mut PickleObject,
+    key: *const PickleObject,
+) -> *mut PickleObject {
+    map_remove(map, key)
+}
+
 /// Number of live entries.
 #[no_mangle]
 pub extern "C" fn pickle_map_len(map: *const PickleObject) -> usize {

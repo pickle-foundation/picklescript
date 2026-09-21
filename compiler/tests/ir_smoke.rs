@@ -2536,4 +2536,20 @@ fn emits_bytes_str_bridge_builtins() {
     }
 }
 
+#[test]
+fn emits_map_remove_builtin() {
+    let m = emit_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            let v = m.remove("a") ?? -1
+            println(v, m.has("a"))
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    assert!(
+        symbols.contains(&"pickle_map_remove".to_string()),
+        "symbols: {symbols:?}"
+    );
+}
+
 
