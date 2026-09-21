@@ -2,10 +2,11 @@
 //! simple builtins. The compiler emits calls to these primitives; richer
 //! formatting is left to `std.text` later.
 
-use crate::layout::{enum_tag, list_len, map_len, str_bytes, str_len};
+use crate::layout::{enum_tag, list_len, map_len, str_bytes, str_len, tuple_field_count};
 use crate::object::{
     PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
     PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
+    PICKLE_CLASS_TUPLE,
 };
 #[cfg(not(test))]
 use std::io::Write;
@@ -160,6 +161,11 @@ fn print_obj_raw(obj: *mut PickleObject) {
             pickle_print_i64(enum_tag(obj));
             pickle_print_byte(b')' as i64);
         }
+        PICKLE_CLASS_TUPLE => {
+            pickle_print_cstr(b"Tuple(len=\0".as_ptr());
+            pickle_print_i64(tuple_field_count(obj) as i64);
+            pickle_print_byte(b')' as i64);
+        }
         PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),
         PICKLE_CLASS_BOX_FLOAT => pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64)),
         PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 { b"true\0".as_ptr() } else { b"false\0".as_ptr() }),
@@ -212,6 +218,18 @@ pub(crate) fn fmt_obj_to(buf: &mut Vec<u8>, obj: *mut PickleObject) {
         PICKLE_CLASS_ENUM => {
             buf.extend_from_slice(b"Enum(");
             buf.extend_from_slice(enum_tag(obj).to_string().as_bytes());
+            buf.push(b')');
+        }
+        PICKLE_CLASS_TUPLE => {
+            buf.push(b'(');
+            let n = tuple_field_count(obj);
+            for i in 0..n {
+                if i > 0 {
+                    buf.extend_from_slice(b", ");
+                }
+                let elem = crate::tuple::pickle_tuple_field(obj, i);
+                fmt_obj_to(buf, elem);
+            }
             buf.push(b')');
         }
         PICKLE_CLASS_BOX_INT => buf.extend_from_slice(crate::boxscalar::box_bits(obj).to_string().as_bytes()),

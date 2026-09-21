@@ -284,8 +284,8 @@ mod tests {
         use crate::heap::Heap;
         use crate::object::DescriptorTable;
         let heap = Heap::new();
-        // Dummies for ids 0..7 (matching the reserved builtin range), then the
-        // class descriptor at id 8, the id a class-new object carries.
+        // Dummies for the reserved builtin range, then the class descriptor at
+        // `PICKLE_CLASS_USER_BASE`, the id a class-new object carries.
         let mut desc = DescriptorTable::new();
         let dummy = ClassDescriptor {
             name_ptr: b"x\0".as_ptr(),
@@ -311,7 +311,7 @@ mod tests {
         let gc = crate::gc::gc_mut();
         unsafe {
             let payload = crate::boxscalar::pickle_box_i64(99);
-            let o = class_new(8, 1, gc);
+            let o = class_new(PICKLE_CLASS_USER_BASE.into(), 1, gc);
             class_set_slot(o, 0, payload);
             assert!(!(*o).is_marked());
             assert!(!(*payload).is_marked());

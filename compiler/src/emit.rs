@@ -37,11 +37,12 @@ fn sanitize_symbol(s: &str) -> String {
 }
 
 /// Runtime class ids for user classes start at this id: the runtime reserves
-/// 0..=6 for the builtin boxed types (string/list/map/int/float/bool/char)
-/// and 7 for `PEnum`, so the first user class registered at runtime gets id
-/// 8. The compiler assigns `8 + index` in declaration order, matching the
-/// runtime's allocation order.
-const PICKLE_CLASS_USER_BASE: i64 = 8;
+/// 0..=6 for the builtin boxed types (string/list/map/int/float/bool/char),
+/// 7 for `PEnum`, and 8 for `PTuple`, so the first user class registered at
+/// runtime gets id `PICKLE_CLASS_USER_BASE`. The compiler assigns
+/// `base + index` in declaration order, matching the runtime's allocation
+/// order.
+const PICKLE_CLASS_USER_BASE: i64 = 9;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
 ///
@@ -3852,6 +3853,7 @@ fn build_lambda_body(
     /// list pairs with index i of the values list. Keys unbox per their
     /// `ElemRep` (string keys are pass-through pointers; composite keys too);
     /// values unbox per `elem_rep`.
+    #[allow(clippy::too_many_arguments)]
     fn for_in_map_entries(
         &mut self,
         kname: &str,
@@ -4115,7 +4117,7 @@ fn build_lambda_body(
                 self.pop_scope();
                 r
             }
-            ExprKind::Tuple(_) => self.bad(e.span, "tuple values are not lowered yet"),
+            ExprKind::Tuple(items) => self.tuple_literal(e, items),
             ExprKind::Array(items) => self.array_literal(e, items),
             ExprKind::Map(pairs) => self.map_literal(e, pairs),
             ExprKind::Range { .. } => self.bad(e.span, "range values are not lowered yet"),
@@ -4524,6 +4526,34 @@ fn build_lambda_body(
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
         Ok(self.load(res_slot))
+    }
+
+    /// Combine two boolean temps (`&&` when `is_and`, else `||`) into one
+    /// `Bool` temp. Like `logic`, this is branch-based because the IR has no
+    /// boolean and/or instruction.
+    fn combine_cond(&mut self, is_and: bool, a: Temp, b: Temp) -> Temp {
+        let res_slot = self.new_slot(IrTy::Bool);
+        let rhs_id = self.new_block();
+        let short_id = self.new_block();
+        let join = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: a,
+            then: if is_and { rhs_id } else { short_id },
+            else_: if is_and { short_id } else { rhs_id },
+        });
+        self.cur = rhs_id;
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = short_id;
+        let sv = self.temp();
+        self.instr(IrInstr::Const {
+            dst: sv,
+            c: IrConst::Bool(!is_and),
+        });
+        self.instr(IrInstr::StoreSlot { slot: res_slot, v: sv });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = join;
+        self.load(res_slot)
     }
 
     /// Test a pointer-valued option for presence (`ptr != null`), yielding a
@@ -5854,6 +5884,51 @@ fn build_lambda_body(
         Ok(dst)
     }
 
+    /// `(a, b, c)` tuple literal: build a `PTuple` by writing each element
+    /// into its slot, boxing scalar elements along the way (matching list
+    /// element rules). The tuple's arity is static, so elements are written by
+    /// constant index into a freshly allocated object of the right width.
+    fn tuple_literal(&mut self, e: &Expr, items: &[Expr]) -> Result<Temp, ()> {
+        let tys = match self.ty_of(&e.span) {
+            Some(Ty::Tuple(tys)) => tys,
+            _ => return self.bad(e.span, "tuple literal does not have a `Tuple` type"),
+        };
+        if items.is_empty() {
+            return self.bad(e.span, "empty tuple values are not lowered yet");
+        }
+        if tys.len() != items.len() {
+            return self.bad(e.span, "tuple literal element/type count mismatch");
+        }
+        let n = self.temp();
+        self.instr(IrInstr::Const {
+            dst: n,
+            c: IrConst::Int(items.len() as i64),
+        });
+        let tv = self.extern_call_t1("pickle_tuple_new", vec![IrTy::Int], IrTy::Ptr, vec![n])?;
+        for (i, it) in items.iter().enumerate() {
+            let v = self.expr(it)?;
+            let rep = self.elem_rep(&tys[i], e.span)?;
+            let store_v = match rep {
+                ElemRep::Scalar(box_sym, _, _) => {
+                    let v_ty = self.irty(it.span)?;
+                    self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![v])?
+                }
+                ElemRep::Ptr => v,
+            };
+            let idx = self.temp();
+            self.instr(IrInstr::Const {
+                dst: idx,
+                c: IrConst::Int(i as i64),
+            });
+            self.extern_call_void(
+                "pickle_tuple_set_field",
+                vec![IrTy::Ptr, IrTy::Int, IrTy::Ptr],
+                vec![tv, idx, store_v],
+            );
+        }
+        Ok(tv)
+    }
+
     /// `[a, b, c]` array literal: build a `List` by pushing each element,
     /// boxing scalar elements along the way.
     fn array_literal(&mut self, e: &Expr, items: &[Expr]) -> Result<Temp, ()> {
@@ -6188,7 +6263,90 @@ fn build_lambda_body(
                     self.pop_scope();
                     self.term(IrTerm::Branch { target: join });
                 }
-                Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Or(_) => {
+                Pattern::Or(alts) => {
+                    // `Tag(a) | Tag(b)` style alternatives: every alternative
+                    // must be a variant of this enum carrying only `_`
+                    // payloads (the checker rejects name-binding alternatives),
+                    // so entry is decided by one OR-folded tag equality and
+                    // nothing is bound.
+                    if chain_live {
+                        // The fold's `combine_cond` terminates the chain entry
+                        // block with its own branch, so `self.cur` must be the
+                        // chain block when the fold starts.
+                        self.cur = cur;
+                    }
+                    let mut tag_test: Option<Temp> = None;
+                    for alt in alts {
+                        let Pattern::Variant { path, payloads } = alt else {
+                            return self.bad(
+                                arm.span,
+                                "enum or-pattern alternatives must be variant patterns",
+                            );
+                        };
+                        for pl in payloads {
+                            if !matches!(pl, Pattern::Wildcard) {
+                                return self.bad(
+                                    arm.span,
+                                    "enum or-pattern alternatives may only use `_` payloads",
+                                );
+                            }
+                        }
+                        let vname = match path.len() {
+                            2 => &path[1],
+                            1 => &path[0],
+                            _ => return self.bad(arm.span, "invalid enum variant pattern"),
+                        };
+                        let Some(vi) =
+                            table.variants.iter().position(|(n, ..)| n == vname)
+                        else {
+                            return self.bad(
+                                arm.span,
+                                format!("enum `{enum_name}` has no variant `{vname}`"),
+                            );
+                        };
+                        let vi_t = self.const_temp(IrConst::Int(vi as i64));
+                        let c = self.temp();
+                        self.instr(IrInstr::BinOp {
+                            dst: c,
+                            op: IrBinOp::Eq,
+                            a: tag,
+                            b: vi_t,
+                        });
+                        tag_test = match tag_test {
+                            None => Some(c),
+                            Some(prev) => Some(self.combine_cond(false, prev, c)),
+                        };
+                    }
+                    let cond = tag_test.expect("an or-pattern has at least one alternative");
+                    if chain_live {
+                        // `self.cur` is the last fold's join, where `cond` is
+                        // defined; branch forward to this arm's guard/body or
+                        // fall through to the next arm.
+                        let next = self.new_block();
+                        self.term(IrTerm::BranchIf {
+                            cond,
+                            then: guard_in,
+                            else_: next,
+                        });
+                        cur = next;
+                    }
+                    self.cur = guard_in;
+                    self.push_scope();
+                    if let Some(g) = guard {
+                        let cond = self.expr(g)?;
+                        let fall = if chain_live { cur } else { join };
+                        self.term(IrTerm::BranchIf {
+                            cond,
+                            then: body,
+                            else_: fall,
+                        });
+                        self.cur = body;
+                    }
+                    self.match_arm_body(&arm.body, res_slot)?;
+                    self.pop_scope();
+                    self.term(IrTerm::Branch { target: join });
+                }
+                Pattern::Literal(_) | Pattern::Tuple(_) => {
                     return self.bad(arm.span, "this match pattern is not lowered yet");
                 }
             }
@@ -6221,18 +6379,8 @@ fn build_lambda_body(
         arms: &[MatchArm],
         st: &Ty,
     ) -> Result<Temp, ()> {
-        let is_option = st.is_option();
-        let is_str = matches!(st, Ty::String);
-        let scalar = self.scalar_ir_of(st);
-        if !(is_option || is_str || scalar.is_some()) {
+        let Some(s_ir) = self.match_scrutinee_ir(st) else {
             return self.bad(e.span, format!("matching over `{st}` values is not lowered yet"));
-        }
-        let s_ir = if is_option {
-            IrTy::Ptr
-        } else if is_str {
-            IrTy::Str
-        } else {
-            scalar.unwrap()
         };
         // The scrutinee lives in a slot so every arm sees the same value (and
         // a managed one stays rooted across arm allocations).
@@ -6268,7 +6416,8 @@ fn build_lambda_body(
             if let Some(p) = testable {
                 if chain_live {
                     self.cur = cur;
-                    let cond = self.pattern_test_cond(p, st, s_slot, arm.span)?;
+                    let sv = self.load(s_slot);
+                    let cond = self.pattern_test_cond(p, st, sv, arm.span)?;
                     let next = self.new_block();
                     self.term(IrTerm::BranchIf {
                         cond,
@@ -6279,7 +6428,8 @@ fn build_lambda_body(
                 }
                 self.cur = guard_in;
                 self.push_scope();
-                self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                let bv = self.load(s_slot);
+                self.bind_match_value(&arm.pattern, st, bv, arm.span)?;
                 if let Some(g) = guard {
                     let cond = self.expr(g)?;
                     let fall = if chain_live { cur } else { join };
@@ -6304,7 +6454,8 @@ fn build_lambda_body(
                     cur = self.new_block();
                     self.cur = guard_in;
                     self.push_scope();
-                    self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                    let bv = self.load(s_slot);
+                    self.bind_match_value(&arm.pattern, st, bv, arm.span)?;
                     let cond = self.expr(g)?;
                     self.term(IrTerm::BranchIf {
                         cond,
@@ -6318,7 +6469,8 @@ fn build_lambda_body(
                 } else {
                     self.cur = guard_in;
                     self.push_scope();
-                    self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+                    let bv = self.load(s_slot);
+                    self.bind_match_value(&arm.pattern, st, bv, arm.span)?;
                     let cond = self.expr(g)?;
                     self.term(IrTerm::BranchIf {
                         cond,
@@ -6339,7 +6491,8 @@ fn build_lambda_body(
             }
             self.cur = body;
             self.push_scope();
-            self.bind_match_value(&arm.pattern, st, s_slot, arm.span)?;
+            let bv = self.load(s_slot);
+            self.bind_match_value(&arm.pattern, st, bv, arm.span)?;
             self.match_arm_body(&arm.body, res_slot)?;
             self.pop_scope();
             self.term(IrTerm::Branch { target: join });
@@ -6359,18 +6512,19 @@ fn build_lambda_body(
         }
     }
 
-    /// Produce the branch condition under which `p` matches the scrutinee in
-    /// `s_slot` (`none` tests absence, `some(_)` and literal patterns test
-    /// equality/presence). Only call for patterns that can actually gate a
-    /// branch; the checker rejects incompatible ones first.
+    /// Produce the branch condition under which `p` matches the scrutinee
+    /// value `a` (already loaded). `none` tests absence; `some(payload)`
+    /// tests presence (and, for nested payload patterns, recurses); tuple
+    /// patterns test each element; `a | b` tests either alternative; literal
+    /// patterns test equality. Only call for patterns that can actually gate
+    /// a branch; the checker rejects incompatible ones first.
     fn pattern_test_cond(
         &mut self,
         p: &Pattern,
         st: &Ty,
-        s_slot: Slot,
+        a: Temp,
         span: Span,
     ) -> Result<Temp, ()> {
-        let a = self.load(s_slot);
         match p {
             Pattern::Literal(Lit::None) if st.is_option() => {
                 let present = self.opt_is_present(a)?;
@@ -6385,8 +6539,73 @@ fn build_lambda_body(
                 Ok(dst)
             }
             Pattern::Variant { path, payloads } if path == &["some"] && st.is_option() => {
-                let _ = payloads;
-                self.opt_is_present(a)
+                let inner = st.inner_option().unwrap_or(Ty::Unknown);
+                let present = self.opt_is_present(a)?;
+                match payloads.first() {
+                    None | Some(Pattern::Wildcard) | Some(Pattern::Binding { .. }) => Ok(present),
+                    Some(payload) => {
+                        // Nested pattern on the inner value: the arm matches
+                        // only when the option is present *and* the payload
+                        // does too. Reading the payload must be guarded behind
+                        // presence so a `none` option is never dereferenced.
+                        let res_slot = self.new_slot(IrTy::Bool);
+                        let on_present = self.new_block();
+                        let on_absent = self.new_block();
+                        let join = self.new_block();
+                        self.term(IrTerm::BranchIf {
+                            cond: present,
+                            then: on_present,
+                            else_: on_absent,
+                        });
+                        self.cur = on_present;
+                        let resolved = self.opt_resolve(a, &inner, span)?;
+                        let inner_cond = self.pattern_test_cond(payload, &inner, resolved, span)?;
+                        self.instr(IrInstr::StoreSlot {
+                            slot: res_slot,
+                            v: inner_cond,
+                        });
+                        self.term(IrTerm::Branch { target: join });
+                        self.cur = on_absent;
+                        let f = self.const_temp(IrConst::Bool(false));
+                        self.instr(IrInstr::StoreSlot { slot: res_slot, v: f });
+                        self.term(IrTerm::Branch { target: join });
+                        self.cur = join;
+                        Ok(self.load(res_slot))
+                    }
+                }
+            }
+            Pattern::Tuple(parts) => {
+                let Ty::Tuple(tys) = st else {
+                    return self.bad(span, "a tuple pattern requires a tuple scrutinee");
+                };
+                if tys.len() != parts.len() {
+                    return self.bad(
+                        span,
+                        "tuple pattern arity does not match the scrutinee type",
+                    );
+                }
+                let mut acc: Option<Temp> = None;
+                for (i, part) in parts.iter().enumerate() {
+                    let c = self.tuple_part_cond(part, &tys[i], a, i, span)?;
+                    if let Some(c) = c {
+                        acc = match acc {
+                            None => Some(c),
+                            Some(prev) => Some(self.combine_cond(true, prev, c)),
+                        };
+                    }
+                }
+                Ok(acc.unwrap_or_else(|| self.const_temp(IrConst::Bool(true))))
+            }
+            Pattern::Or(alts) => {
+                let mut acc: Option<Temp> = None;
+                for alt in alts {
+                    let c = self.pattern_test_cond(alt, st, a, span)?;
+                    acc = match acc {
+                        None => Some(c),
+                        Some(prev) => Some(self.combine_cond(false, prev, c)),
+                    };
+                }
+                Ok(acc.expect("an or-pattern has at least one alternative"))
             }
             Pattern::Literal(lit) if matches!(st, Ty::String) => {
                 let Lit::String(parts) = lit else {
@@ -6430,6 +6649,43 @@ fn build_lambda_body(
                 Ok(dst)
             }
             _ => self.bad(span, "this match pattern is not lowered yet"),
+        }
+    }
+
+    /// The match condition contributed by tuple element `i` (read from the
+    /// tuple pointer `a`): bindings and wildcards are always true; a testable
+    /// nested pattern is unboxed to the element's IR domain and recursed.
+    fn tuple_part_cond(
+        &mut self,
+        part: &Pattern,
+        elem: &Ty,
+        a: Temp,
+        i: usize,
+        span: Span,
+    ) -> Result<Option<Temp>, ()> {
+        match part {
+            Pattern::Binding { .. } | Pattern::Wildcard => Ok(None),
+            other => {
+                let idx = self.const_temp(IrConst::Int(i as i64));
+                if let ElemRep::Scalar(_, unbox_sym, unbox_ir) = self.elem_rep(elem, span)? {
+                    let raw = self.extern_call_t1(
+                        "pickle_tuple_field",
+                        vec![IrTy::Ptr, IrTy::Int],
+                        IrTy::Ptr,
+                        vec![a, idx],
+                    )?;
+                    let un = self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], unbox_ir, vec![raw])?;
+                    Ok(Some(self.pattern_test_cond(other, elem, un, span)?))
+                } else {
+                    let raw = self.extern_call_t1(
+                        "pickle_tuple_field",
+                        vec![IrTy::Ptr, IrTy::Int],
+                        IrTy::Ptr,
+                        vec![a, idx],
+                    )?;
+                    Ok(Some(self.pattern_test_cond(other, elem, raw, span)?))
+                }
+            }
         }
     }
 
@@ -6488,6 +6744,27 @@ fn build_lambda_body(
         }
     }
 
+    /// The IR domain a match scrutinee (`match`/`if let`) is kept in: scalars
+    /// as themselves, strings as `Str` foreign pointers, and every composite
+    /// (option/list/map/class/struct/enum/interface/tuple/range) as a managed
+    /// `Ptr`.
+    fn match_scrutinee_ir(&self, st: &Ty) -> Option<IrTy> {
+        match st {
+            Ty::Int | Ty::Byte | Ty::Float | Ty::Bool | Ty::Char => self.scalar_ir_of(st),
+            Ty::String => Some(IrTy::Str),
+            Ty::Option(..)
+            | Ty::Class(..)
+            | Ty::Struct(..)
+            | Ty::Enum(..)
+            | Ty::Interface(..)
+            | Ty::List(..)
+            | Ty::Map(..)
+            | Ty::Tuple(..)
+            | Ty::Range(..) => Some(IrTy::Ptr),
+            _ => None,
+        }
+    }
+
     fn const_temp(&mut self, c: IrConst) -> Temp {
         let dst = self.temp();
         self.instr(IrInstr::Const { dst, c });
@@ -6511,67 +6788,84 @@ fn build_lambda_body(
         Ok(self.const_temp(IrConst::Int(kind)))
     }
 
-    /// Bind the names of an arm pattern to the scrutinee in `s_slot` (current
-    /// block). `some(v)` unboxes the present option; scalar and string
-    /// bindings are just the scrutinee value; `_`/literals bind nothing.
+    /// Bind the names an arm pattern introduces to the scrutinee value `v`
+    /// (already loaded, of type `st`) in the current block. Bindings declare
+    /// under `map_ty`; `some(v)` unboxes the present option; tuple patterns
+    /// unbox each element; `[a | b]` binds nothing (the checker only admits
+    /// or-patterns that introduce no names); `_`/literals bind nothing.
     fn bind_match_value(
         &mut self,
         p: &Pattern,
         st: &Ty,
-        s_slot: Slot,
+        v: Temp,
         span: Span,
     ) -> Result<(), ()> {
         match p {
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) => Ok(()),
+            Pattern::Wildcard | Pattern::Literal(_) => Ok(()),
             Pattern::Binding { name, .. } => {
                 let ir = if matches!(st, Ty::String) {
                     IrTy::Str
                 } else {
                     self.map_ty(st, span)?
                 };
-                let v = self.load(s_slot);
                 self.declare_binding(name, ir, v);
                 Ok(())
             }
             Pattern::Variant { path, payloads } if path == &["some"] && st.is_option() => {
+                // The match condition already proved the option present, so
+                // resolving is safe here.
                 let inner = st.inner_option().unwrap_or(Ty::Unknown);
-                let sv = self.load(s_slot);
-                let v = self.opt_resolve(sv, &inner, span)?;
-                self.bind_nested_pattern(payloads.first(), &inner, v, span)
+                let resolved = self.opt_resolve(v, &inner, span)?;
+                match payloads.first() {
+                    None => Ok(()),
+                    Some(pl) => self.bind_pattern_value(pl, &inner, resolved, span),
+                }
             }
-            Pattern::Or(alts) => {
-                for a in alts {
-                    self.bind_match_value(a, st, s_slot, span)?;
+            Pattern::Tuple(parts) => {
+                let Ty::Tuple(tys) = st else {
+                    return self.bad(span, "a tuple pattern requires a tuple scrutinee");
+                };
+                if tys.len() != parts.len() {
+                    return self.bad(
+                        span,
+                        "tuple pattern arity does not match the scrutinee type",
+                    );
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    let idx = self.const_temp(IrConst::Int(i as i64));
+                    let raw = self.extern_call_t1(
+                        "pickle_tuple_field",
+                        vec![IrTy::Ptr, IrTy::Int],
+                        IrTy::Ptr,
+                        vec![v, idx],
+                    )?;
+                    let elem = &tys[i];
+                    let pv = if let ElemRep::Scalar(_, unbox_sym, unbox_ir) =
+                        self.elem_rep(elem, span)?
+                    {
+                        self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], unbox_ir, vec![raw])?
+                    } else {
+                        raw
+                    };
+                    self.bind_pattern_value(part, elem, pv, span)?;
                 }
                 Ok(())
             }
+            Pattern::Or(_) => Ok(()),
             _ => self.bad(span, "this match pattern is not lowered yet"),
         }
     }
 
-    /// Bind a `some(v)` payload (or a plain binding) to a value `v` of type
-    /// `ty` already in IR form.
-    fn bind_nested_pattern(
+    /// Bind a nested pattern to a value `v` of type `ty` already in IR form
+    /// (a `some` payload or a tuple element).
+    fn bind_pattern_value(
         &mut self,
-        p: Option<&Pattern>,
+        p: &Pattern,
         ty: &Ty,
         v: Temp,
         span: Span,
     ) -> Result<(), ()> {
-        let Some(p) = p else { return Ok(()) };
-        match p {
-            Pattern::Binding { name, .. } => {
-                let ir = if matches!(ty, Ty::String) {
-                    IrTy::Str
-                } else {
-                    self.map_ty(ty, span)?
-                };
-                self.declare_binding(name, ir, v);
-                Ok(())
-            }
-            Pattern::Wildcard => Ok(()),
-            _ => self.bad(span, "nested `some` patterns are not lowered yet"),
-        }
+        self.bind_match_value(p, ty, v, span)
     }
 
     fn declare_binding(&mut self, name: &str, ir: IrTy, v: Temp) {
@@ -6713,14 +7007,9 @@ fn build_lambda_body(
         else_else: Option<&Expr>,
     ) -> Result<Temp, ()> {
         let st = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
-        let is_option = st.is_option();
-        let is_str = matches!(st, Ty::String);
-        let s_ir = match self.scalar_ir_of(&st) {
-            Some(ir) => ir,
-            None if is_option => IrTy::Ptr,
-            None if is_str => IrTy::Str,
-            None => IrTy::Int,
-        };
+        // Composite scrutinees (lists, classes, ...) are kept as `Ptr`, never
+        // squeezed into an `Int` slot: a scalar-less type is not `Int`.
+        let s_ir = self.match_scrutinee_ir(&st).unwrap_or(IrTy::Ptr);
         let v = self.expr(value)?;
         let s_slot = self.new_slot(s_ir);
         self.instr(IrInstr::StoreSlot { slot: s_slot, v });
@@ -6747,12 +7036,14 @@ fn build_lambda_body(
             self.term(IrTerm::Branch { target: then_id });
             self.cur = then_id;
             self.push_scope();
-            self.bind_match_value(pattern, &st, s_slot, value.span)?;
+            let bv = self.load(s_slot);
+            self.bind_match_value(pattern, &st, bv, value.span)?;
             self.block_into_slot(then, res_slot)?;
             self.pop_scope();
             self.term(IrTerm::Branch { target: join });
         } else {
-            let cond = self.pattern_test_cond(pattern, &st, s_slot, value.span)?;
+            let sv = self.load(s_slot);
+            let cond = self.pattern_test_cond(pattern, &st, sv, value.span)?;
             self.term(IrTerm::BranchIf {
                 cond,
                 then: then_id,
@@ -6760,7 +7051,8 @@ fn build_lambda_body(
             });
             self.cur = then_id;
             self.push_scope();
-            self.bind_match_value(pattern, &st, s_slot, value.span)?;
+            let bv = self.load(s_slot);
+            self.bind_match_value(pattern, &st, bv, value.span)?;
             self.block_into_slot(then, res_slot)?;
             self.pop_scope();
             self.term(IrTerm::Branch { target: join });

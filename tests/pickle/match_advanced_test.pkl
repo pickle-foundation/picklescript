@@ -1,0 +1,186 @@
+enum Direction2 {
+    North
+    South
+    East
+    West
+}
+
+class Point2 {
+    var x: int
+    var y: int
+}
+
+fn sumPair(p: (int, int)) -> int {
+    match (p) {
+        case (a, b) -> a + b
+    }
+}
+
+fn labelOf(p: (int, int)) -> string {
+    match (p) {
+        case (0, 0) -> "origin"
+        case (a, _) if a > 0 -> "right"
+        case _ -> "other"
+    }
+}
+
+fn swapFirst(q: ((int, int), int)) -> int {
+    match (q) {
+        case ((x, y), z) -> x * y + z
+    }
+}
+
+fn sumOfOption(p: (int, string)?) -> string {
+    match (p) {
+        case some((a, b)) -> "{a}:{b}"
+        case none -> "missing"
+    }
+}
+
+fn oneOrTwo(n: int) -> string {
+    match (n) {
+        case 1 | 2 -> "small"
+        case 3 -> "three"
+        case _ -> "other"
+    }
+}
+
+fn dirName(d: Direction2) -> string {
+    match (d) {
+        case Direction2.North | Direction2.South -> "vertical"
+        case Direction2.East | Direction2.West -> "horizontal"
+    }
+}
+
+fn noDupFirst(m: int?) -> string {
+    match (m) {
+        case some(1) | some(2) -> "small"
+        case some(v) -> "big:{v}"
+        case none -> "none"
+    }
+}
+
+fn ifLetOr(n: int) -> int {
+    if (let 1 | 2 = n) {
+        10
+    } else {
+        n
+    }
+}
+
+fn ifLetTuple(p: (int, int)) -> int {
+    if (let (a, b) = p) {
+        a * b
+    } else {
+        0
+    }
+}
+
+fn listIdentity(l: List<int>) -> int {
+    match (l) {
+        case xs -> len(xs)
+    }
+}
+
+fn classIdentity(p: Point2) -> int {
+    match (p) {
+        case o -> o.x + o.y
+    }
+}
+
+fn mapIdentity(m: Map<string, int>) -> int {
+    match (m) {
+        case dm -> len(dm)
+    }
+}
+
+fn ifLetListIsPtr(l: List<int>) -> int {
+    if (let x = l) {
+        len(x)
+    } else {
+        0
+    }
+}
+
+fn firstOfListOfTuples(rows: List<(int, string)>) -> string {
+    match (rows[0]) {
+        case (_, name) -> name
+    }
+}
+
+test fn tuple_values_and_bindings() {
+    expect(sumPair((3, 4))).toBe(7)
+    expect(sumPair((0, 0))).toBe(0)
+}
+
+test fn tuple_literal_case_and_guard() {
+    expect(labelOf((0, 0))).toBe("origin")
+    expect(labelOf((2, 9))).toBe("right")
+    expect(labelOf((0, 5))).toBe("other")
+    expect(labelOf((-1, 1))).toBe("other")
+}
+
+test fn nested_tuple_patterns() {
+    expect(swapFirst(((2, 3), 4))).toBe(10)
+}
+
+test fn some_with_tuple_payload() {
+    let sp = (7, "x") as? (int, string)
+    expect(sumOfOption(sp)).toBe("7:x")
+    let np: (int, string)? = none
+    expect(sumOfOption(np)).toBe("missing")
+}
+
+test fn or_pattern_literals() {
+    expect(oneOrTwo(1)).toBe("small")
+    expect(oneOrTwo(2)).toBe("small")
+    expect(oneOrTwo(3)).toBe("three")
+    expect(oneOrTwo(9)).toBe("other")
+}
+
+test fn or_pattern_enum_variants() {
+    expect(dirName(Direction2.North)).toBe("vertical")
+    expect(dirName(Direction2.South)).toBe("vertical")
+    expect(dirName(Direction2.East)).toBe("horizontal")
+    expect(dirName(Direction2.West)).toBe("horizontal")
+}
+
+test fn or_pattern_options_with_nested_literal() {
+    let m: int? = 1 as? int
+    expect(noDupFirst(m)).toBe("small")
+    let n: int? = 2 as? int
+    expect(noDupFirst(n)).toBe("small")
+    let b: int? = 7 as? int
+    expect(noDupFirst(b)).toBe("big:7")
+    let u: int? = none
+    expect(noDupFirst(u)).toBe("none")
+}
+
+test fn or_pattern_in_if_let() {
+    expect(ifLetOr(1)).toBe(10)
+    expect(ifLetOr(2)).toBe(10)
+    expect(ifLetOr(5)).toBe(5)
+}
+
+test fn if_let_tuple_binds_elements() {
+    expect(ifLetTuple((3, 4))).toBe(12)
+}
+
+test fn composite_scrutinees_bind() {
+    let l = [1, 2, 3]
+    expect(listIdentity(l)).toBe(3)
+    let o = Point2(0, 0)
+    expect(classIdentity(o)).toBe(0)
+    let m = { "a": 1 }
+    expect(mapIdentity(m)).toBe(1)
+}
+
+test fn if_let_list_uses_ptr_slot() {
+    let l = [5, 6]
+    expect(ifLetListIsPtr(l)).toBe(2)
+}
+
+test fn tuples_inside_lists() {
+    let rows: List<(int, string)> = [(1, "one"), (2, "two")]
+    expect(firstOfListOfTuples(rows)).toBe("one")
+}

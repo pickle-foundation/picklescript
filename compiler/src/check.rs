@@ -4250,10 +4250,45 @@ impl<'a> Checker<'a> {
             return;
         }
         match p {
-            Pattern::Wildcard | Pattern::Binding { .. } | Pattern::Tuple(_) => {}
+            Pattern::Wildcard | Pattern::Binding { .. } => {}
+            Pattern::Tuple(parts) => {
+                match st {
+                    Ty::Tuple(tys) => {
+                        if tys.len() != parts.len() {
+                            self.err_note(
+                                span,
+                                format!(
+                                    "a {}-element tuple pattern cannot match a {}-tuple",
+                                    parts.len(),
+                                    tys.len()
+                                ),
+                                "tuple patterns must line up with the scrutinee's arity",
+                            );
+                        } else {
+                            for (part, t) in parts.iter().zip(tys.iter()) {
+                                self.check_match_pattern(part, t, span);
+                            }
+                        }
+                    }
+                    other => {
+                        self.err_note(
+                            span,
+                            format!("a tuple pattern cannot match a value of type `{other}`"),
+                            "tuple patterns require a tuple scrutinee",
+                        );
+                    }
+                }
+            }
             Pattern::Or(alts) => {
                 for a in alts {
                     self.check_match_pattern(a, st, span);
+                }
+                if alts.iter().any(Self::pattern_introduces_binding) {
+                    self.err_note(
+                        span,
+                        "an or-pattern alternative may not bind a name",
+                        "`a | b` joins patterns that only test values (literals, `_`, `some(_)`, `Tag(_)`)",
+                    );
                 }
             }
             Pattern::Literal(l) => self.check_match_literal(l, st, span),
@@ -4291,6 +4326,21 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
+        }
+    }
+
+    /// True when a pattern names a binding at any depth (so it cannot appear
+    /// as an or-pattern alternative, which would otherwise need identical
+    /// bindings in every arm).
+    fn pattern_introduces_binding(p: &Pattern) -> bool {
+        match p {
+            Pattern::Binding { .. } => true,
+            Pattern::Wildcard | Pattern::Literal(_) => false,
+            Pattern::Variant { payloads, .. } => {
+                payloads.iter().any(Self::pattern_introduces_binding)
+            }
+            Pattern::Tuple(parts) => parts.iter().any(Self::pattern_introduces_binding),
+            Pattern::Or(alts) => alts.iter().any(Self::pattern_introduces_binding),
         }
     }
 

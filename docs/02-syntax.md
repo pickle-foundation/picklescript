@@ -88,9 +88,13 @@ return [expr] | return          // bare return == return none, if option
 > against options; arms may carry `if` guards that fall through on `false`. A
 > catch-all is written `case _ -> body`, `else -> body`, or the historical
 > bare `case -> body`; a non-exhaustive chain faults with "pickle: match is
-> not exhaustive" at runtime. Still bailing "not lowered yet": `Or`
-> (`case a | b`) patterns, tuple patterns, nested payload bindings, and
-> matching over composite (list/map/class/struct) scrutinees.
+> not exhaustive" at runtime. `match` also lowers `a | b` Or patterns
+> (literals, `Dir.North` enum-variant cases, `some(v)`), tuple patterns
+> (`case (a, b)`), nested payloads (`some((a, b))`), and composite
+> (list/map/class/struct/enum/option/tuple) scrutinees. What still bails
+> "not lowered yet": `let (a, b) = ...` / `if (let (a, b) = ...)` (and
+> `if (let <literal> = ...)`) top-level destructuring, empty tuple literals,
+> and nested enum-payload bindings (`case Tag(some(x))`).
 
 ### Expression statements
 

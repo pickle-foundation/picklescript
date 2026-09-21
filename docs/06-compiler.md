@@ -157,7 +157,8 @@ enforces key types at literal, index, and method sites; optional, tuple,
 reference, function, and pointer keys are not lowered.
 
 Enums follow the same extern path. An enum value is a managed object
-(`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (6; user classes start at 7).
+(`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (7; user classes start at
+`PICKLE_CLASS_USER_BASE`, 9).
 Its payload slot 0 holds the variant tag as a *raw* `i64` (unmanaged, skipped
 by the tracer); payload slots 1.. hold the variant's fields, boxed with the
 same element rules as `List<T>` elements. Field count is derived at runtime
@@ -340,8 +341,9 @@ The inferred instantiation is exactly the explicit one (`pkl_id_fn__int` is
   `Box<int>`, a generic fn call building `Pair<int, string>`) registers an
   *instantiation plan* at codegen
   time: a substituted `ClassTable` under the mangled display name (`Box<int>`),
-  a fresh stable class id (`8 + classes.len()`, allocated in deterministic
-  plan order; the `pickle_class_register` preamble is injected *after* the
+  a fresh stable class id (`PICKLE_CLASS_USER_BASE + classes.len()`, allocated
+  in deterministic plan order; the `pickle_class_register` preamble is injected
+  *after* the
   build loop via `inject_class_registrations`), and mangled symbols for the
   constructor and methods — `pkl_Box_new__int`, `pkl_Box_read_int`,
   statics `pkl_<T>_sm_<m>_<suffix>` — deduplicated with a `_v{n}` counter on

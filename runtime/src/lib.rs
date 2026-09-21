@@ -29,11 +29,12 @@ pub(crate) mod strings;
 mod statics;
 mod test;
 mod trace;
+mod r#tuple;
 
-/// Descriptor for the builtin types; ids 0..=7 are reserved and `enum` keeps a
+/// Descriptor for the builtin types; ids 0..=8 are reserved and `tuple` keeps a
 /// (non-traced) placeholder so user classes, registered via
 /// `pickle_runtime_register_class_table`/`pickle_class_register`, start at
-/// `PICKLE_CLASS_USER_BASE` (8).
+/// `PICKLE_CLASS_USER_BASE` (9).
 const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     string_desc(),
     list_desc(),
@@ -43,6 +44,7 @@ const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     box_bool_desc(),
     box_char_desc(),
     enum_desc(),
+    tuple_desc(),
 ];
 
 const fn string_desc() -> object::ClassDescriptor {
@@ -135,6 +137,20 @@ const fn enum_desc() -> object::ClassDescriptor {
     object::ClassDescriptor {
         name_ptr: b"enum\0".as_ptr(),
         name_len: 4,
+        flags: 0,
+        slot_count: 0,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: object::builtin_nop_finalizer,
+    }
+}
+
+// The tuple layout (len word + fields) is traced by a hardcoded path, so this
+// placeholder descriptor only reserves class id 8 for `PTuple`.
+const fn tuple_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"tuple\0".as_ptr(),
+        name_len: 5,
         flags: 0,
         slot_count: 0,
         mask_words: 0,
@@ -292,6 +308,11 @@ pub mod abi {
     pub use crate::r#enum::pickle_enum_new;
     pub use crate::r#enum::pickle_enum_set_field;
     pub use crate::r#enum::pickle_enum_tag;
+
+    pub use crate::r#tuple::pickle_tuple_field;
+    pub use crate::r#tuple::pickle_tuple_len;
+    pub use crate::r#tuple::pickle_tuple_new;
+    pub use crate::r#tuple::pickle_tuple_set_field;
 
     pub use crate::fs::pickle_delete;
     pub use crate::fs::pickle_file_exists;

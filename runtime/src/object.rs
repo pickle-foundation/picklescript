@@ -32,7 +32,11 @@ pub const PICKLE_CLASS_BOX_CHAR: u32 = 6;
 /// `PEnum { header, tag: i64, fields: [*mut PickleObject] }` — a variant tag
 /// followed by its boxed payload fields (see `layout::ENUM_*`).
 pub const PICKLE_CLASS_ENUM: u32 = 7;
-pub const PICKLE_CLASS_USER_BASE: u32 = 8;
+/// `PTuple { header, fields: [*mut PickleObject] }` — a boxed tuple value;
+/// every payload slot is a managed pointer to a boxed scalar or object (see
+/// `layout::TUPLE_*`).
+pub const PICKLE_CLASS_TUPLE: u32 = 8;
+pub const PICKLE_CLASS_USER_BASE: u32 = 9;
 
 /// Object flags.
 pub const PICKLE_FLAG_MARKED: u32 = 1 << 0;

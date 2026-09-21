@@ -449,7 +449,7 @@ The checker accepted the construct, but the code generator does not lower it
 yet; the program is rejected instead of miscompiled.
 
 ```
-let t = (1, 2)  // tuples check but have no lowering
+let (a, b) = (1, 2)  // tuple values lower; `let` destructuring does not
 ```
 
 ## Uncoded diagnostics

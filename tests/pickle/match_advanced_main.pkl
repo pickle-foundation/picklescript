@@ -1,0 +1,59 @@
+enum Dir2 {
+    North
+    South
+    East
+    West
+}
+
+fn sumPair(p: (int, int)) -> int {
+    match (p) {
+        case (a, b) -> a + b
+    }
+}
+
+fn labelOf(p: (int, int)) -> string {
+    match (p) {
+        case (0, 0) -> "origin"
+        case (a, _) if a > 0 -> "right"
+        case _ -> "other"
+    }
+}
+
+fn dirName(d: Dir2) -> string {
+    match (d) {
+        case Dir2.North | Dir2.South -> "vertical"
+        case Dir2.East | Dir2.West -> "horizontal"
+    }
+}
+
+fn oneOrTwo(n: int) -> string {
+    match (n) {
+        case 1 | 2 -> "small"
+        case 3 -> "three"
+        case _ -> "other"
+    }
+}
+
+fn noDupFirst(m: int?) -> string {
+    match (m) {
+        case some(1) | some(2) -> "small"
+        case some(v) -> "big:{v}"
+        case none -> "none"
+    }
+}
+
+fn sumOfOption(p: (int, string)?) -> string {
+    match (p) {
+        case some((a, b)) -> "{a}:{b}"
+        case none -> "missing"
+    }
+}
+
+fn main() {
+    println(sumPair((3, 4)))
+    println(labelOf((0, 0)), labelOf((2, 9)), labelOf((-1, 1)))
+    println(dirName(Dir2.North), dirName(Dir2.South), dirName(Dir2.East), dirName(Dir2.West))
+    println(oneOrTwo(1), oneOrTwo(2), oneOrTwo(3), oneOrTwo(9))
+    println(noDupFirst(1 as? int), noDupFirst(7 as? int), noDupFirst(none))
+    println(sumOfOption((7, "x") as? (int, string)), sumOfOption(none))
+}

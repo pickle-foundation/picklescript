@@ -1979,9 +1979,9 @@ fn emits_inheritance_layout_and_super_call() {
         })
     };
     let parents: Vec<i64> = regs.iter().filter_map(|r| const_int(r[6])).collect();
-    // The root has parent 0; the subclass points at the superclass id (8).
+    // The root has parent 0; the subclass points at the superclass id (9).
     assert!(parents.contains(&0), "root class registers parent 0, got {parents:?}");
-    assert!(parents.contains(&8), "subclass registers superclass id 8, got {parents:?}");
+    assert!(parents.contains(&9), "subclass registers superclass id 9, got {parents:?}");
 
     // `super.baseTag()` lowers to a direct call of the superclass method
     // (static dispatch on the shared object).

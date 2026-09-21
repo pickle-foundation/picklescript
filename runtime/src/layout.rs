@@ -36,6 +36,15 @@ pub const ENUM_TAG_OFF: usize = HEADER; // i64
 pub const ENUM_FIELDS_OFF: usize = HEADER + 8; // [*mut PickleObject]
 pub const ENUM_HEADER_SLOTS: usize = 1; // the tag occupies payload slot 0
 
+/// `PTuple { header, len: usize, fields: [*mut PickleObject] }` — like an enum
+/// but with no tag slot: an explicit element count (`usize` at `TUPLE_LEN_OFF`)
+/// followed by 8-byte slots, each holding a boxed scalar or managed object.
+/// The count is stored explicitly because the allocator's minimum object size
+/// (32 bytes = header + one slot) makes a size-derived count ambiguous for
+/// empty tuples.
+pub const TUPLE_LEN_OFF: usize = HEADER; // usize
+pub const TUPLE_FIELDS_OFF: usize = HEADER + 8; // [*mut PickleObject]
+
 /// Fixed payload sizes of the builtin objects.
 pub const STRING_PAYLOAD: usize = 8;
 pub const LIST_PAYLOAD: usize = 24;
@@ -146,6 +155,24 @@ pub fn enum_tag(e: *const PickleObject) -> i64 {
 #[inline]
 pub fn enum_set_tag(e: *mut PickleObject, tag: i64) {
     unsafe { ((e as *mut u8).add(ENUM_TAG_OFF) as *mut i64).write(tag) }
+}
+
+/// Total *object* size (header + payload) of a tuple with `field_count`
+/// payload fields.
+#[inline]
+pub const fn tuple_object_size(field_count: usize) -> usize {
+    HEADER + 8 + field_count * 8
+}
+
+/// Number of payload fields of a tuple object (read from its stored count).
+#[inline]
+pub fn tuple_field_count(e: *const PickleObject) -> usize {
+    unsafe { ((e as *const u8).add(TUPLE_LEN_OFF) as *const usize).read() }
+}
+
+#[inline]
+pub fn tuple_set_len(e: *mut PickleObject, len: usize) {
+    unsafe { ((e as *mut u8).add(TUPLE_LEN_OFF) as *mut usize).write(len) }
 }
 
 /// An open-addressing hash-map entry.

@@ -270,23 +270,23 @@ fn parse_and_lex_errors_get_e0111_and_e0101() {
 
 #[test]
 fn codegen_not_lowered_gets_e0900_only_when_it_says_so() {
-    let d = check_str("fn main() { let t = (1, 2) }");
+    let src = "fn main() {\n    let t = (1, 2)\n    let (x, y) = t\n    println(x, y)\n}";
+    let d = check_str(src);
     let msgs = error_msgs(&d);
     assert!(
         !d.any_error(),
-        "tuple expression should not be a checker error: {msgs}"
+        "tuple expressions and destructuring should not be a checker error: {msgs}"
     );
     // The codegen `bad()` recovers to the diag sink via emit_ir: force it.
     let d2 = DiagnosticSink::new();
     let mut map = SourceMap::default();
-    let out = pickle_compiler::front::frontend("test.pk", "fn main() { let t = (1, 2) }", &mut map, &d)
-        .unwrap();
+    let out = pickle_compiler::front::frontend("test.pk", src, &mut map, &d).unwrap();
     let _ = pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &d2);
     let diags = d2.diagnostics.borrow();
     let tuple = diags
         .iter()
-        .find(|d| d.message.contains("tuple"))
-        .expect("expected a codegen error about tuples");
+        .find(|d| d.message.contains("destructuring patterns are not lowered yet"))
+        .expect("expected a codegen error about unlowered tuple destructuring");
     assert_eq!(tuple.code, Some(ErrorCode::NotLowered));
 }
 
