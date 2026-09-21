@@ -197,17 +197,59 @@ Binary operators, loosest to tightest:
 
 ## Modules
 
+A file may declare its module identity:
+
 ```
 module app.util              // path. Identifies the file.
-
-import text                  // qualified: text.render(...)
-import text as t             // aliased: t.render(...)
-use text.render             // unqualified: render(...)
-use text.*                   // unqualified: everything public
 ```
 
-Import paths resolve against `src/` and package dependencies. A file's module
-path is derived from `module` declaration or its path under `src/`.
+Modules are imported positionally (the path must match the `module` declared by
+the target file):
+
+```
+import text                            // qualified: text.render(...)
+import text as t                       // aliased: t.render(...)
+use text.render                        // unqualified: render(...)
+use text.render as r                   // unqualified under a new name: r(...)
+use text.*                             // unqualified: everything public
+```
+
+`import` binds a **module name** (its last segment unless aliased) and lets you
+reference exports qualified (`text.render`, `t.render`), classes
+(`text.Person(...)`), enums (`text.Color.Red`), and their variants. `use` brings
+**exports** into the file's bare namespace; `use a.b.render as r` rebinds that
+one export under a new local name.
+
+Import paths resolve relative to the **importing file's directory**, then under
+`<cwd>/src/`; each path segment maps to a directory and the last one to the
+`.pkl` file (`a.b` -> `a/b.pkl`). A `module` declaration that differs from the
+path used to load the file is an error (E0208). Declaring `module` without
+importing is fine: the file is an ordinary single-source module.
+
+All reachable modules are flattened into one program before type checking, so
+within a loaded program unique names are visible across module boundaries.
+
+### Colliding exports
+
+When two loaded modules export the same top-level **function, test, or const**,
+each reference in a file that imports both must say which one is meant:
+
+- qualified reference: `math.ops.helper()` — unambiguous when both module names
+  are in scope (`import math.ops; import text.format`) or via a module alias;
+- alias: `use math.ops.helper as mathHelper` — binds the bare name to that one
+  provider;
+- otherwise a bare `helper()` is rejected:
+
+```
+error[E0209] ambiguous imported name `helper`
+  = note: `helper` is provided by module `math.ops` and module `text.format`
+  = note: use `math.ops.helper as helperA` / use `text.format.helper as helperB`
+```
+
+Same-named **types** (classes, structs, enums, interfaces) across modules remain
+a hard duplicate-declaration error (E0201): a type's name must be unique in the
+merged program. Module path segments are identifiers, so reserved words such as
+`case` cannot appear in a path (`use text.case.*` is a syntax error).
 
 ## Keyword model
 

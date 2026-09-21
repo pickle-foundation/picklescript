@@ -1,0 +1,9 @@
+module text.format
+
+fn loud(s: string) -> string {
+    return s
+}
+
+fn helper() -> int {
+    return 2
+}

@@ -4421,18 +4421,43 @@ impl<'a> Checker<'a> {
             let et = self.check_expr(else_e);
             let after_else = self.capture_moved();
             Self::union_moved(&mut after, &after_else);
-            if tt != Ty::Empty && et != Ty::Empty && tt != et {
-                self.err_note(
-                    else_e.span,
-                    format!("`if` branches have mismatched types: `{tt}` and `{et}`"),
-                    "both branches of an if-expression must produce the same type",
-                );
+            if tt != Ty::Empty && et != Ty::Empty {
+                match Self::merge_flow_types(&tt, &et) {
+                    Some(merged) => {
+                        self.set_moved(&after);
+                        return merged;
+                    }
+                    None => self.err_note(
+                        else_e.span,
+                        format!("`if` branches have mismatched types: `{tt}` and `{et}`"),
+                        "both branches of an if-expression must produce the same type",
+                    ),
+                }
             }
             self.set_moved(&after);
             tt
         } else {
             self.set_moved(&after);
             Ty::Empty
+        }
+    }
+
+    /// Merge the types produced by two flow branches. A bare value promotes to
+    /// an option when exactly one side is `none` (or when one side is the
+    /// option of the other); `Unknown` absorbs everything. Returns `None` when
+    /// the types are genuinely incompatible.
+    fn merge_flow_types(a: &Ty, b: &Ty) -> Option<Ty> {
+        if a == b {
+            return Some(a.clone());
+        }
+        match (a, b) {
+            (Ty::None, Ty::None) => Some(Ty::None),
+            (Ty::None, b) => Some(b.opt_of()),
+            (a, Ty::None) => Some(a.opt_of()),
+            (Ty::Option(ia), _) if ia.as_ref() == b => Some(a.clone()),
+            (_, Ty::Option(ib)) if ib.as_ref() == a => Some(b.clone()),
+            (Ty::Unknown, _) | (_, Ty::Unknown) => Some(Ty::Unknown),
+            _ => None,
         }
     }
 
@@ -4458,12 +4483,15 @@ impl<'a> Checker<'a> {
             }
             if result == Ty::Empty {
                 result = bt;
-            } else if bt != Ty::Empty && bt != result {
-                self.err_note(
-                    arm.span,
-                    format!("match arms produce inconsistent types: `{result}` and `{bt}`"),
-                    "all arms of a match expression must produce the same type",
-                );
+            } else if bt != Ty::Empty {
+                match Self::merge_flow_types(&result, &bt) {
+                    Some(merged) => result = merged,
+                    None => self.err_note(
+                        arm.span,
+                        format!("match arms produce inconsistent types: `{result}` and `{bt}`"),
+                        "all arms of a match expression must produce the same type",
+                    ),
+                }
             }
         }
         if let Some(acc) = merged {

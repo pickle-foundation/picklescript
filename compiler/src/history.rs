@@ -410,7 +410,10 @@ pub fn deps_of(program: &Program) -> Vec<String> {
                 Some(a) => format!("import {} as {a}", path.join(".")),
                 None => format!("import {}", path.join(".")),
             },
-            Item { path } => format!("use {}", path.join(".")),
+            Item { path, alias } => match alias {
+                Some(a) => format!("use {} as {a}", path.join(".")),
+                None => format!("use {}", path.join(".")),
+            },
             Star { path } => format!("use {}.*", path.join(".")),
         };
         out.push(text);

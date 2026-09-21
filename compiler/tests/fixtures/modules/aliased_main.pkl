@@ -1,0 +1,6 @@
+use math.ops.helper as mathHelper
+use text.format.helper as textHelper
+
+fn main() -> int {
+    return mathHelper() + textHelper()
+}

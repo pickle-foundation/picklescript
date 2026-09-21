@@ -17,8 +17,8 @@ pub struct ModuleDecl {
 pub enum ImportKind {
     /// `import a.b.c` or `import a.b as x`
     Module { path: Vec<String>, alias: Option<String> },
-    /// `use a.b.item`
-    Item { path: Vec<String> },
+    /// `use a.b.item` or `use a.b.item as x`
+    Item { path: Vec<String>, alias: Option<String> },
     /// `use a.b.*`
     Star { path: Vec<String> },
 }

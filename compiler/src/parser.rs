@@ -337,6 +337,10 @@ impl<'a> Parser<'a> {
             path.push(self.expect_ident("import path")?);
             if self.at(&Tok::Dot) {
                 self.bump();
+                // `use a.b.*` ends the dotted path at the star.
+                if !is_import && self.at(&Tok::Star) {
+                    break;
+                }
             } else {
                 break;
             }
@@ -354,10 +358,10 @@ impl<'a> Parser<'a> {
             ImportKind::Star { path }
         } else if self.at(&Tok::As) {
             self.bump();
-            let _alias = self.expect_ident("use alias")?;
-            ImportKind::Item { path }
+            let name = self.expect_ident("use alias")?;
+            ImportKind::Item { path, alias: Some(name) }
         } else {
-            ImportKind::Item { path }
+            ImportKind::Item { path, alias: None }
         };
 
         self.expect_stmt_end()?;

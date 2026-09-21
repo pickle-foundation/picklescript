@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
-use crate::diag::{Diagnostic, DiagnosticSink, Span};
+use crate::diag::{Diagnostic, DiagnosticSink, FileId, Span};
 use crate::ty::Ty;
 
 /// Signature of a single callable (top-level function or method).
@@ -160,10 +160,20 @@ pub struct Resolver<'a> {
     consts: Vec<FieldInfo>,
     import_aliases: HashMap<String, Vec<String>>,
     module_path: Vec<String>,
+    file_roots: HashMap<FileId, String>,
 }
 
 impl<'a> Resolver<'a> {
     pub fn new(diags: &'a DiagnosticSink) -> Resolver<'a> {
+        Self::with_files(diags, HashMap::new())
+    }
+
+    /// Resolver that knows each source file's module identity, so cross-module
+    /// duplicate declarations can name both providers and suggest aliases.
+    pub fn with_files(
+        diags: &'a DiagnosticSink,
+        file_roots: HashMap<FileId, String>,
+    ) -> Resolver<'a> {
         Resolver {
             diags,
             types: HashMap::new(),
@@ -171,6 +181,7 @@ impl<'a> Resolver<'a> {
             consts: Vec::new(),
             import_aliases: HashMap::new(),
             module_path: Vec::new(),
+            file_roots,
         }
     }
 
@@ -224,11 +235,23 @@ impl<'a> Resolver<'a> {
                 ItemKind::Test(f) => (f.name.clone(), None),
             };
             if let Some(&first) = nmap.get(&name) {
-                self.diags.emit(
+                let mut diag =
                     Diagnostic::error_at(item.span, format!("duplicate declaration `{name}`"))
-                        .with_code(crate::error::ErrorCode::DuplicateItem)
-                        .note_at(first, "first declared here"),
-                );
+                        .with_code(crate::error::ErrorCode::DuplicateItem);
+                let mod_a = self.file_roots.get(&first.file);
+                let mod_b = self.file_roots.get(&item.span.file);
+                if let (Some(a), Some(b)) = (mod_a, mod_b) {
+                    if a != b {
+                        diag = diag.note(format!(
+                            "`{name}` is provided by module `{a}` and module `{b}`"
+                        ))
+                        .note(format!(
+                            "use `use {a}.{name} as {name}A` / `use {b}.{name} as {name}B` \
+                             to import them under different names"
+                        ));
+                    }
+                }
+                self.diags.emit(diag.note_at(first, "first declared here"));
                 continue;
             }
             nmap.insert(name, item.span);

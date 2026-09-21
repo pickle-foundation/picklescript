@@ -1,0 +1,20 @@
+import math.ops
+import math.ops as mo
+use math.ops.add
+use text.format.*
+use text.format.helper as shout
+
+fn main() {
+    let a = math.ops.add(1, 2)
+    let b = math.ops.double(3)
+    let c = mo.double(4)
+    let d = add(2, 3)
+    let e = loud("hi")
+    let f = shout()
+    expect(a).toBe(3)
+    expect(b).toBe(6)
+    expect(c).toBe(8)
+    expect(d).toBe(5)
+    expect(e).toBe("hi")
+    expect(f).toBe(2)
+}

@@ -1,0 +1,5 @@
+module dev.wrong
+
+fn ok() -> int {
+    return 0
+}

@@ -1,0 +1,13 @@
+module math.ops
+
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+
+fn double(v: int) -> int {
+    return v * 2
+}
+
+fn helper() -> int {
+    return 1
+}
