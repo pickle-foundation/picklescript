@@ -77,9 +77,9 @@ prelude.
   bytes↔string bridge. A compiler reads source text and emits source text.
 - `std.collections` — `List`/`Map` (largely present) plus `remove`/`insert`,
   a hash `Set`, and string interning for symbol tables.
-- `std.fs` — `readFile`/`writeFile`/`exists` (file I/O). The whole-file
-  intrinsics (`read_file`/`write_file`/`file_exists`) shipped first; streams
-  and directory listing remain.
+- `std.fs` — read/write/exists plus directory listing. The whole-file
+  intrinsics (`read_file`/`write_file`/`file_exists`/`delete`/`mkdir`/
+  `list_dir`) and the buffered `Stream` layer ship as flat intrinsics;
 - `std.os` — `args`, `exit`, env for the `pickle` driver.
 - `std.math` — `pow`/`floor`/`ceil`/`sin`/`cos`/`sqrt`, `PI`/`E`/`TAU`.
 - `std.test` — the `expect`/hooks/`bench` layer already steer the `.pkl`
@@ -147,8 +147,11 @@ Compiled map operations today: `{ "a": 1 }` literals, `m[k]` reads and
 assignments (including `+=`-style compounds), `m.has(k)`, `m.get(k) -> V?`
 and `m.remove(k) -> V?` (both return the value as an option — `none` when the
 key is absent — so `?` / `?.` / `??` / `if (let some(v) = ...)` compose
-directly), and `m.keys()` / `m.values()` (fresh `List`s). Keys are
-`string`-typed only in v1. **Entries iteration is compiled**:
+directly), and `m.keys()` / `m.values()` (fresh `List`s). Keys are lowerable
+as `string`, a boxed scalar (`int`/`float`/`bool`/`char`/`byte`), or a
+composite object (list, map, enum, class/struct instance); the runtime hashes
+and compares them structurally with a cycle guard (see `06-compiler.md`).
+**Entries iteration is compiled**:
 `for ((k, v) in m)` binds the key and the value per
 trip (lowered as lockstep key/value snapshots — both walk the same entry
 array), and `for (v in m)` still iterates just the values.
