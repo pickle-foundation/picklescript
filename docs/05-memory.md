@@ -221,6 +221,58 @@ Rules enforced by the type checker:
 - Pointer values are non-owning: they neither keep an object alive nor free
   it. A `#[manualAlloc]` owner still performs the deterministic free.
 
+### Managed-pointee buffers and arenas — plan
+
+Raw buffers (`alloc`) are deliberately scalar-only today; the GC never
+traces raw memory, so a `*Class` buffer would both let the collector reap
+objects that are still "in" the buffer and overwrite object bytes blindly.
+The compiler (lexer output, parser node pools, codegen scratch) wants two
+things that are currently missing. This is the `[R]` design; neither is
+lowered yet.
+
+**Managed-pointee buffers (`alloc(T, n)` with managed `T`).** Drop the
+scalar restriction by giving the raw block a *traced backing* rather than an
+untracked one:
+
+1. **Runtime primitive** `pickle_buffer_alloc(class_id, n)` allocates a
+   GC-managed slab object whose slots are marked as traced fields (like a
+   `PList` with a fixed capacity and element kind = the pointee class). The
+   slab is an ordinary non-moving GC object, so an **interior pointer**
+   (`buf` = `slab.data`) stays stable across collections — the collector
+   never moves, and mark/sweep visit the slab's slots, keeping every stored
+   object alive. Scalar and managed slabs are the same `pickle_raw_alloc`
+   ABI entry points; only the traced flag differs.
+2. **Emitter**: `alloc(Class, n)` lowers to the traced-slab allocator and an
+   interior-pointer cast to `*Class`; `p[i]` uses the class's `field_size`
+   stride and its field mask (slot = object ref, markable); `free(p)` unroots
+   the slab (forgets it, like `#[manualAlloc]` free) instead of returning
+   memory to the OS.
+3. **Bounds safety**: element stores into a traced slab are still raw
+   `unsafe`; bounds are the developer's contract, matching raw buffers today.
+   The free-list coalescing path must refuse a block whose interior pointers
+   are live — satisfied automatically because the slab is one live GC object,
+   not an unmanaged extent.
+
+**Arenas (`Arena<T>`).** Compose the traced slab into a bump region:
+
+1. `arena Arena<T> {}` in the stdlib reserves the *syntax* above (`docs/02
+   -syntax`);
+2. an arena is a GC-managed slab chain: `arena.alloc(v)` bump-writes `v` at
+   the next slot (traced, so pointees stay alive) and grows by chaining a new
+   slab; `arena.free()` drops the whole chain at once;
+3. an arena provides LIFO/region lifetime as an optimization (single
+   drop vs N frees, contiguous slots for the lexer's token pool); it is NOT
+   required for self-hosting — `List<T>` already gives the compiler
+   amortized growth, so arenas land with the stdlib `Iterable`/`Iterator`
+   work, not before it.
+
+**Sequencing for the compiler**: the self-hosted codegen benefits from
+managed-pointee buffers only if the frontend wants contiguous pools; the
+current plan is to develop the compiler on `List<T>` + whole-file I/O +
+`#[manualAlloc]` exclusively and treat managed buffers (and arenas) as a
+post-self-hosting optimization, keeping the intrinsic surface minimal until
+a measured need exists.
+
 ### Immutable references (`&T` parameters)
 
 An `&T` parameter is a read-only lens on its argument: the caller borrows the
@@ -292,7 +344,10 @@ let item = scratch.alloc(Vec<Collider>())
 Design: `Arena<T>` is a class in the stdlib; custom *global* allocators are
 registered through the runtime (`SetGlobalAllocator`) and participate in GC
 as non-moving spaces in v1. Manual heap (`malloc`/`free`) is
-`unsafe`-gated.
+`unsafe`-gated. (Current status: arena *syntax* is reserved; the lowering
+design — a bump region over a traced slab chain — is described in
+"Managed-pointee buffers and arenas — plan" above. Arenas are a
+post-self-hosting stdlib feature, not a compiler-core dependency.)
 
 ## Pointers and references — precise rules
 
