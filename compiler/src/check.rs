@@ -726,6 +726,39 @@ impl<'a> Checker<'a> {
         false
     }
 
+    /// The element type `T` of an `Iterable<T>`: either an interface type
+    /// `Iterable<int>` directly, or a class/struct that transitively declares
+    /// `implements Iterable<...>` (the class's own generic args substitute
+    /// through the implements declaration, so `MyList<string>` yields
+    /// `string`). `none` when the value is not iterable via the protocol.
+    fn iterable_elem(&self, ty: &Ty) -> Option<Ty> {
+        if let Ty::Interface(n, args) = ty {
+            return (n == "Iterable").then(|| args.first().cloned().unwrap_or(Ty::Unknown));
+        }
+        let (name, args_map) = self.type_key(ty)?;
+        let mut chain: Vec<String> = vec![name];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(cname) = chain.pop() {
+            if seen.contains(&cname) {
+                continue;
+            }
+            seen.push(cname.clone());
+            let Some(table) = self.class_table(&cname) else { continue };
+            for i in &table.implements {
+                if let Ty::Interface(iname, iargs) = i {
+                    if iname == "Iterable" {
+                        let t = iargs.first().cloned().unwrap_or(Ty::Unknown);
+                        return Some(self.subst(&t, &args_map));
+                    }
+                }
+            }
+            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+                chain.push(p);
+            }
+        }
+        None
+    }
+
     /// True if `desc` extends/structurally inherits `anc` through the class
     /// chain (used for upcast/downcast checks in casts).
     fn is_ancestor(&self, anc: &str, desc: &str) -> bool {
@@ -1374,16 +1407,19 @@ impl<'a> Checker<'a> {
                     }
                     Ty::String => Ty::Byte,
                     Ty::Unknown => Ty::Unknown,
-                    other => {
-                        self.err_note(
-                            sequence.span,
-                            format!(
-                                "`for (x in ...)` requires a sequence (List, string, Map, or range), found `{other}`"
-                            ),
-                            format!("found `{other}`"),
-                        );
-                        Ty::Unknown
-                    }
+                    other => match self.iterable_elem(&st) {
+                        Some(e) => e,
+                        None => {
+                            self.err_note(
+                                sequence.span,
+                                format!(
+                                    "`for (x in ...)` requires a sequence (List, string, Map, range, or an `Iterable<T>`), found `{other}`"
+                                ),
+                                format!("found `{other}`"),
+                            );
+                            Ty::Unknown
+                        }
+                    },
                 };
                 self.bind_pattern(pattern, &elem, true);
             }

@@ -182,6 +182,7 @@ impl<'a> Resolver<'a> {
             .unwrap_or_default();
 
         self.declare_builtins();
+        self.declare_prelude_interfaces();
 
         for imp in &prog.imports {
             if let ImportKind::Module { path, alias } = &imp.kind {
@@ -409,6 +410,52 @@ impl<'a> Resolver<'a> {
         for c in builtins {
             self.fns.entry(c.name.clone()).or_default().push(c);
         }
+    }
+
+    /// Every module sees the stdlib's uniform-iteration protocol surface:
+    /// `Iterable<T>` (declaring `iterator() -> Iterator<T>`) and `Iterator<T>`
+    /// (declaring `next() -> T?`). These are ordinary interfaces seeded before
+    /// the item loop, so a user declaration of the same name overwrites them
+    /// (the `declare_kind`/`declare_interface` inserts win). Member types are
+    /// written with the interface's own generic parameter `T` as `Ty::Var`,
+    /// exactly as an explicit declaration would resolve them.
+    fn declare_prelude_interfaces(&mut self) {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0, 0);
+        let tvar = Ty::Var("T".into());
+        self.types.insert(
+            "Iterable".to_string(),
+            TypeTableEntry::Interface(InterfaceTable {
+                name: "Iterable".into(),
+                span,
+                visibility: Visibility::Public,
+                generics: vec!["T".into()],
+                extends: Vec::new(),
+                members: vec![InterfaceMemberInfo {
+                    span,
+                    name: "iterator".into(),
+                    is_property: false,
+                    ty: Ty::Interface("Iterator".into(), vec![tvar.clone()]),
+                    params: Vec::new(),
+                }],
+            }),
+        );
+        self.types.insert(
+            "Iterator".to_string(),
+            TypeTableEntry::Interface(InterfaceTable {
+                name: "Iterator".into(),
+                span,
+                visibility: Visibility::Public,
+                generics: vec!["T".into()],
+                extends: Vec::new(),
+                members: vec![InterfaceMemberInfo {
+                    span,
+                    name: "next".into(),
+                    is_property: false,
+                    ty: Ty::Option(Box::new(tvar)),
+                    params: Vec::new(),
+                }],
+            }),
+        );
     }
 
     fn declare_const(&mut self, c: &ConstDecl) {

@@ -161,6 +161,22 @@ fails at runtime, not compile; interface **properties/consts** and default
 method bodies still bail "not lowered yet"; statically-impossible interface
 casts are E0363.
 
+**`Iterable`/`Iterator` protocol (2026-09-21):** every module sees prelude
+interfaces `Iterable<T> { fn iterator() -> Iterator<T> }` and
+`Iterator<T> { fn next() -> T? }` (a user declaration with the same name
+shadows them). A class that declares `implements Iterable<T>` — directly or
+through an ancestor, concrete or generic — becomes iterable with
+`for (x in it)`: the loop lowers to `it.iterator()` then repeated `next()`
+until it yields `none`, binding `x` to each resolved `T` (scalars unboxed,
+`T?` elements pass through as pointers). The same path serves an
+interface-typed sequence (`it: Iterable<int>`) and generic helpers over
+`Iterable<T>`, and `break`/`continue` behave as on any sequence. Builtin
+sequence types (`List`, `Map`, `Range`, `string`, `Stream`) keep their direct
+lowering and do not implement these interfaces in this slice;
+`for ((k, v) in m)` stays compiled directly. User classes may implement
+`Iterator<T>` as well (e.g. a self-iterating generator); `std.collections`
+will ship concrete collection types on top of the protocol.
+
 ## Static members
 
 - `static var` fields: one per class, initialized once at program start (in

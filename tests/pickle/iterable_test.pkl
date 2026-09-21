@@ -1,0 +1,216 @@
+class Counter implements Iterable<int>, Iterator<int> {
+    var n: int
+
+    fn iterator() -> Iterator<int> {
+        return this
+    }
+
+    fn next() -> int? {
+        if (n <= 0) {
+            return none
+        }
+        let v = n
+        n = n - 1
+        return v
+    }
+}
+
+class RangeSeq implements Iterable<int> {
+    var lo: int
+    var hi: int
+
+    fn iterator() -> Iterator<int> {
+        return RangeIter(this, lo)
+    }
+}
+
+class RangeIter implements Iterator<int> {
+    var seq: RangeSeq
+    var cur: int
+
+    fn next() -> int? {
+        if (cur >= seq.hi) {
+            return none
+        }
+        let v = cur
+        cur = cur + 1
+        return v
+    }
+}
+
+class SubRange extends RangeSeq {}
+
+class WordSeq implements Iterable<string> {
+    var words: List<string>
+
+    fn iterator() -> Iterator<string> {
+        return WordIter(this, 0)
+    }
+}
+
+class WordIter implements Iterator<string> {
+    var seq: WordSeq
+    var i: int
+
+    fn next() -> string? {
+        if (i >= 1) {
+            return none
+        }
+        let w = seq.words[0]
+        i = i + 1
+        return w
+    }
+}
+
+class Bag<T> implements Iterable<T> {
+    var items: List<T>
+    var i: int
+
+    fn iterator() -> Iterator<T> {
+        return BagIter<T>(this, 0)
+    }
+}
+
+class BagIter<T> implements Iterator<T> {
+    var bag: Bag<T>
+    var i: int
+
+    fn next() -> T? {
+        if (i >= 1) {
+            return none
+        }
+        let v = bag.items[0]
+        i = i + 1
+        return v
+    }
+}
+
+fn sum(it: Iterable<int>) -> int {
+    var total = 0
+    for (x in it) {
+        total = total + x
+    }
+    total
+}
+
+fn countAny<T>(it: Iterable<T>) -> int {
+    var n = 0
+    for (x in it) {
+        n = n + 1
+    }
+    n
+}
+
+fn nextOf(it: Iterator<int>) -> int? {
+    it.next()
+}
+
+test fn protocol_for_in_over_self_iterating_class() {
+    expect(sum(Counter(3))).toBe(6)
+    expect(sum(Counter(1))).toBe(1)
+}
+
+test fn protocol_for_in_over_separate_iterator() {
+    expect(sum(RangeSeq(3, 8))).toBe(25)
+    expect(sum(RangeSeq(0, 1))).toBe(0)
+}
+
+test fn protocol_for_in_empty_sequence() {
+    expect(sum(Counter(0))).toBe(0)
+    expect(sum(RangeSeq(5, 5))).toBe(0)
+}
+
+test fn protocol_for_in_interface_typed_variable() {
+    let it: Iterable<int> = Counter(4)
+    expect(sum(it)).toBe(10)
+}
+
+test fn protocol_for_in_string_elements() {
+    let it: Iterable<string> = WordSeq(["pickle"])
+    var n = 0
+    for (w in it) {
+        n = n + 1
+    }
+    expect(n).toBe(1)
+}
+
+test fn protocol_for_in_generic_class() {
+    var b: Bag<int> = Bag<int>([7], 0)
+    expect(countAny<int>(b)).toBe(1)
+}
+
+test fn protocol_for_in_generic_function() {
+    expect(countAny<int>(Counter(3))).toBe(3)
+    expect(countAny<int>(RangeSeq(2, 6))).toBe(4)
+}
+
+test fn protocol_for_in_inherits_implements() {
+    expect(sum(SubRange(3, 7))).toBe(18)
+}
+
+test fn protocol_loop_break() {
+    var total = 0
+    for (x in RangeSeq(0, 10)) {
+        if (x >= 4) {
+            break
+        }
+        total = total + x
+    }
+    expect(total).toBe(6)
+}
+
+test fn protocol_loop_continue() {
+    var count = 0
+    var sum_even = 0
+    for (x in RangeSeq(0, 10)) {
+        count = count + 1
+        if (x % 2 == 1) {
+            continue
+        }
+        sum_even = sum_even + x
+    }
+    expect(count).toBe(10)
+    expect(sum_even).toBe(20)
+}
+
+test fn protocol_reiterates_fresh_iterator() {
+    expect(sum(RangeSeq(1, 5))).toBe(10)
+    expect(sum(RangeSeq(1, 5))).toBe(10)
+}
+
+test fn iterator_interface_direct_calls() {
+    var it: Iterator<int> = RangeSeq(1, 4).iterator()
+    let a = nextOf(it)
+    let b = nextOf(it)
+    let c = nextOf(it)
+    let d = nextOf(it)
+    if (let some(x) = a) {
+        expect(x).toBe(1)
+    } else {
+        expect(true).toBe(false)
+    }
+    if (let some(x) = b) {
+        expect(x).toBe(2)
+    } else {
+        expect(true).toBe(false)
+    }
+    if (let some(x) = c) {
+        expect(x).toBe(3)
+    } else {
+        expect(true).toBe(false)
+    }
+    if (let some(_x) = d) {
+        expect(true).toBe(false)
+    } else {
+        expect(1).toBe(1)
+    }
+}
+
+test fn iterable_interface_returns_iterator() {
+    var s: Iterable<int> = RangeSeq(2, 5)
+    var total = 0
+    for (x in s) {
+        total = total + x
+    }
+    expect(total).toBe(9)
+}

@@ -303,6 +303,22 @@ Lowering rules:
   declared params, return = the call site's type) rather than from the
   target function's IR params, which are not built yet for deferred generic
   instantiations.
+- **`Iterable`/`Iterator` protocol `for in`** (lowered 2026-09-21): prelude
+  interfaces `Iterable<T> { fn iterator() -> Iterator<T> }` and
+  `Iterator<T> { fn next() -> T? }` are seeded into every module's type table
+  by the resolver (`Ty::Var("T")` members, so generic substitution just works;
+  a user declaration overwrites them). `for (x in seq)` where `seq` is an
+  `Iterable<elem>` value — an interface-typed receiver or a class/struct that
+  transitively declares `implements Iterable<...>` (its own generic args
+  substitute through the declaration) — lowers to `it = seq.iterator()` then a
+  loop calling `it.next()`, storing the `T?` result, branching on
+  `opt_is_present`, and binding `x` via `opt_resolve` (scalars unboxed).
+  Both protocol calls reuse the interface dispatch core (via a zero-arg entry
+  that marshals just the `this` receiver); the `Iterable<elem>` and
+  `Iterator<elem>` views share the same iface-id space as user `implements`
+  declarations. Builtin `List`/`Map`/`Range`/`string` sequences and
+  `for ((k, v) in m)` keep their direct lowering and don't implement the
+  interfaces in this slice.
 - A generic *function* call `name<T,...>(args)` monomorphizes at the call
   site: the callee is instantiated over the resolved type arguments
   (substituted under the enclosing instantiation, so `id<U>` inside an

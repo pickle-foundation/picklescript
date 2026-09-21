@@ -60,6 +60,18 @@ let bs = bytes("café")   // List<byte>: c a f é(2 bytes)
 let back = str(bs)       // "café"
 ```
 
+**The `Iterable`/`Iterator` protocol surface is language-level** (landed
+2026-09-21): every module sees prelude interfaces
+`Iterable<T> { fn iterator() -> Iterator<T> }` and
+`Iterator<T> { fn next() -> T? }`. Any class that declares
+`implements Iterable<T>` is iterable by `for (x in it)`, which lowers to
+`it.iterator()` then `next()`-until-`none` (see `03-classes.md` and
+`06-compiler.md`). Builtin sequence types (`List`, `Map`, `Range`, `string`)
+keep their direct lowering and do not implement the interfaces in this slice;
+`std.collections` will provide concrete collection types on top of the
+programmable protocol. A user declaration of `Iterable`/`Iterator` shadows the
+prelude.
+
 **Must-have (blocks rewriting the compiler in Pickle):**
 - `std.text` — mutable string/byte builder, UTF-8 helpers, `format`, and a
   bytes↔string bridge. A compiler reads source text and emits source text.

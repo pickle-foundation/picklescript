@@ -1866,7 +1866,53 @@ impl<'a> Emitter<'a> {
         false
     }
 
-    /// Register one class/struct: reserve its class id, its implicit-constructor
+    /// The element type `T` of an `Iterable<T>` value (mirror of the
+    /// checker's rule): either the interface type `Iterable<int>` directly, or
+    /// a class/struct that transitively declares `implements Iterable<...>`
+    /// with its own generic args substituted (so `MyList<string>` yields
+    /// `string`). `none` when the value is not iterable via the protocol.
+    fn iterable_elem(&self, ty: &Ty) -> Option<Ty> {
+        if let Ty::Interface(n, args) = ty {
+            return (n == "Iterable").then(|| args.first().cloned().unwrap_or(Ty::Unknown));
+        }
+        let (name, args) = match ty {
+            Ty::Class(n, a) | Ty::Struct(n, a) => (n.clone(), a.clone()),
+            _ => return None,
+        };
+        let args_map: HashMap<String, Ty> = match self.resolved.types.get(&name) {
+            Some(entry) => entry
+                .generics()
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned().chain(std::iter::repeat(Ty::Unknown)))
+                .collect(),
+            None => HashMap::new(),
+        };
+        let mut chain: Vec<String> = vec![name];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(cname) = chain.pop() {
+            if seen.contains(&cname) {
+                continue;
+            }
+            seen.push(cname.clone());
+            let table = match self.resolved.types.get(&cname) {
+                Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => t.clone(),
+                _ => continue,
+            };
+            for i in &table.implements {
+                if let Ty::Interface(iname, iargs) = i {
+                    if iname == "Iterable" {
+                        let t = iargs.first().cloned().unwrap_or(Ty::Unknown);
+                        return Some(t.subst(&args_map));
+                    }
+                }
+            }
+            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+                chain.push(p);
+            }
+        }
+        None
+    }
     /// function, and its method functions. Members outside the slice are
     /// rejected loudly rather than miscompiled. Single inheritance is lowered
     /// (parent-first field layout, inherited methods, hierarchy casts); generic
@@ -3875,6 +3921,13 @@ fn build_lambda_body(
             )?;
             return self.for_in_values(name, vals, v.as_ref().clone(), body, span);
         }
+        // `Iterable<T>` protocol: the sequence is an interface-typed value or
+        // a class/struct that transitively implements `Iterable<elem>` (builtin
+        // List/Map/String/Range keep their direct lowering above).
+        if let Some(elem) = self.iterable_elem(&seq_ot.clone().unwrap_or(Ty::Unknown)) {
+            let seq_t = self.expr(sequence)?;
+            return self.for_in_protocol(name, &elem, seq_t, body, span);
+        }
         let (start, end, incl) = match &sequence.kind {
             ExprKind::Binary {
                 op: AstBinOp::Range,
@@ -4049,7 +4102,67 @@ fn build_lambda_body(
         Ok(())
     }
 
-    /// `for ((k, v) in m)` over a `Map<K, V>`: iterates the keys list and the
+    /// `for (x in seq)` over an `Iterable<T>` protocol value. `seq` is the
+    /// already-lowered iterable (a managed pointer) and `elem` its element
+    /// type. Lowering is:
+    ///     let it = seq.iterator()       // `Iterable<elem>` view
+    ///     loop: v? = it.next(); if v? == none -> end     // `Iterator<elem>` view
+    ///           body{ x = resolve(v?) }; continue -> loop
+    /// `next()` returning `none` terminates; `continue` re-tests. Both the
+    /// iterator and the returned option live in managed slots so the collector
+    /// keeps them reachable across trips.
+    fn for_in_protocol(
+        &mut self,
+        name: &str,
+        elem: &Ty,
+        seq_t: Temp,
+        body: &Block,
+        span: Span,
+    ) -> Result<(), ()> {
+        let _ = self.elem_rep(elem, span)?;
+        let iterable_ift = Ty::Interface("Iterable".into(), vec![elem.clone()]);
+        let itv = self.interface_zero_arg_call(span, &iterable_ift, seq_t, "iterator", IrTy::Ptr)?;
+        let it_slot = self.new_slot(IrTy::Ptr);
+        self.instr(IrInstr::StoreSlot { slot: it_slot, v: itv });
+
+        let iterator_ift = Ty::Interface("Iterator".into(), vec![elem.clone()]);
+        let elem_ir = elem_ir(elem);
+        let opt_slot = self.new_slot(IrTy::Ptr);
+
+        let cond_id = self.new_block();
+        let body_id = self.new_block();
+        let end_id = self.new_block();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = cond_id;
+        let it = self.load(it_slot);
+        let next_v = self.interface_zero_arg_call(span, &iterator_ift, it, "next", IrTy::Ptr)?;
+        self.instr(IrInstr::StoreSlot { slot: opt_slot, v: next_v });
+        let opt = self.load(opt_slot);
+        let present = self.opt_is_present(opt)?;
+        self.term(IrTerm::BranchIf {
+            cond: present,
+            then: body_id,
+            else_: end_id,
+        });
+
+        self.cur = body_id;
+        self.loops.push(LoopCtx {
+            continue_target: cond_id,
+            break_target: end_id,
+        });
+        self.push_scope();
+        let raw = self.load(opt_slot);
+        let v = self.opt_resolve(raw, elem, span)?;
+        let elem_slot = self.new_slot(elem_ir);
+        self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
+        self.declare(name, elem_slot);
+        self.block_body_only(body)?;
+        self.pop_scope();
+        self.loops.pop();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = end_id;
+        Ok(())
+    }
     /// values list in lockstep — both `pickle_map_keys` / `pickle_map_values`
     /// snapshots walk the same internal entry array, so index i of the keys
     /// list pairs with index i of the values list. Keys unbox per their
@@ -9726,17 +9839,38 @@ fn build_lambda_body(
         name: &str,
         args: &[CallArg],
     ) -> Result<Temp, ()> {
+        let receiver = self.expr(object)?;
+        let ret_ty = self.irty(e.span)?;
+        self.interface_dispatch(e, e.span, ift, receiver, name, args, ret_ty)
+    }
+
+    /// Shared core of an interface-dispatched `.name(args)` call against an
+    /// already-lowered receiver. Used by `interface_method_call` for checked
+    /// call sites and by the compiler-internal `Iterable`/`Iterator` protocol
+    /// calls (`interface_zero_arg_call`) that `for in` lowers. `ret_ty` is the
+    /// runtime type of the member's return value.
+    #[allow(clippy::too_many_arguments)]
+    fn interface_dispatch(
+        &mut self,
+        e: &Expr,
+        span: Span,
+        ift: &Ty,
+        receiver: Temp,
+        name: &str,
+        args: &[CallArg],
+        ret_ty: IrTy,
+    ) -> Result<Temp, ()> {
         let Some((iface_name, iargs)) = self.iface_of(ift) else {
-            return self.bad(e.span, "receiver type is not an interface");
+            return self.bad(span, "receiver type is not an interface");
         };
-        let iface_id = self.iface_id_for(&iface_name, &iargs, e.span)?;
+        let iface_id = self.iface_id_for(&iface_name, &iargs, span)?;
         let m_idx = match self
             .iface_members
             .get(&iface_id)
             .and_then(|members| members.iter().find(|(n, _)| n == name).map(|(_, i)| *i))
         {
             Some(i) => i,
-            None => return self.bad(e.span, format!("`{iface_name}` has no method `{name}`")),
+            None => return self.bad(span, format!("`{iface_name}` has no method `{name}`")),
         };
         // Static dispatch chain: every registered class that transitively
         // declares `implements` for this interface id, ordered
@@ -9752,7 +9886,7 @@ fn build_lambda_body(
             };
             if is_static {
                 let _: Result<(), ()> = self.bad(
-                    e.span,
+                    span,
                     format!("interface method `{name}` is static on `{}`", p.name),
                 );
                 return Err(());
@@ -9762,15 +9896,13 @@ fn build_lambda_body(
         }
         if branches.is_empty() {
             let _: Result<(), ()> = self.bad(
-                e.span,
+                span,
                 format!("`{iface_name}.{name}` is implemented by no class in this program"),
             );
             return Err(());
         }
         branches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
-        let receiver = self.expr(object)?;
-        let ret_ty = self.irty(e.span)?;
         let ret_slot = self.new_slot(ret_ty);
         let join = self.new_block();
         for &(_, dcid, dfid) in &branches {
@@ -9835,7 +9967,7 @@ fn build_lambda_body(
         let mut params: Vec<IrTy> = vec![IrTy::Ptr];
         if let Some(src) = self.src_param_tys.get(&prototype) {
             for t in src.clone() {
-                params.push(self.map_ty(&t, e.span).unwrap_or(IrTy::Ptr));
+                params.push(self.map_ty(&t, span).unwrap_or(IrTy::Ptr));
             }
         }
         let ret = ret_ty;
@@ -9854,6 +9986,25 @@ fn build_lambda_body(
         let out = self.temp();
         self.instr(IrInstr::LoadSlot { dst: out, slot: ret_slot });
         Ok(out)
+    }
+
+    /// A zero-argument interface call against an already-lowered receiver,
+    /// used by the `Iterable`/`Iterator` protocol surface in `for_in_protocol`.
+    /// `ift` is the static interface view the call dispatches under
+    /// (`Iterable<elem>` / `Iterator<elem>`), `rec` the receiver temp, and
+    /// `ret_ty` the member's runtime type — `Ptr` for `iterator() ->
+    /// Iterator<T>` and for `next() -> T?`. The synthetic `e` is only ever
+    /// seen by the zero-arg marshalling path, which never touches it.
+    fn interface_zero_arg_call(
+        &mut self,
+        span: Span,
+        ift: &Ty,
+        rec: Temp,
+        name: &str,
+        ret_ty: IrTy,
+    ) -> Result<Temp, ()> {
+        let dummy = Expr { span, kind: ExprKind::Ident(String::new()) };
+        self.interface_dispatch(&dummy, span, ift, rec, name, &[], ret_ty)
     }
 
     /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.

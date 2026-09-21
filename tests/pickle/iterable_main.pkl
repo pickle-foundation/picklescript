@@ -1,0 +1,91 @@
+class Counter implements Iterable<int>, Iterator<int> {
+    var n: int
+
+    fn iterator() -> Iterator<int> {
+        return this
+    }
+
+    fn next() -> int? {
+        if (n <= 0) {
+            return none
+        }
+        let v = n
+        n = n - 1
+        return v
+    }
+}
+
+class RangeSeq implements Iterable<int> {
+    var lo: int
+    var hi: int
+
+    fn iterator() -> Iterator<int> {
+        return RangeIter(this, lo)
+    }
+}
+
+class RangeIter implements Iterator<int> {
+    var seq: RangeSeq
+    var cur: int
+
+    fn next() -> int? {
+        if (cur >= seq.hi) {
+            return none
+        }
+        let v = cur
+        cur = cur + 1
+        return v
+    }
+}
+
+class SubRange extends RangeSeq {}
+
+fn sum(it: Iterable<int>) -> int {
+    var total = 0
+    for (x in it) {
+        total = total + x
+    }
+    total
+}
+
+fn nextOrNeg(it: Iterator<int>) -> int {
+    let v = it.next()
+    if (let some(x) = v) {
+        return x
+    }
+    return -1
+}
+
+fn main() {
+    println(sum(Counter(3)), sum(Counter(0)))
+    println(sum(RangeSeq(3, 8)), sum(RangeSeq(0, 1)))
+    println(sum(SubRange(3, 7)))
+
+    let it: Iterable<int> = Counter(4)
+    var via_var = 0
+    for (x in it) {
+        via_var = via_var + x
+    }
+    println(via_var)
+
+    var broke = 0
+    for (x in RangeSeq(0, 10)) {
+        if (x >= 4) {
+            break
+        }
+        broke = broke + x
+    }
+    println(broke)
+
+    var skipped = 0
+    for (x in RangeSeq(0, 6)) {
+        if (x % 2 == 1) {
+            continue
+        }
+        skipped = skipped + x
+    }
+    println(skipped)
+
+    var iter: Iterator<int> = RangeSeq(1, 4).iterator()
+    println(nextOrNeg(iter), nextOrNeg(iter), nextOrNeg(iter), nextOrNeg(iter))
+}
