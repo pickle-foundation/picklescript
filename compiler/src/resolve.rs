@@ -93,6 +93,10 @@ pub struct InterfaceMemberInfo {
     pub name: String,
     pub is_property: bool,
     pub ty: Ty,
+    /// The parameter types of an interface method (kept alongside `ty` so an
+    /// interface-typed call site can be type-checked and marshalled, and so
+    /// conformance checking compares arguments, not just presence).
+    pub params: Vec<ParamInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -860,18 +864,21 @@ impl<'a> Resolver<'a> {
                     name: md.name.clone(),
                     is_property: false,
                     ty: self.resolve_ret(&md.return_ty, &generics),
+                    params: self.resolve_params(&md.params, &generics),
                 },
                 InterfaceMember::Property { name, ty, span } => InterfaceMemberInfo {
                     span: *span,
                     name: name.clone(),
                     is_property: true,
                     ty: self.resolve_ty(ty, &generics),
+                    params: Vec::new(),
                 },
                 InterfaceMember::Const { name, span, .. } => InterfaceMemberInfo {
                     span: *span,
                     name: name.clone(),
                     is_property: true,
                     ty: Ty::Unknown,
+                    params: Vec::new(),
                 },
             })
             .collect();

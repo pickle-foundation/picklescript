@@ -271,6 +271,11 @@ pub mod abi {
     pub use crate::class::pickle_class_register;
     pub use crate::class::pickle_class_is;
     pub use crate::class::pickle_class_cast;
+    pub use crate::class::pickle_class_add_interface;
+    pub use crate::class::pickle_class_add_iface_method;
+    pub use crate::class::pickle_class_implements;
+    pub use crate::class::pickle_iface_method;
+    pub use crate::class::pickle_iface_cast;
     pub use crate::class::pickle_obj_slot_get;
     pub use crate::class::pickle_obj_slot_set;
 
@@ -350,6 +355,7 @@ pub mod abi {
 
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;
+    pub use crate::panic::pickle_panic_no_iface_method;
 
     pub use crate::raw::pickle_raw_alloc;
     pub use crate::raw::pickle_raw_free;

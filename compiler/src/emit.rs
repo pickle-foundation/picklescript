@@ -110,6 +110,10 @@ pub fn emit_ir(
         fname: String::new(),
         symbol: String::new(),
         current_subst: HashMap::new(),
+        next_iface_id: 1,
+        iface_inst_ids: HashMap::new(),
+        iface_members: HashMap::new(),
+        class_iface_buckets: HashMap::new(),
         current_fid: None,
         fn_generics: Vec::new(),
         fparams: Vec::new(),
@@ -466,6 +470,28 @@ struct Emitter<'a> {
     /// branch whose class the receiver is an instance of; `super.m(...)` and
     /// non-overridden methods stay direct static calls. Absent here = direct.
     virtual_dispatch: HashMap<(u32, String), Vec<(u32, FuncId)>>,
+    /// Next runtime interface id. Interface ids occupy their own integer
+    /// space (0 is the "not an interface" sentinel): a class id never collides
+    /// with an interface id because interfaces never appear as object class
+    /// ids — they are consulted only via `pickle_class_implements` /
+    /// `pickle_iface_method` tables.
+    next_iface_id: u32,
+    /// Interface instantiation key (bare name, concrete type args) -> runtime
+    /// interface id. `Container<int>` and `Container<string>` are distinct
+    /// ids, so `x is Container<int>` probes exactly the interfaces the class
+    /// (transitively) implements.
+    iface_inst_ids: HashMap<(String, Vec<Ty>), u32>,
+    /// Interface id -> its members in declaration order: `(method name, method
+    /// index)`. The index is the position among the interface's *methods*
+    /// (property/const members are not dispatch calls).
+    iface_members: HashMap<u32, Vec<(String, u32)>>,
+    /// Class id -> its direct `implements` declarations: `(interface id,
+    /// method-index -> the implementation's function)`. Interfaces a class
+    /// inherits from a superclass are resolved at runtime by walking the
+    /// parent chain, so only each class's own `implements` list is recorded
+    /// here (mirroring `pickle_class_register`'s parent links).
+    #[allow(clippy::type_complexity)]
+    class_iface_buckets: HashMap<u32, Vec<(u32, Vec<(u32, FuncId)>)>>,
     /// (Class id, property name, is_setter) -> accessor function.
     property_ids: HashMap<(u32, String, bool), FuncId>,
     /// (Class id, static property name, is_setter) -> accessor function.
@@ -1715,6 +1741,131 @@ impl<'a> Emitter<'a> {
         None
     }
 
+    /// The interface type a `Ty` denotes, unwrapping one `Ref` level (an
+    /// interface receiver is always a `Ref(Interface(..))` at call sites).
+    fn iface_of(&self, ty: &Ty) -> Option<(String, Vec<Ty>)> {
+        match ty {
+            Ty::Interface(name, args) => Some((name.clone(), args.clone())),
+            Ty::Ref(inner) => self.iface_of(inner),
+            _ => None,
+        }
+    }
+
+    /// Resolve an interface instantiation `name<args>` to its runtime id,
+    /// assigning a fresh one on first use and recording its member plan
+    /// (method name + declaration index). Two instantiations of the same
+    /// interface with different type args get distinct ids, so `is`/`as` on
+    /// interface types probe exactly the interfaces a class declared.
+    fn iface_id_for(&mut self, name: &str, args: &[Ty], span: Span) -> Result<u32, ()> {
+        let key = (name.to_string(), args.to_vec());
+        if let Some(&id) = self.iface_inst_ids.get(&key) {
+            return Ok(id);
+        }
+        let Some(TypeTableEntry::Interface(t)) = self.resolved.types.get(name) else {
+            let _: Result<(), ()> = self.bad(span, format!("`{name}` is not an interface"));
+            return Err(());
+        };
+        let id = self.next_iface_id;
+        self.next_iface_id += 1;
+        let members = self
+            .iface_members
+            .entry(id)
+            .or_insert_with(|| {
+                let mut plan = Vec::new();
+                let mut mi = 0u32;
+                for m in &t.members {
+                    if !m.is_property {
+                        plan.push((m.name.clone(), mi));
+                        mi += 1;
+                    }
+                }
+                plan
+            });
+        let _ = members;
+        let _ = &t.generics;
+        self.iface_inst_ids.insert(key, id);
+        Ok(id)
+    }
+
+    /// Record a class's own `implements` declarations into its runtime bucket:
+    /// each interface id gets an empty bucket (so `pickle_class_implements`
+    /// answers for zero-method interfaces too) plus one entry per method
+    /// mapping its declaration index to the class's resolved implementation
+    /// function. Interfaces inherited from a superclass stay the superclass's
+    /// bucket (the runtime walks the parent chain).
+    fn register_implements(
+        &mut self,
+        cname: &str,
+        cid: u32,
+        ifaces: &[Ty],
+        span: Span,
+    ) -> Result<(), ()> {
+        for t in ifaces {
+            let Some((iname, iargs)) = self.iface_of(t) else {
+                let _: Result<(), ()> = self.bad(
+                    span,
+                    format!(
+                        "`{cname}` declares `implements` on a non-interface type `{}`",
+                        t.bare_name()
+                    ),
+                );
+                return Err(());
+            };
+            let iface_id = self.iface_id_for(&iname, &iargs, span)?;
+            let members = self.iface_members.get(&iface_id).cloned().unwrap_or_default();
+            let mut slots = Vec::with_capacity(members.len());
+            for (mname, m_idx) in &members {
+                match self.method_ids.get(&(cid, mname.clone())) {
+                    Some(&(fid, false)) => slots.push((*m_idx, fid)),
+                    Some(&(_, true)) => {
+                        let _: Result<(), ()> = self.bad(
+                            span,
+                            format!(
+                                "interface method `{mname}` must be an instance method on `{cname}`"
+                            ),
+                        );
+                        return Err(());
+                    }
+                    None => {
+                        let _: Result<(), ()> = self.bad(
+                            span,
+                            format!("`{cname}` implements `{iname}` but has no method `{mname}`"),
+                        );
+                        return Err(());
+                    }
+                }
+            }
+            self.class_iface_buckets
+                .entry(cid)
+                .or_default()
+                .push((iface_id, slots));
+        }
+        Ok(())
+    }
+
+    /// Whether a registered class (or one of its ancestors) directly declared
+    /// `implements` for `iface_id`. The caller resolves ancestor ids through
+    /// the class plans' `parent` links.
+    fn class_implements_iface(&self, cid: u32, iface_id: u32) -> bool {
+        let mut cur = Some(cid);
+        for _ in 0..64 {
+            let Some(c) = cur else { return false };
+            if self
+                .class_iface_buckets
+                .get(&c)
+                .is_some_and(|b| b.iter().any(|(i, _)| *i == iface_id))
+            {
+                return true;
+            }
+            cur = self
+                .classes
+                .iter()
+                .find(|p| p.class_id == c)
+                .and_then(|p| p.parent);
+        }
+        false
+    }
+
     /// Register one class/struct: reserve its class id, its implicit-constructor
     /// function, and its method functions. Members outside the slice are
     /// rejected loudly rather than miscompiled. Single inheritance is lowered
@@ -1733,13 +1884,6 @@ impl<'a> Emitter<'a> {
             // instantiations materialize on first use from this stash
             // (`register_class_instantiation`).
             self.generic_type_members.insert(name.to_string(), members);
-            return;
-        }
-        if !table.implements.is_empty() {
-            let _: Result<(), ()> = self.bad(
-                span,
-                format!("`{name}` implements interfaces, which are not lowered yet"),
-            );
             return;
         }
         let parent = table
@@ -2026,6 +2170,7 @@ impl<'a> Emitter<'a> {
             }
         }
 
+        let implements = table.implements.clone();
         self.classes.push(ClassPlan {
             name: name.to_string(),
             class_id: cid,
@@ -2033,6 +2178,9 @@ impl<'a> Emitter<'a> {
             table,
         });
         self.class_by_name.insert(name.to_string(), cid);
+        if !implements.is_empty() {
+            let _: Result<(), ()> = self.register_implements(name, cid, &implements, span);
+        }
     }
 
     /// The registered runtime class id of a resolved class/struct type.
@@ -2107,12 +2255,6 @@ impl<'a> Emitter<'a> {
                 format!("`{name}` with `extends` is not lowered yet"),
             );
         }
-        if !table.implements.is_empty() {
-            return self.bad(
-                span,
-                format!("`{name}` implements interfaces, which are not lowered yet"),
-            );
-        }
         if members
             .iter()
             .any(|m| matches!(m, ClassMember::Method(md) if md.is_override))
@@ -2151,6 +2293,14 @@ impl<'a> Emitter<'a> {
             .iter()
             .cloned()
             .zip(args.iter().cloned())
+            .collect();
+        // The implements list, with the instantiation's type arguments
+        // substituted in so each entry is a concrete interface instantiation
+        // (`Iterable<int>`).
+        let implements: Vec<Ty> = table
+            .implements
+            .iter()
+            .map(|t| t.subst(&map))
             .collect();
         let suffix = args
             .iter()
@@ -2292,6 +2442,9 @@ impl<'a> Emitter<'a> {
         self.class_inst_by_args
             .insert((name.to_string(), args.to_vec()), cid);
         self.class_inst_subst.insert(cid, map);
+        if !implements.is_empty() {
+            let _: Result<(), ()> = self.register_implements(&display, cid, &implements, span);
+        }
         Ok(cid)
     }
 
@@ -3315,6 +3468,55 @@ fn build_lambda_body(
                 callee: Callee::Extern(ex),
                 args: vec![addr, len, n, mask, owned_mask, fin, par],
             });
+            // Interface buckets: mark the class as implementing each interface
+            // (empty buckets included, so `pickle_class_implements` answers for
+            // zero-method interfaces) and publish one method-table entry per
+            // dispatch method.
+            let buckets = self.class_iface_buckets.get(&cid).cloned().unwrap_or_default();
+            for (iface_id, slots) in buckets {
+                let cid_t = self.temp();
+                instrs.push(IrInstr::Const {
+                    dst: cid_t,
+                    c: IrConst::Int(cid as i64),
+                });
+                let iid_t = self.temp();
+                instrs.push(IrInstr::Const {
+                    dst: iid_t,
+                    c: IrConst::Int(iface_id as i64),
+                });
+                let ex_mark = self.module.extern_id(IrExtern {
+                    symbol: "pickle_class_add_interface".to_string(),
+                    params: vec![IrTy::Int, IrTy::Int],
+                    ret: IrTy::Unit,
+                });
+                instrs.push(IrInstr::Call {
+                    dst: None,
+                    callee: Callee::Extern(ex_mark),
+                    args: vec![cid_t, iid_t],
+                });
+                for (m_idx, fid) in slots {
+                    let idx_t = self.temp();
+                    instrs.push(IrInstr::Const {
+                        dst: idx_t,
+                        c: IrConst::Int(m_idx as i64),
+                    });
+                    let fn_t = self.temp();
+                    instrs.push(IrInstr::Const {
+                        dst: fn_t,
+                        c: IrConst::FuncAddr(fid),
+                    });
+                    let ex_m = self.module.extern_id(IrExtern {
+                        symbol: "pickle_class_add_iface_method".to_string(),
+                        params: vec![IrTy::Int, IrTy::Int, IrTy::Int, IrTy::Int],
+                        ret: IrTy::Unit,
+                    });
+                    instrs.push(IrInstr::Call {
+                        dst: None,
+                        callee: Callee::Extern(ex_m),
+                        args: vec![cid_t, iid_t, idx_t, fn_t],
+                    });
+                }
+            }
         }
         if let Some(fid) = self.static_init_id {
             instrs.push(IrInstr::Call {
@@ -4799,6 +5001,38 @@ fn build_lambda_body(
             }
             return Ok(self.bool_const(false));
         }
+        // Interface tests probe the runtime tables: an interface target
+        // (`pickle_class_implements`) answers exactly whether the object's
+        // class — directly or through its ancestors — declared that interface
+        // instantiation, so `Container<int>` vs `Container<string>` stays
+        // precise. A class target under an interface source is an ordinary
+        // runtime class test.
+        if let Some((dst_in, dst_iargs)) = self.iface_of(&base_dst) {
+            let iface_id = self.iface_id_for(&dst_in, &dst_iargs, e.span)?;
+            let dc = self.int_const(iface_id as i64);
+            return self.extern_call_t1(
+                "pickle_class_implements",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Bool,
+                vec![v, dc],
+            );
+        }
+        if self.iface_of(&base_src).is_some() {
+            let Some((_, dcid)) = self.user_class_id(&base_dst) else {
+                let _: Result<(), ()> = self.bad(
+                    e.span,
+                    format!("`{src} is {dst}` is not lowered yet"),
+                );
+                return Err(());
+            };
+            let dc = self.int_const(dcid as i64);
+            return self.extern_call_t1(
+                "pickle_class_is",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Bool,
+                vec![v, dc],
+            );
+        }
         self.bad(
             e.span,
             format!("`{src} is {dst}` is not lowered yet (class/interface tests need inheritance)"),
@@ -4893,6 +5127,36 @@ fn build_lambda_body(
             if self.is_ancestor(&dn, &sn) {
                 return Ok(v);
             }
+            let dc = self.int_const(dcid as i64);
+            return self.extern_call_t1(
+                "pickle_class_cast",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![v, dc],
+            );
+        }
+        // Interface casts re-test the object against the target's runtime
+        // tables: up to an interface via `pickle_iface_cast` (panics when the
+        // object's class does not implement that instantiation), and an
+        // interface-typed source down to a class via `pickle_class_cast`.
+        if let Some((cin, ciargs)) = self.iface_of(to) {
+            let iface_id = self.iface_id_for(&cin, &ciargs, span)?;
+            let dc = self.int_const(iface_id as i64);
+            return self.extern_call_t1(
+                "pickle_iface_cast",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![v, dc],
+            );
+        }
+        if self.iface_of(from).is_some() {
+            let Some((_, dcid)) = self.user_class_id(to) else {
+                let _: Result<(), ()> = self.bad(
+                    span,
+                    format!("`{from} as {to}` is not lowered yet"),
+                );
+                return Err(());
+            };
             let dc = self.int_const(dcid as i64);
             return self.extern_call_t1(
                 "pickle_class_cast",
@@ -9246,6 +9510,9 @@ fn build_lambda_body(
         }
 
         match ot {
+            Some(ref otv) if self.iface_of(otv).is_some() => {
+                self.interface_method_call(e, otv, object, name, args)
+            }
             Some(Ty::Map(k, v)) => {
                 let krep = self.key_rep(&k, object.span)?;
                 let obj = self.expr(object)?;
@@ -9438,6 +9705,155 @@ fn build_lambda_body(
         let dst = self.temp();
         self.instr(IrInstr::LoadSlot { dst, slot: ret_slot });
         Ok(dst)
+    }
+
+    /// Lower `object.name(...)` where the receiver's static type is an
+    /// interface. Two dispatch layers, mirroring the class cascade:
+    /// * a compile-time chain of `pickle_class_is(receiver, D_cid)` checks over
+    ///   every registered class that (transitively) implements the interface,
+    ///   deepest-derived-first, each branching to that class's own resolved
+    ///   implementation and joining on a result slot; and
+    /// * a runtime fallback `pickle_iface_method(receiver, iface_id, m_idx)`
+    ///   that reads the receiver's own class's method-table entry and
+    ///   indirect-calls it (a zero guard panics loudly instead of calling
+    ///   through null — reachable only through an unregistered/foreign class,
+    ///   which is out of contract).
+    fn interface_method_call(
+        &mut self,
+        e: &Expr,
+        ift: &Ty,
+        object: &Expr,
+        name: &str,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let Some((iface_name, iargs)) = self.iface_of(ift) else {
+            return self.bad(e.span, "receiver type is not an interface");
+        };
+        let iface_id = self.iface_id_for(&iface_name, &iargs, e.span)?;
+        let m_idx = match self
+            .iface_members
+            .get(&iface_id)
+            .and_then(|members| members.iter().find(|(n, _)| n == name).map(|(_, i)| *i))
+        {
+            Some(i) => i,
+            None => return self.bad(e.span, format!("`{iface_name}` has no method `{name}`")),
+        };
+        // Static dispatch chain: every registered class that transitively
+        // declares `implements` for this interface id, ordered
+        // deepest-derived-first so a subclass's override wins.
+        let mut branches: Vec<(usize, u32, FuncId)> = Vec::new();
+        for p in &self.classes {
+            if !self.class_implements_iface(p.class_id, iface_id) {
+                continue;
+            }
+            let Some(&(fid, is_static)) = self.method_ids.get(&(p.class_id, name.to_string()))
+            else {
+                continue;
+            };
+            if is_static {
+                let _: Result<(), ()> = self.bad(
+                    e.span,
+                    format!("interface method `{name}` is static on `{}`", p.name),
+                );
+                return Err(());
+            }
+            let depth = self.ancestry(&p.name).len();
+            branches.push((depth, p.class_id, fid));
+        }
+        if branches.is_empty() {
+            let _: Result<(), ()> = self.bad(
+                e.span,
+                format!("`{iface_name}.{name}` is implemented by no class in this program"),
+            );
+            return Err(());
+        }
+        branches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+        let receiver = self.expr(object)?;
+        let ret_ty = self.irty(e.span)?;
+        let ret_slot = self.new_slot(ret_ty);
+        let join = self.new_block();
+        for &(_, dcid, dfid) in &branches {
+            let cb = self.new_block();
+            let next = self.new_block();
+
+            let dc = self.int_const(dcid as i64);
+            let found = self.extern_call_t1(
+                "pickle_class_is",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Bool,
+                vec![receiver, dc],
+            )?;
+            self.term(IrTerm::BranchIf {
+                cond: found,
+                then: cb,
+                else_: next,
+            });
+
+            self.cur = cb;
+            let call_args = self.marshal_method_args(e, dfid, args, Some(receiver))?;
+            let val = self.emit_call_to(dfid, call_args, e)?;
+            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.term(IrTerm::Branch { target: join });
+
+            self.cur = next;
+        }
+        // Runtime fallback: the receiver's own class's table (a superclass arm
+        // already caught in-branch classes; this reads the concrete bucket of
+        // whichever class the receiver actually is).
+        let iid = self.int_const(iface_id as i64);
+        let midx = self.int_const(m_idx as i64);
+        let fp = self.extern_call_t1(
+            "pickle_iface_method",
+            vec![IrTy::Ptr, IrTy::Int, IrTy::Int],
+            IrTy::Int,
+            vec![receiver, iid, midx],
+        )?;
+        let is_zero = self.cmp_zero(fp, IrBinOp::Eq, false)?;
+        let ok = self.new_block();
+        let guard = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: is_zero,
+            then: guard,
+            else_: ok,
+        });
+
+        self.cur = guard;
+        self.extern_call_void("pickle_panic_no_iface_method", vec![], vec![]);
+        self.term(IrTerm::Branch { target: join });
+
+        self.cur = ok;
+        // Every implementer's method has the same declared shape, so the first
+        // branch's exact signature prototypes the indirect call.
+        let prototype = branches[0].2;
+        let call_args = self.marshal_method_args(e, prototype, args, Some(receiver))?;
+        // The prototype method's body may not be built yet when this call is
+        // lowered (generic instantiations build after emission), so derive the
+        // indirect-call signature from source types: a pointer `this` receiver
+        // plus the declared method parameters' IR types (every implementer
+        // shares the same declared shape, so any branch's signature works).
+        let mut params: Vec<IrTy> = vec![IrTy::Ptr];
+        if let Some(src) = self.src_param_tys.get(&prototype) {
+            for t in src.clone() {
+                params.push(self.map_ty(&t, e.span).unwrap_or(IrTy::Ptr));
+            }
+        }
+        let ret = ret_ty;
+        let dst = self.temp();
+        self.instr(IrInstr::CallInd {
+            dst: Some(dst),
+            fn_addr: fp,
+            params,
+            ret,
+            args: call_args,
+        });
+        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: dst });
+        self.term(IrTerm::Branch { target: join });
+
+        self.cur = join;
+        let out = self.temp();
+        self.instr(IrInstr::LoadSlot { dst: out, slot: ret_slot });
+        Ok(out)
     }
 
     /// `xs.push(v)` and `xs.pop()` for `List<T>` receivers.

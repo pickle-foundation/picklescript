@@ -3174,6 +3174,56 @@ impl<'a> Checker<'a> {
                 }
             };
         }
+        if let Ty::Interface(iface, iargs) = &ot {
+            // Interface members type calls on interface-typed receivers. The
+            // declared signatures may use the interface's generic parameters,
+            // which the instantiation args (`Container<int>`) substitute.
+            let mut imap = HashMap::new();
+            if let Some(TypeTableEntry::Interface(it)) = self.resolved.types.get(iface) {
+                for (i, g) in it.generics.iter().enumerate() {
+                    imap.insert(g.clone(), iargs.get(i).cloned().unwrap_or(Ty::Unknown));
+                }
+            }
+            let mut chain: Vec<String> = vec![iface.to_string()];
+            let mut seen: Vec<String> = Vec::new();
+            while let Some(iname) = chain.pop() {
+                if seen.contains(&iname) {
+                    continue;
+                }
+                seen.push(iname.clone());
+                let Some(TypeTableEntry::Interface(ent)) = self.resolved.types.get(&iname) else {
+                    continue;
+                };
+                if let Some(m) = ent.members.iter().find(|m| m.name == name) {
+                    if m.is_property {
+                        self.err_note(
+                            e.span,
+                            format!("property `{name}` on interface `{iface}`"),
+                            "interface property access is not lowered yet (interface methods are); use the interface's methods",
+                        );
+                        return Ty::Unknown;
+                    }
+                    return Ty::Fn(
+                        m.params
+                            .iter()
+                            .map(|p| self.subst(&p.ty, &imap))
+                            .collect(),
+                        Box::new(self.subst(&m.ty, &imap)),
+                    );
+                }
+                for ext in &ent.extends {
+                    if let Some(n) = ext.named() {
+                        chain.push(n.to_string());
+                    }
+                }
+            }
+            self.err_note(
+                e.span,
+                format!("no member `{name}` on interface `{iface}`"),
+                "an interface declares method signatures; check the spelling",
+            );
+            return Ty::Unknown;
+        }
         let Some((class, args_map)) = self.type_key(&ot) else {
             self.err_note(
                 e.span,
@@ -4504,6 +4554,12 @@ impl<'a> Checker<'a> {
             }
             (Ty::Interface(a, _), Ty::Interface(b, _)) => {
                 a == b || self.conforms_to(from, to) || self.conforms_to(to, from)
+            }
+            (Ty::Class(a, _) | Ty::Struct(a, _), Ty::Interface(b, _)) => {
+                self.implements_interface(a, b)
+            }
+            (Ty::Interface(a, _), Ty::Class(b, _) | Ty::Struct(b, _)) => {
+                self.implements_interface(b, a)
             }
             (Ty::Enum(a, _), Ty::Enum(b, _)) => a == b,
             (Ty::List(a), Ty::List(b)) | (Ty::Range(a), Ty::Range(b)) => self.cast_related(a, b),

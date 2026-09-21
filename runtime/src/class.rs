@@ -223,6 +223,115 @@ pub extern "C" fn pickle_class_cast(obj: *mut PickleObject, class_id: i64) -> *m
     crate::panic::pickle_panic_cstr(b"pickle: invalid class cast\0".as_ptr())
 }
 
+/// True when `obj`'s class (or any ancestor) is registered as implementing the
+/// interface `iface_id` — the runtime test for `x is I`.
+pub fn class_implements(obj: *const PickleObject, iface_id: u32) -> bool {
+    if obj.is_null() || iface_id == 0 {
+        return false;
+    }
+    let mut cid = unsafe { (*obj).class_id };
+    loop {
+        let g = crate::gc::gc_mut();
+        if g.class_iface_has(cid as usize, iface_id) {
+            return true;
+        }
+        let parent = g.class_parent(cid);
+        if parent == 0 {
+            return false;
+        }
+        cid = parent;
+    }
+}
+
+/// Implementation fn ptr of interface `iface_id`, method `method_index` for
+/// `obj`'s class. Walks the superclass chain so inherited interfaces resolve
+/// to their nearest implementation. Returns 0 when the class does not
+/// implement the interface.
+pub fn iface_method(obj: *const PickleObject, iface_id: u32, method_index: u32) -> usize {
+    if obj.is_null() || iface_id == 0 {
+        return 0;
+    }
+    let mut cid = unsafe { (*obj).class_id };
+    loop {
+        let g = crate::gc::gc_mut();
+        if let Some(fp) = g.class_iface_method(cid as usize, iface_id, method_index) {
+            return fp;
+        }
+        let parent = g.class_parent(cid);
+        if parent == 0 {
+            return 0;
+        }
+        cid = parent;
+    }
+}
+
+/// Mark `class_id` as implementing the interface `iface_id`, so `is`/`as`
+/// checks and dispatch tables see it (an interface with no methods still needs
+/// the bucket so `x is I` holds). Emitted by the compiler for every declared
+/// `implements`.
+#[no_mangle]
+pub extern "C" fn pickle_class_add_interface(class_id: i64, iface_id: i64) {
+    if class_id < 0 || iface_id < 0 {
+        return;
+    }
+    crate::gc::gc_mut().class_ensure_iface(class_id as usize, iface_id as u32);
+}
+
+/// Record that `class_id` implements method `method_index` (its position
+/// among the interface's methods) of interface `iface_id` with the function at
+/// `fn_ptr`. Emitted by the compiler for each interface method the class
+/// implements.
+#[no_mangle]
+pub extern "C" fn pickle_class_add_iface_method(
+    class_id: i64,
+    iface_id: i64,
+    method_index: i64,
+    fn_ptr: usize,
+) {
+    if class_id < 0 || iface_id < 0 || method_index < 0 {
+        return;
+    }
+    crate::gc::gc_mut().class_add_iface_method(
+        class_id as usize,
+        iface_id as u32,
+        method_index as u32,
+        fn_ptr,
+    );
+}
+
+/// Runtime interface test for `x is I`: true when `obj` implements `iface_id`.
+#[no_mangle]
+pub extern "C" fn pickle_class_implements(obj: *const PickleObject, iface_id: i64) -> bool {
+    if iface_id < 0 {
+        return false;
+    }
+    class_implements(obj, iface_id as u32)
+}
+
+/// Resolve the implementation of interface `iface_id`, method `method_index`
+/// for `obj`; 0 when the class does not implement the interface.
+#[no_mangle]
+pub extern "C" fn pickle_iface_method(
+    obj: *const PickleObject,
+    iface_id: i64,
+    method_index: i64,
+) -> usize {
+    if iface_id < 0 || method_index < 0 {
+        return 0;
+    }
+    iface_method(obj, iface_id as u32, method_index as u32)
+}
+
+/// Runtime downcast for `x as I`: returns `obj` when its class implements
+/// interface `iface_id`, otherwise aborts with a panic.
+#[no_mangle]
+pub extern "C" fn pickle_iface_cast(obj: *mut PickleObject, iface_id: i64) -> *mut PickleObject {
+    if iface_id >= 0 && class_implements(obj, iface_id as u32) {
+        return obj;
+    }
+    crate::panic::pickle_panic_cstr(b"pickle: invalid interface cast\0".as_ptr())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +450,41 @@ mod tests {
         assert!(!class_is(a, 0), "id 0 is never a user ancestor");
         assert!(pickle_class_is(d, dog as i64));
         assert!(!pickle_class_is(a, dog as i64));
+    }
+
+    #[test]
+    fn interface_buckets_lookup_and_parent_walk() {
+        let _guard = crate::gc::test_begin();
+        crate::pickle_runtime_init();
+        let animal = pickle_class_register(b"Animal".as_ptr(), 6, 1, 0b1, 0, 0, 0);
+        let dog = pickle_class_register(b"Dog".as_ptr(), 3, 1, 0b1, 0, 0, animal);
+        // `animal` implements iface 1 with two methods; `dog` adds one override.
+        pickle_class_add_interface(animal as i64, 1);
+        pickle_class_add_interface(animal as i64, 2);
+        pickle_class_add_iface_method(animal as i64, 1, 0, 0x1111);
+        pickle_class_add_iface_method(animal as i64, 1, 1, 0x2222);
+        pickle_class_add_iface_method(dog as i64, 1, 0, 0x3333);
+        let gc = crate::gc::gc_mut();
+        let d = class_new(dog as u64, 1, gc);
+        let a = class_new(animal as u64, 1, gc);
+        // `is` checks: a dog is-an animal so it implements animal's interfaces.
+        assert!(class_implements(d, 1));
+        assert!(class_implements(d, 2));
+        assert!(class_implements(a, 1));
+        assert!(!class_implements(d, 3), "unregistered interface is absent");
+        assert!(!class_implements(std::ptr::null(), 1));
+        // Resolution walks up: dog overrides method 0, inherits method 1.
+        assert_eq!(iface_method(d, 1, 0), 0x3333);
+        assert_eq!(iface_method(d, 1, 1), 0x2222);
+        assert_eq!(iface_method(a, 1, 0), 0x1111);
+        assert_eq!(iface_method(a, 2, 0), 0, "empty interface has no methods");
+        assert_eq!(iface_method(d, 3, 0), 0, "unknown interface resolves 0");
+        // Exported wrappers.
+        assert!(pickle_class_implements(d, 1));
+        assert!(!pickle_class_implements(a, 4));
+        assert_eq!(pickle_iface_method(d, 1, 1), 0x2222);
+        assert_eq!(pickle_iface_method(d, 1, 9), 0, "missing method index resolves 0");
+        assert_eq!(pickle_class_cast(d, animal as i64), d);
+        assert_eq!(pickle_iface_cast(d, 2), d);
     }
 }

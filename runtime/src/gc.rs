@@ -57,6 +57,12 @@ pub struct Gc {
     /// marks payload slot `i` as an owned object freed recursively with its
     /// holder.
     class_owned_mask: Vec<u64>,
+    /// Interface dispatch tables per registered class id: for each interface
+    /// id the class implements, the method implementations `(method_index,
+    /// fn_ptr)`. Lookup walks the superclass chain, so a subclass inherits its
+    /// ancestors' interfaces (and their implementations) without copying.
+    #[allow(clippy::type_complexity)]
+    class_iface_buckets: Vec<Vec<(u32, Vec<(u32, usize)>)>>,
 }
 
 impl Gc {
@@ -68,6 +74,7 @@ impl Gc {
             live_bytes: AtomicU32::new(0),
             manual_objects: Vec::new(),
             class_owned_mask: Vec::new(),
+            class_iface_buckets: Vec::new(),
         }
     }
 
@@ -110,6 +117,7 @@ impl Gc {
         let id = self.descriptors.register(d);
         self.class_parents.push(0);
         self.class_owned_mask.push(0);
+        self.class_iface_buckets.push(Vec::new());
         id
     }
 
@@ -177,6 +185,63 @@ impl Gc {
     /// Superclass id of `class_id` (0 = none / builtin).
     pub fn class_parent(&self, class_id: u32) -> u32 {
         self.class_parents.get(class_id as usize).copied().unwrap_or(0)
+    }
+
+    /// Ensure `class_id`'s interface bucket records interface `iface_id` (with
+    /// an empty method table when not present yet).
+    pub fn class_ensure_iface(&mut self, class_id: usize, iface_id: u32) {
+        if iface_id == 0 {
+            return;
+        }
+        if self.class_iface_buckets.len() <= class_id {
+            self.class_iface_buckets.resize(class_id + 1, Vec::new());
+        }
+        let bucket = &mut self.class_iface_buckets[class_id];
+        if !bucket.iter().any(|(i, _)| *i == iface_id) {
+            bucket.push((iface_id, Vec::new()));
+        }
+    }
+
+    /// Record that `class_id` implements interface `iface_id`'s method
+    /// `method_index` with the function at `fn_ptr`.
+    pub fn class_add_iface_method(
+        &mut self,
+        class_id: usize,
+        iface_id: u32,
+        method_index: u32,
+        fn_ptr: usize,
+    ) {
+        self.class_ensure_iface(class_id, iface_id);
+        let bucket = &mut self.class_iface_buckets[class_id];
+        let methods = &mut bucket.iter_mut().find(|(i, _)| *i == iface_id).unwrap().1;
+        if methods.iter().all(|(m, _)| *m != method_index) {
+            methods.push((method_index, fn_ptr));
+        }
+    }
+
+    /// True when `class_id` (or, per callers walking the chain, an ancestor)
+    /// implements interface `iface_id`.
+    pub fn class_iface_has(&self, class_id: usize, iface_id: u32) -> bool {
+        if iface_id == 0 {
+            return false;
+        }
+        self.class_iface_buckets
+            .get(class_id)
+            .is_some_and(|b| b.iter().any(|(i, _)| *i == iface_id))
+    }
+
+    /// Implementation fn ptr of interface `iface_id`'s method `method_index`
+    /// on `class_id`, when recorded.
+    pub fn class_iface_method(&self, class_id: usize, iface_id: u32, method_index: u32) -> Option<usize> {
+        self.class_iface_buckets.get(class_id).and_then(|b| {
+            b.iter()
+                .find(|(i, _)| *i == iface_id)
+                .and_then(|(_, m)| {
+                    m.iter()
+                        .find(|(mi, _)| *mi == method_index)
+                        .map(|(_, fp)| *fp)
+                })
+        })
     }
 
     /// Run a full mark-and-sweep cycle.

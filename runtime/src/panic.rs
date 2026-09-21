@@ -113,6 +113,14 @@ pub extern "C" fn pickle_panic_none_unwrap() -> ! {
     pickle_panic_cstr(b"pickle: unwrapped none value\0".as_ptr())
 }
 
+/// ABI: an interface-method dispatch whose receiver implements no such
+/// method at runtime (an unregistered/foreign class path). Same panic
+/// contract: fail loudly in the dispatch path.
+#[no_mangle]
+pub extern "C" fn pickle_panic_no_iface_method() -> ! {
+    pickle_panic_cstr(b"pickle: interface method dispatch found no implementation\0".as_ptr())
+}
+
 /// Replace the Rust panic hook so an internal panic cannot unwind across the
 /// `extern "C"` ABI. It prints `internal error: <msg>` and exits 1.
 ///

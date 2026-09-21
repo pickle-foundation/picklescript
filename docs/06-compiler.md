@@ -282,11 +282,27 @@ Lowering rules:
   bypasses the cascade (it always calls this class's implementation) and a
   method with no cascade entry is an ordinary direct call.
 - Not-yet-lowered inheritance edges bail loudly instead of miscompiling:
-  `implements`/interfaces and a subclass whose superclass is itself
-  unbounded. A class using one of these is skipped with a "… not lowered yet"
-  diagnostic. Generic classes target these same edges when instantiated:
-  an instantiation whose plan hits `extends`/`implements`/`override`/named
-  constructor/`deinit`/property/static-field/const bails with an E0900.
+  a subclass whose superclass is itself unbounded. `implements`/interfaces
+  **lower** (see the "Interface dispatch" note below). Generic classes target
+  these same edges when instantiated: an instantiation whose plan hits
+  `extends`/`override`/named constructor/`deinit`/property/static-field/const
+  bails with an E0900 (`implements` on a generic class now works — its
+  binding is substituted per instantiation).
+- **Interface dispatch** (lowered 2026-09-21): a receiver typed as an
+  interface lowers a method call into a `pickle_class_is(receiver, cid)`
+  cascade over every registered class that transitively `implements` that
+  interface (deepest-derived-first, so a subclass override wins), each arm
+  calling the class's resolved method function; receivers that match no
+  static branch fall back to `pickle_iface_method(receiver, iface_id,
+  method_index)` — a per-(class, interface) runtime method table lookup whose
+  indirect call is zero-guarded to a loud panic. Interface ids are
+  compiler-baked ints in a separate space (one per (name, type-argument)
+  instantiation); `is`/`as`/`as?` against interfaces lower to
+  `pickle_class_implements` / `pickle_iface_cast` / `pickle_class_is`. The
+  indirect call's signature is derived from source types (`this: Ptr` +
+  declared params, return = the call site's type) rather than from the
+  target function's IR params, which are not built yet for deferred generic
+  instantiations.
 - A generic *function* call `name<T,...>(args)` monomorphizes at the call
   site: the callee is instantiated over the resolved type arguments
   (substituted under the enclosing instantiation, so `id<U>` inside an

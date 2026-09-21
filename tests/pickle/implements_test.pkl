@@ -1,0 +1,156 @@
+interface Shape {
+    fn area() -> float
+    fn lines() -> int
+}
+
+interface Named {
+    fn label() -> string
+}
+
+class Circle implements Shape {
+    var radius: float
+
+    fn area() -> float {
+        3.14159265 * this.radius * this.radius
+    }
+
+    fn lines() -> int {
+        0
+    }
+}
+
+class Rect implements Shape, Named {
+    var w: float
+    var h: float
+
+    fn area() -> float {
+        this.w * this.h
+    }
+
+    fn lines() -> int {
+        4
+    }
+
+    fn label() -> string {
+        "rect"
+    }
+}
+
+class Square extends Rect {
+    override fn area() -> float {
+        this.w * this.h
+    }
+
+    override fn label() -> string {
+        "square"
+    }
+}
+
+interface Container<T> {
+    fn get() -> T
+    fn put(value: T)
+}
+
+class Holder<T> implements Container<T> {
+    var value: T
+
+    fn get() -> T {
+        this.value
+    }
+
+    fn put(v: T) {
+        this.value = v
+    }
+}
+
+fn total(c: Container<int>) -> int {
+    c.get()
+}
+
+fn shapeArea(s: Shape) -> float {
+    s.area()
+}
+
+fn shapeLines(s: Shape) -> int {
+    s.lines()
+}
+
+fn nameOf(n: Named) -> string {
+    n.label()
+}
+
+fn asShape(c: Circle) -> Shape {
+    c
+}
+
+test fn interface_method_dispatch() {
+    expect(shapeArea(Circle(2.0))).toBeGreaterThan(12.56)
+    expect(shapeArea(Circle(2.0))).toBeLessThan(12.57)
+    expect(shapeArea(Rect(3.0, 4.0))).toBe(12.0)
+    expect(shapeLines(Circle(1.0))).toBe(0)
+    expect(shapeLines(Rect(3.0, 4.0))).toBe(4)
+    expect(nameOf(Rect(1.0, 1.0))).toBe("rect")
+}
+
+test fn subclass_override_dispatches_through_interface() {
+    expect(shapeArea(Square(2.0, 5.0))).toBe(10.0)
+    expect(shapeLines(Square(2.0, 5.0))).toBe(4)
+    expect(nameOf(Square(1.0, 1.0))).toBe("square")
+}
+
+test fn interface_is_probe() {
+    expect(Circle(1.0) is Shape).toBe(true)
+    expect(Rect(1.0, 1.0) is Shape).toBe(true)
+    expect(Square(1.0, 1.0) is Shape).toBe(true)
+    expect(Rect(1.0, 1.0) is Named).toBe(true)
+    expect(Square(1.0, 1.0) is Named).toBe(true)
+}
+
+test fn interface_as_casts() {
+    var s: Shape = Circle(3.0) as Shape
+    expect(shapeArea(s)).toBeGreaterThan(28.27)
+    expect(shapeArea(s)).toBeLessThan(28.28)
+
+    var back: Circle = s as Circle
+    expect(back.radius).toBe(3.0)
+
+    var sq: Shape = Square(1.0, 2.0) as Shape
+    var sqRect: Rect = sq as Rect
+    expect(sqRect.w).toBe(1.0)
+}
+
+test fn interface_annotated_value() {
+    let s: Shape = Circle(1.0)
+    expect(shapeLines(s)).toBe(0)
+    expect(s is Circle).toBe(true)
+    expect(s is Rect).toBe(false)
+    let n: Named = Square(1.0, 1.0)
+    expect(n.label()).toBe("square")
+}
+
+test fn interface_valued_return() {
+    var s: Shape = asShape(Circle(4.0))
+    expect(shapeArea(s)).toBeGreaterThan(50.26)
+    expect(shapeArea(s)).toBeLessThan(50.27)
+}
+
+test fn generic_interface_instantiation() {
+    var h = Holder<int>(0)
+    h.put(9)
+    var ci: Container<int> = h
+    expect(ci.get()).toBe(9)
+    expect(h is Container<int>).toBe(true)
+    expect(h is Container<string>).toBe(false)
+    expect(total(h)).toBe(9)
+    expect(total(Holder<int>(42))).toBe(42)
+}
+
+test fn generic_interface_string_instantiation() {
+    var hs = Holder<string>("pickle")
+    var cs: Container<string> = hs
+    expect(cs.get()).toBe("pickle")
+    expect(hs is Container<string>).toBe(true)
+    expect(hs is Container<int>).toBe(false)
+    hs.put("relish")
+    expect(cs.get()).toBe("relish")
+}

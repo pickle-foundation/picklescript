@@ -1,0 +1,68 @@
+interface Shape {
+    fn area() -> float
+    fn lines() -> int
+}
+
+interface Named {
+    fn label() -> string
+}
+
+class Circle implements Shape {
+    var radius: float
+
+    fn area() -> float {
+        3.14159265 * this.radius * this.radius
+    }
+
+    fn lines() -> int {
+        0
+    }
+}
+
+class Rect implements Shape, Named {
+    var w: float
+    var h: float
+
+    fn area() -> float {
+        this.w * this.h
+    }
+
+    fn lines() -> int {
+        4
+    }
+
+    fn label() -> string {
+        "rect"
+    }
+}
+
+class Square extends Rect {
+    override fn label() -> string {
+        "square"
+    }
+}
+
+fn areaOf(s: Shape) -> float {
+    s.area()
+}
+
+fn linesOf(s: Shape) -> int {
+    s.lines()
+}
+
+fn nameOf(n: Named) -> string {
+    n.label()
+}
+
+fn main() {
+    println(areaOf(Circle(2.0)), areaOf(Rect(3.0, 4.0)), areaOf(Square(2.0, 5.0)))
+    println(linesOf(Circle(1.0)), linesOf(Rect(3.0, 4.0)), linesOf(Square(2.0, 5.0)))
+    println(nameOf(Rect(1.0, 1.0)), nameOf(Square(1.0, 1.0)))
+    println(Circle(1.0) is Shape, Rect(1.0, 1.0) is Shape, Square(1.0, 1.0) is Shape)
+    println(Rect(1.0, 1.0) is Named, Square(1.0, 1.0) is Named)
+
+    var s: Shape = Rect(2.0, 3.0) as Shape
+    var r: Rect = s as Rect
+    println(r.w, r.h)
+    println(s is Rect, s is Circle)
+}

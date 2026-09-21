@@ -109,11 +109,17 @@ Rules:
 > receiver's runtime class, so overriding still applies through the value. A
 > class cannot redeclare an inherited method under the opposite kind — a
 > `static fn` cannot shadow an inherited instance method or vice versa
-> (E0224). **Not yet lowered** (a loud "not lowered yet" diagnostic, never
-> a silent miscompile): interfaces/`implements`. Generic classes
-> (`class Box<T>`) are lowered on their own (see 04-types.md), but **not inside
-> a hierarchy**: an instantiated generic class using
-> `extends`/`implements`/`override` bails.
+> (E0224). Interfaces and `implements` are **lowered** (see the Interfaces
+> section below): a class listed after `implements` contributes its methods
+> to a two-layer interface dispatch (a compile-time `pickle_class_is`
+> cascade, deepest-derived-first so a subclass override wins, plus a runtime
+> per-class interface-method table reached by indirect call), and `is`/`as`/
+> `as?` on the interface surface run through runtime probes. Generic classes
+> (`class Box<T>`) lower on their own (see 04-types.md) and may declare
+> `implements` (their interface binding is substituted per instantiation),
+> but **not** the other hierarchy features: an instantiated generic class
+> using `extends`/`override`/named ctors/`deinit`/properties/static state
+> bails.
 
 ## Interfaces
 
@@ -140,6 +146,20 @@ class Config implements Serializable {
 Wait — no. `implements Drawable` is declared explicitly. The compiler then
 verifies every required member exists. (Structural implements without
 declaring is rejected to keep contracts explicit.)
+
+**Lowered as of 2026-09-21:** the `fn` method surface of `interface` +
+`implements` compiles and runs — plain and generic interfaces, multiple
+`implements`, generic implementers, `is`/`as`/`as?` on the interface surface.
+Method dispatch through an interface-typed receiver is two-layer: a
+compile-time `pickle_class_is` cascade over every registered implementer
+(deepest-derived-first, so a subclass override wins) then a runtime
+per-(class, interface) method table reached by indirect call; a receiver
+whose concrete class implements nothing that matches panics loudly. Checker
+notes: conformance is presence-only (bare-name), so a mismatched generic
+instantiation (`Holder<int>` used as `Container<string>`) typechecks and
+fails at runtime, not compile; interface **properties/consts** and default
+method bodies still bail "not lowered yet"; statically-impossible interface
+casts are E0363.
 
 ## Static members
 
