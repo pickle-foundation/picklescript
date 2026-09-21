@@ -11,6 +11,9 @@
 # picklescript compiler history cache
 /.pickle/
 
+# self-hosting port sources (local-only until the switchover; never pushed)
+/compiler-selfhost/
+
 # Editors
 .vscode/
 .idea/
