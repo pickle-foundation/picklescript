@@ -2147,6 +2147,10 @@ impl<'a> Checker<'a> {
             if bname == "file_exists" {
                 return self.check_file_exists(e, args);
             }
+            // `bytes(s)`: a string's raw bytes as a `List<byte>`.
+            if bname == "bytes" {
+                return self.check_bytes(e, args);
+            }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
                 return self.check_expect(e, args);
@@ -3902,14 +3906,29 @@ impl<'a> Checker<'a> {
         let at = self.check_expr(&args[0].value);
         match &at {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Unknown => Ty::String,
+            Ty::List(inner) if matches!(&**inner, Ty::Byte) => Ty::String,
             _ => {
                 self.err(
                     args[0].value.span,
-                    "`str` requires an `int`, `float`, `bool`, or `char` argument",
+                    "`str` requires an `int`, `float`, `bool`, `char`, or `List<byte>` argument",
                 );
                 Ty::Unknown
             }
         }
+    }
+    fn check_bytes(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`bytes(s)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`bytes` requires a `string` argument");
+        }
+        Ty::List(Box::new(Ty::Byte))
     }
     fn check_range(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
         if args.is_empty() || args.len() > 3 {

@@ -1,0 +1,57 @@
+test fn bytes_empty_string() {
+    let b = bytes("")
+    expect(len(b)).toBe(0)
+    expect(str(b)).toBe("")
+}
+
+test fn bytes_ascii_roundtrip() {
+    let s = "hi"
+    let b = bytes(s)
+    expect(len(b)).toBe(2)
+    expect(b[0] == 104).toBe(true)
+    expect(b[1] == 105).toBe(true)
+    expect(str(b)).toBe("hi")
+}
+
+test fn bytes_utf8_multibyte_roundtrip() {
+    let s = "é"
+    let b = bytes(s)
+    expect(len(b)).toBe(2)
+    expect(b[0] == 195).toBe(true)
+    expect(b[1] == 169).toBe(true)
+    expect(str(b)).toBe("é")
+}
+
+test fn bytes_matches_string_index_reads() {
+    let s = "café"
+    let b = bytes(s)
+    for (i in 0..len(s)) {
+        expect(b[i]).toBe(s[i])
+    }
+    expect(len(b)).toBe(len(s))
+}
+
+test fn str_bytes_reverse_keeps_all_bytes() {
+    let s = "a\0bc"
+    let b = bytes(s)
+    expect(len(b)).toBe(4)
+    expect(b[0] == 97).toBe(true)
+    expect(b[1] == 0).toBe(true)
+    expect(str(b)).toBe(s)
+}
+
+test fn str_bytes_inverse_of_bytes() {
+    let s = "round-trip"
+    expect(str(bytes(s))).toBe(s)
+}
+
+test fn bytes_iterate_sums() {
+    let s = "abc"
+    var n = 0
+    for (b in bytes(s)) {
+        if (b == 98) {
+            n += 1
+        }
+    }
+    expect(n).toBe(1)
+}

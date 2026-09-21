@@ -965,6 +965,8 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_str_from_char" => abi::pickle_str_from_char as *const () as usize,
         "pickle_str_from_f64" => abi::pickle_str_from_f64 as *const () as usize,
         "pickle_str_from_i64" => abi::pickle_str_from_i64 as *const () as usize,
+        "pickle_str_from_list" => abi::pickle_str_from_list as *const () as usize,
+        "pickle_str_to_bytes" => abi::pickle_str_to_bytes as *const () as usize,
         "pickle_str_get" => abi::pickle_str_get as *const () as usize,
         "pickle_str_len" => abi::pickle_str_len as *const () as usize,
         "pickle_box_i64" => abi::pickle_box_i64 as *const () as usize,

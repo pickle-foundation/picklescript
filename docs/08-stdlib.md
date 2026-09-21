@@ -48,6 +48,18 @@ push/pop, map has/keys/values, string cmp/len, `pickle_runtime_reset`).
 `std` itself is the **PickleScript-written layer on top of that ABI** — the
 modules the self-hosted compiler will actually import.
 
+**The bytes↔string bridge is an intrinsic now:** `bytes(s: string) -> List<byte>`
+returns a byte-exact copy of the string's UTF-8 bytes (with NUL bytes
+preserved), and `str(xs: List<byte>) -> string` is the exact inverse — the
+builtin `str()`, already used for scalar conversion, additionally accepts a
+`List<byte>` and reassembles a string from those bytes. `s[i]` and
+`for (b in s)` already read the same bytes as `bytes(s)[i]` (both typed
+`byte` per the model in `04-types.md`). These compose the `std.text` bridge:
+```
+let bs = bytes("café")   // List<byte>: c a f é(2 bytes)
+let back = str(bs)       // "café"
+```
+
 **Must-have (blocks rewriting the compiler in Pickle):**
 - `std.text` — mutable string/byte builder, UTF-8 helpers, `format`, and a
   bytes↔string bridge. A compiler reads source text and emits source text.

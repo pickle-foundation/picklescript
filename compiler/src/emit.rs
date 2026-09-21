@@ -1150,7 +1150,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "read_file" | "write_file" | "file_exists")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -6483,7 +6483,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "read_file" | "write_file" | "file_exists") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists") {
                     return false;
                 }
             }
@@ -7589,6 +7589,15 @@ fn build_lambda_body(
                     return self.bad(e.span, "`str(x)` takes exactly one argument");
                 }
                 let v = self.expr(&args[0].value)?;
+                if matches!(self.ty_of(&args[0].value.span), Some(Ty::List(inner)) if matches!(&*inner, Ty::Byte))
+                {
+                    return self.extern_call_t1(
+                        "pickle_str_from_list",
+                        vec![IrTy::Ptr],
+                        IrTy::Str,
+                        vec![v],
+                    );
+                }
                 match self.irty(args[0].value.span)? {
                     IrTy::Int => self.extern_call_t1(
                         "pickle_str_from_i64",
@@ -7614,8 +7623,23 @@ fn build_lambda_body(
                         IrTy::Str,
                         vec![v],
                     ),
-                    _ => self.bad(e.span, "`str` requires an `int`, `float`, `bool`, or `char`"),
+                    _ => self.bad(
+                        e.span,
+                        "`str` requires an `int`, `float`, `bool`, `char`, or `List<byte>`",
+                    ),
                 }
+            }
+            "bytes" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`bytes(s)` takes exactly one argument");
+                }
+                let v = self.expr(&args[0].value)?;
+                self.extern_call_t1(
+                    "pickle_str_to_bytes",
+                    vec![IrTy::Str],
+                    IrTy::Ptr,
+                    vec![v],
+                )
             }
             "range" => {
                 if args.is_empty() || args.len() > 3 {

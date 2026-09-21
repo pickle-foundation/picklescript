@@ -2638,3 +2638,45 @@ fn rejects_remove_non_int_index() {
         error_msgs(&d)
     );
 }
+
+#[test]
+fn accepts_bytes_and_str_byte_bridge() {
+    let d = check_str(
+        r#"fn main() {
+            let b = bytes("hi")
+            let s = str(b)
+            let c: byte = b[0]
+            print("{s} {c}")
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_bytes_non_string_arg() {
+    let d = check_str(
+        r#"fn main() {
+            let b = bytes(42)
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `bytes` argument-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_str_byte_bridge_on_int_list() {
+    let d = check_str(
+        r#"fn main() {
+            let xs = [1, 2, 3]
+            let s = str(xs)
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a `str` element-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}

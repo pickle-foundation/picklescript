@@ -1,0 +1,9 @@
+module main
+
+fn main() {
+    let s = "café"
+    let b = bytes(s)
+    println("{len(b)} {b[3] == 195} {b[4] == 169} {str(b)}")
+    let t = str(bytes("hi"))
+    println("{t == "hi"}")
+}

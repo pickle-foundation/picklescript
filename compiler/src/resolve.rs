@@ -353,6 +353,14 @@ impl<'a> Resolver<'a> {
             mk("write_file", vec![any("path"), any("text")], Ty::Bool, true),
             // `file_exists(path)`: `bool`.
             mk("file_exists", vec![any("path")], Ty::Bool, true),
+            // `bytes(s)`: snapshot a string's raw bytes as a `List<byte>`
+            // (checked strictly by a dedicated rule; `str(xs)` inverts it).
+            mk(
+                "bytes",
+                vec![any("s")],
+                Ty::List(Box::new(Ty::Byte)),
+                true,
+            ),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.

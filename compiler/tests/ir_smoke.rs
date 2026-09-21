@@ -2521,4 +2521,19 @@ fn emits_list_mutation_builtins() {
     }
 }
 
+#[test]
+fn emits_bytes_str_bridge_builtins() {
+    let m = emit_str(
+        r#"fn main() {
+            let b = bytes("hi")
+            let s = str(b)
+            println(s)
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    for want in ["pickle_str_to_bytes", "pickle_str_from_list"] {
+        assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
+    }
+}
+
 

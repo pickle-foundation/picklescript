@@ -314,8 +314,10 @@ pub mod abi {
     pub use crate::strings::pickle_str_from_char;
     pub use crate::strings::pickle_str_from_f64;
     pub use crate::strings::pickle_str_from_i64;
+    pub use crate::strings::pickle_str_from_list;
     pub use crate::strings::pickle_str_get;
     pub use crate::strings::pickle_str_len;
+    pub use crate::strings::pickle_str_to_bytes;
 
     pub use crate::test::pickle_expect_display;
     pub use crate::test::pickle_expect_obj_eq;

@@ -219,6 +219,46 @@ pub extern "C" fn pickle_str_from_byte(v: i64) -> *mut PickleObject {
     string_from_bytes(&b, 1, gc)
 }
 
+/// Snapshot a string's raw bytes as a fresh `List<byte>` (boxed per byte).
+/// Supports the `std.text` model: `bytes(s)<->str(bs)` round-trips exactly.
+#[no_mangle]
+pub extern "C" fn pickle_str_to_bytes(obj: *const PickleObject) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    let len = string_bytes_len(obj);
+    let out = crate::list::list_new(len, gc);
+    unsafe {
+        let data = str_bytes(obj);
+        for i in 0..len {
+            crate::list::list_push(out, crate::boxscalar::pickle_box_i64(*data.add(i) as i64));
+        }
+    }
+    out
+}
+
+/// Build a `string` from a `List<byte>`'s raw bytes (inverse of `bytes`).
+/// Panics on any element outside 0..=255 so a corrupted list can't sneak
+/// invalid bytes into the string model.
+#[no_mangle]
+pub extern "C" fn pickle_str_from_list(list: *const PickleObject) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    unsafe {
+        let len = crate::layout::list_len(list);
+        if len == 0 {
+            return string_from_bytes(std::ptr::null(), 0, gc);
+        }
+        let data = crate::layout::list_data(list);
+        let mut buf: Vec<u8> = Vec::with_capacity(len);
+        for i in 0..len {
+            let v = crate::boxscalar::pickle_unbox_i64(*data.add(i));
+            if !(0..=255).contains(&v) {
+                crate::panic::pickle_panic_cstr(b"str(bytes): byte out of 0..=255\0".as_ptr());
+            }
+            buf.push(v as u8);
+        }
+        string_from_bytes(buf.as_ptr(), buf.len(), gc)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
