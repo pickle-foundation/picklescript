@@ -353,6 +353,17 @@ impl<'a> Resolver<'a> {
             mk("write_file", vec![any("path"), any("text")], Ty::Bool, true),
             // `file_exists(path)`: `bool`.
             mk("file_exists", vec![any("path")], Ty::Bool, true),
+            // `delete(path)`: remove a file; `bool` success.
+            mk("delete", vec![any("path")], Ty::Bool, true),
+            // `mkdir(path)`: create a directory; `bool` success.
+            mk("mkdir", vec![any("path")], Ty::Bool, true),
+            // `list_dir(path)`: child paths as `List<string>?`.
+            mk(
+                "list_dir",
+                vec![any("path")],
+                Ty::Option(Box::new(Ty::List(Box::new(Ty::String)))),
+                true,
+            ),
             // `bytes(s)`: snapshot a string's raw bytes as a `List<byte>`
             // (checked strictly by a dedicated rule; `str(xs)` inverts it).
             mk(

@@ -155,10 +155,23 @@ needs to load source:
   or `none` when the file cannot be read.
 - `write_file(path, text) -> bool` — overwrites `path` with `text`'s bytes.
 - `file_exists(path) -> bool` — metadata probe (works for directories too).
+- `delete(path) -> bool` — removes a file or empty directory; `false` when it
+  is missing or cannot be removed.
+- `mkdir(path) -> bool` — creates a directory (parents are not implied);
+  `false` when it already exists or cannot be created.
+- `list_dir(path) -> List<string>?` — child paths (files and subdirectories,
+  full paths joined with the host separator) in host order, or `none` when
+  the path is not a readable directory.
 
-Round-trips are byte-exact (no UTF-8 re-validation). Missing so far are the
-buffered `Stream` model, byte-list (`List<byte>`) reads, `delete`, and
-directory listing — those wait on a `List<byte>`↔`string` bridge.
+Round-trips are byte-exact (no UTF-8 re-validation). `List<byte>` reads
+compose from the `bytes(...)` bridge, so no dedicated byte-list I/O is needed:
+`bytes(read_file(p))` materializes a file's bytes for in-place processing and
+`write_file(p, str(xs))` stores them back.
+
+The buffered `Stream` model remains a documented design (open handle +
+`read(n)? -> bytes` / `write(bytes)` / `flush()` / `close()`); whole-file I/O
+covers the self-hosted compiler, which reads and rewrites source in bulk, so
+Streams are scheduled with the stdlib `Iterable`/`Iterator` work.
 
 ## Networking & HTTP
 

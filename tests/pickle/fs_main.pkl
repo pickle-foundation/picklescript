@@ -14,4 +14,25 @@ fn main() {
     println("")
     print(read_file("tests/pickle/__fs_main_missing.tmp") ?? "fallback:none")
     println("")
+    let dir = "tests/pickle/__fs_main_dir"
+    print(mkdir(dir))
+    println("")
+    print(delete("{dir}/nope.txt"))
+    println("")
+    write_file("{dir}/x.txt", "x")
+    let es = list_dir(dir)
+    var n = 0
+    if (let some(l) = es) {
+        n = len(l)
+    }
+    print(n)
+    println("")
+    print(delete("{dir}/x.txt"))
+    println("")
+    print(delete(dir))
+    println("")
+    print(delete(path))
+    println("")
+    print(write_file(path, "regenerated"))
+    println("")
 }

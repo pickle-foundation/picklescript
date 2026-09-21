@@ -2526,10 +2526,23 @@ fn emits_fs_builtins() {
                 println(t)
             }
             println(file_exists(path))
+            println(delete(path))
+            println(mkdir(path))
+            let es = list_dir("tests/pickle")
+            if (let some(_l) = es) {
+                println(1)
+            }
         }"#,
     );
     let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
-    for want in ["pickle_write_file", "pickle_read_file", "pickle_file_exists"] {
+    for want in [
+        "pickle_write_file",
+        "pickle_read_file",
+        "pickle_file_exists",
+        "pickle_delete",
+        "pickle_mkdir",
+        "pickle_list_dir",
+    ] {
         assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
     }
 }

@@ -40,3 +40,37 @@ pub extern "C" fn pickle_write_file(path: *const PickleObject, text: *const Pick
 pub extern "C" fn pickle_file_exists(path: *const PickleObject) -> bool {
     std::fs::metadata(path_of(path)).is_ok()
 }
+
+/// Remove a file or empty directory at `path`; `false` when it cannot be
+/// removed or does not exist.
+#[no_mangle]
+pub extern "C" fn pickle_delete(path: *const PickleObject) -> bool {
+    std::fs::remove_file(path_of(path)).is_ok() || std::fs::remove_dir(path_of(path)).is_ok()
+}
+
+/// Create a directory at `path`; `false` when it already exists or cannot be
+/// created. Parents are not created implicitly.
+#[no_mangle]
+pub extern "C" fn pickle_mkdir(path: *const PickleObject) -> bool {
+    std::fs::create_dir(path_of(path)).is_ok()
+}
+
+/// List the directory at `path`. Returns a fresh `List<string>` of full
+/// child paths (files and subdirectories) in host order, or `null` (`none`)
+/// when the path is missing or is not a readable directory.
+#[no_mangle]
+pub extern "C" fn pickle_list_dir(path: *const PickleObject) -> *mut PickleObject {
+    let gc = crate::gc::gc_mut();
+    let l = crate::list::list_new(0, gc);
+    let entries = match std::fs::read_dir(path_of(path)) {
+        Ok(read) => read,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let rendered = p.to_string_lossy();
+        let s = crate::strings::string_from_bytes(rendered.as_bytes().as_ptr(), rendered.len(), gc);
+        crate::list::list_push(l, s);
+    }
+    l
+}

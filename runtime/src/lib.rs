@@ -293,7 +293,10 @@ pub mod abi {
     pub use crate::r#enum::pickle_enum_set_field;
     pub use crate::r#enum::pickle_enum_tag;
 
+    pub use crate::fs::pickle_delete;
     pub use crate::fs::pickle_file_exists;
+    pub use crate::fs::pickle_list_dir;
+    pub use crate::fs::pickle_mkdir;
     pub use crate::fs::pickle_read_file;
     pub use crate::fs::pickle_write_file;
 

@@ -57,3 +57,88 @@ test fn fs_match_over_option() {
         case none -> expect("unexpected").toBe("match: existing file read as none")
     }
 }
+
+test fn fs_delete_removes_and_reports() {
+    let path = "tests/pickle/__fs_del.tmp"
+    expect(write_file(path, "x")).toBe(true)
+    expect(delete(path)).toBe(true)
+    expect(file_exists(path)).toBe(false)
+    expect(delete(path)).toBe(false)
+    expect(delete("tests/pickle/__fs_never_existed.tmp")).toBe(false)
+}
+
+test fn fs_list_dir_and_delete_in_dir() {
+    let dir = "tests/pickle/__fsdir"
+    expect(mkdir(dir)).toBe(true)
+    write_file("{dir}/one.txt", "1")
+    write_file("{dir}/two.txt", "2")
+    let entries = list_dir(dir)
+    var n = 0
+    var saw_one = false
+    var saw_two = false
+    if (let some(es) = entries) {
+        for (p in es) {
+            n += 1
+            if (path_contains(p, "one.txt")) {
+                saw_one = true
+            }
+            if (path_contains(p, "two.txt")) {
+                saw_two = true
+            }
+        }
+    }
+    expect(n).toBe(2)
+    expect(saw_one).toBe(true)
+    expect(saw_two).toBe(true)
+    expect(delete("{dir}/one.txt")).toBe(true)
+    expect(delete("{dir}/two.txt")).toBe(true)
+}
+
+fn path_contains(s: string, sub: string): bool {
+    let sb = bytes(sub)
+    let sbl = len(sb)
+    if (sbl == 0) {
+        return true
+    }
+    let b = bytes(s)
+    var i = 0
+    while (i + sbl <= len(b)) {
+        var j = 0
+        var ok = true
+        while (j < sbl) {
+            if (b[i + j] != sb[j]) {
+                ok = false
+            }
+            j += 1
+        }
+        if (ok) {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+test fn fs_list_dir_missing_is_none() {
+    let entries = list_dir("tests/pickle/__fs_missing_dir_zz")
+    if (let some(_es) = entries) {
+        expect("unexpected").toBe("missing dir listed as some")
+    } else {
+        expect(true).toBe(true)
+    }
+}
+
+test fn fs_bytes_bridge_read() {
+    // `List<byte>` reads compose from the M9 bridge: bytes(read_file(p)).
+    let path = "tests/pickle/__fs_bytes.tmp"
+    expect(write_file(path, "ab")).toBe(true)
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        let bs = bytes(txt)
+        expect(len(bs)).toBe(2)
+        expect(bs[0] == 97).toBe(true)
+        expect(str(bs)).toBe("ab")
+    } else {
+        expect("unexpected").toBe("bytes bridge: read_file returned none after a successful write")
+    }
+}

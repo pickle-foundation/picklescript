@@ -1150,7 +1150,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -6808,7 +6808,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir") {
                     return false;
                 }
             }
@@ -8027,6 +8027,29 @@ fn build_lambda_body(
                 }
                 let p = self.expr(&args[0].value)?;
                 self.extern_call_t1("pickle_file_exists", vec![IrTy::Str], IrTy::Bool, vec![p])
+            }
+            "delete" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`delete(path)` takes exactly one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                self.extern_call_t1("pickle_delete", vec![IrTy::Str], IrTy::Bool, vec![p])
+            }
+            "mkdir" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`mkdir(path)` takes exactly one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                self.extern_call_t1("pickle_mkdir", vec![IrTy::Str], IrTy::Bool, vec![p])
+            }
+            "list_dir" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`list_dir(path)` takes exactly one argument");
+                }
+                let p = self.expr(&args[0].value)?;
+                // Returns a `List<string>` of child paths, or `null` (`none`)
+                // when the directory cannot be read.
+                self.extern_call_t1("pickle_list_dir", vec![IrTy::Str], IrTy::Ptr, vec![p])
             }
             _ if self.generic_user_fn(name) => self.bad(
                 e.span,

@@ -2551,9 +2551,44 @@ fn accepts_fs_builtins() {
                 println(t)
             }
             println(file_exists(path))
+            println(delete(path))
+            println(mkdir(path))
+            if (let some(es) = list_dir("tests/pickle")) {
+                println(len(es))
+            }
         }"#,
     );
     assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_delete_non_string_arg() {
+    let d = check_str(r#"fn main() { delete(3) }"#);
+    assert!(
+        has_errors(&d),
+        "expected a `delete` argument-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_mkdir_non_string_arg() {
+    let d = check_str(r#"fn main() { mkdir(3) }"#);
+    assert!(
+        has_errors(&d),
+        "expected a `mkdir` argument-type error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_list_dir_wrong_arity() {
+    let d = check_str(r#"fn main() { list_dir("a", "b") }"#);
+    assert!(
+        has_errors(&d),
+        "expected a `list_dir` arity error, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]

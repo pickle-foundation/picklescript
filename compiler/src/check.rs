@@ -2183,6 +2183,18 @@ impl<'a> Checker<'a> {
             if bname == "file_exists" {
                 return self.check_file_exists(e, args);
             }
+            // `delete(path)`: removes a file; `bool` success.
+            if bname == "delete" {
+                return self.check_delete(e, args);
+            }
+            // `mkdir(path)`: creates a directory; `bool` success.
+            if bname == "mkdir" {
+                return self.check_mkdir(e, args);
+            }
+            // `list_dir(path)`: `List<string>?` of child paths.
+            if bname == "list_dir" {
+                return self.check_list_dir(e, args);
+            }
             // `bytes(s)`: a string's raw bytes as a `List<byte>`.
             if bname == "bytes" {
                 return self.check_bytes(e, args);
@@ -4050,6 +4062,60 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         Ty::Bool
+    }
+
+    /// `delete(path)`: removes a file at `path`; `false` when it is missing or
+    /// cannot be removed.
+    fn check_delete(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`delete(path)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`delete` requires a `string` path");
+            return Ty::Unknown;
+        }
+        Ty::Bool
+    }
+
+    /// `mkdir(path)`: creates a directory at `path`; `false` when it already
+    /// exists or cannot be created.
+    fn check_mkdir(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`mkdir(path)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`mkdir` requires a `string` path");
+            return Ty::Unknown;
+        }
+        Ty::Bool
+    }
+
+    /// `list_dir(path)`: lists a directory as `List<string>?` of child paths
+    /// (full paths), or `none` when the path is not a readable directory.
+    fn check_list_dir(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`list_dir(path)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, "`list_dir` requires a `string` path");
+            return Ty::Unknown;
+        }
+        Ty::Option(Box::new(Ty::List(Box::new(Ty::String))))
     }
 
     fn check_if(
