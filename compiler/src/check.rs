@@ -633,6 +633,26 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `check_assignable`, except a `byte` target also accepts an `int` literal
+    /// in 0..=255 or an ASCII `char` literal (mirrors the byte-domain rule
+    /// match patterns already apply). This is what makes string/`List<byte>`
+    /// buffer building readable (`s[i] = 'a'`, `buf[i] = 32`).
+    fn check_assign_rhs(&mut self, want: &Ty, got: &Ty, value: &Expr, span: Span, what: &str) {
+        if *want == Ty::Byte {
+            if let ExprKind::Lit(lit) = &value.kind {
+                let fits_byte = match lit {
+                    Lit::Int { value } => *value >= 0 && *value <= 255,
+                    Lit::Char(c) => (*c as u32) <= 0x7F,
+                    _ => false,
+                };
+                if fits_byte {
+                    return;
+                }
+            }
+        }
+        self.check_assignable(want, got, span, what);
+    }
+
     /// `&T` is supported only as a function parameter type. Anywhere else a
     /// stored or returned `&T` would dangle (its referent is a borrowed local),
     /// so those uses are rejected up front.
@@ -3764,7 +3784,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 self.types.insert(target.span, elem_ty.clone());
-                self.check_assignable(&elem_ty, &vt, target.span, "assignment");
+                self.check_assign_rhs(&elem_ty, &vt, value, target.span, "assignment");
             }
             _ => {
                 self.err(target.span, "assignment target must be a variable, member, or index");

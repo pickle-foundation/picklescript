@@ -1,0 +1,7 @@
+fn main() {
+    let s = "abcdef"
+    s[0] = 'H'
+    s[1] = 73
+    s[5] += 1
+    println("wrote {s}")
+}

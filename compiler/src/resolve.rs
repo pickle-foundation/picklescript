@@ -643,6 +643,63 @@ struct MemberTables {
 impl<'a> Resolver<'a> {
     // ---- type declarations ------------------------------------------------
 
+    /// Infer the type of a field/const initializer syntactically, so a member
+    /// declared without an annotation still types member reads (`this.x`,
+    /// `obj.x`) instead of resolving those to `Ty::Unknown`. This mirrors what
+    /// the checker infers for the initializer; anything not covered here stays
+    /// `Unknown` and the checker's own inference takes over at the use site.
+    fn init_expr_ty(&self, e: &Expr, generics: &[String]) -> Option<Ty> {
+        match &e.kind {
+            ExprKind::Lit(lit) => match lit {
+                Lit::String(_) => Some(Ty::String),
+                Lit::Int { .. } => Some(Ty::Int),
+                Lit::Float { .. } => Some(Ty::Float),
+                Lit::Char(_) => Some(Ty::Char),
+                Lit::Bool(_) => Some(Ty::Bool),
+                Lit::None => Some(Ty::None),
+            },
+            ExprKind::Array(items) => {
+                let elem = items
+                    .first()
+                    .and_then(|i| self.init_expr_ty(i, generics))
+                    .unwrap_or(Ty::Unknown);
+                Some(Ty::List(Box::new(elem)))
+            }
+            ExprKind::Map(pairs) => {
+                let v = pairs
+                    .first()
+                    .map(|(_, v)| self.init_expr_ty(v, generics).unwrap_or(Ty::Unknown))
+                    .unwrap_or(Ty::Unknown);
+                Some(Ty::Map(Box::new(Ty::String), Box::new(v)))
+            }
+            ExprKind::Tuple(items) => Some(Ty::Tuple(
+                items
+                    .iter()
+                    .map(|i| self.init_expr_ty(i, generics).unwrap_or(Ty::Unknown))
+                    .collect(),
+            )),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::GenericCall { type_args, .. } => {
+                    type_args.first().map(|t| self.resolve_ty(t, generics))
+                }
+                ExprKind::Ident(name) => match self.types.get(name) {
+                    Some(TypeTableEntry::Class(t)) if t.generics.is_empty() => {
+                        Some(Ty::Class(name.clone(), Vec::new()))
+                    }
+                    Some(TypeTableEntry::Struct(t)) if t.generics.is_empty() => {
+                        Some(Ty::Struct(name.clone(), Vec::new()))
+                    }
+                    Some(TypeTableEntry::Enum(t)) if t.generics.is_empty() => {
+                        Some(Ty::Enum(name.clone(), Vec::new()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn declare_class(&mut self, c: &ClassDecl) {
         let generics: Vec<String> = c.generics.iter().map(|g| g.name.clone()).collect();
         let extends = c.extends.as_ref().map(|e| self.resolve_ty(e, &generics));
@@ -825,10 +882,18 @@ impl<'a> Resolver<'a> {
                     is_static,
                     const_,
                     attrs,
-                    init: _,
+                    init,
                     span,
                 } => {
                     record(name, *span);
+                    let field_ty = ty
+                        .as_ref()
+                        .map(|t| self.resolve_ty(t, generics))
+                        .or_else(|| {
+                            init.as_ref()
+                                .and_then(|e| self.init_expr_ty(e, generics))
+                        })
+                        .unwrap_or(Ty::Unknown);
                     fields.push(FieldInfo {
                         name: name.clone(),
                         visibility: *visibility,
@@ -836,10 +901,7 @@ impl<'a> Resolver<'a> {
                         mutable: !const_,
                         const_: *const_,
                         manual: attrs.iter().any(|a| a.name == "manualAlloc"),
-                        ty: ty
-                            .as_ref()
-                            .map(|t| self.resolve_ty(t, generics))
-                            .unwrap_or(Ty::Unknown),
+                        ty: field_ty,
                         span: *span,
                     });
                 }

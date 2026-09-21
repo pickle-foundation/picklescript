@@ -5216,8 +5216,12 @@ fn build_lambda_body(
                 "cannot write through an immutable reference (`&T`)",
             );
         }
+        if matches!(ot, Some(Ty::String)) {
+            return self.str_index_assign(e, op, object, index, value);
+        }
         if !matches!(ot, Some(Ty::List(_))) {
-            // Maps are handled above; other types are typed but unlowered.
+            // Maps and strings are handled above; other types are typed but
+            // unlowered.
             return self.bad(e.span, "index assignment over this type is not lowered yet");
         }
         let elem = match &ot {
@@ -5259,6 +5263,177 @@ fn build_lambda_body(
             b: v,
         });
         self.list_store(obj, idx, &rep, &elem, dst)?;
+        Ok(dst)
+    }
+
+    /// `s[i] = v` / `s[i] op= v` over a string: strings are immutable, so the
+    /// current byte is combined in place, a fresh copy with byte `i` replaced
+    /// is computed (`pickle_str_set`, copy-on-write), and the new string is
+    /// stored back into the *target* the string came from. Supported targets
+    /// are names (a local, or a bare instance/static field inside a method)
+    /// and `obj.field` members; nested targets (`m[k][j]`, `xs[i][j]`) are not
+    /// lowered yet because the copy would not propagate through the container
+    /// on the opaque-string ABI. Writes through `&T` references are rejected
+    /// up front by `index_assign`.
+    fn str_index_assign(
+        &mut self,
+        e: &Expr,
+        op: AssignOp,
+        object: &Expr,
+        index: &Expr,
+        value: &Expr,
+    ) -> Result<Temp, ()> {
+        match &object.kind {
+            ExprKind::Ident(name) => {
+                let s = self.expr(object)?;
+                let i = self.expr(index)?;
+                let v = self.byte_rhs(value)?;
+                let byte = self.str_index_byte(op, s, i, v)?;
+                let ns = self.extern_call_t1(
+                    "pickle_str_set",
+                    vec![IrTy::Ptr, IrTy::Int, IrTy::Int],
+                    IrTy::Str,
+                    vec![s, i, byte],
+                )?;
+                if let Some(slot) = self.lookup(name) {
+                    self.instr(IrInstr::StoreSlot { slot, v: ns });
+                    return Ok(ns);
+                }
+                // Inside an instance method a bare field name assigns
+                // `this.field`.
+                if let Some(cid) = self.owner {
+                    if let Some(idx) = self.instance_field_index(cid, name) {
+                        let field_ty = self.field_at(cid, idx).ty.clone();
+                        let owned = self.field_at(cid, idx).manual;
+                        let this = self.this_value(e)?;
+                        let vt = self.ty_of(&object.span).unwrap_or(Ty::String);
+                        return self.field_assign(
+                            e.span,
+                            AssignOp::Assign,
+                            this,
+                            &field_ty,
+                            idx,
+                            ns,
+                            &vt,
+                            owned,
+                        );
+                    }
+                    // A bare name may also be a static field of the enclosing
+                    // class.
+                    if let Some((dcid, slot, info)) = self.static_field(cid, name) {
+                        if !info.mutable {
+                            return self.bad(
+                                e.span,
+                                format!("cannot assign to immutable static field `{name}`"),
+                            );
+                        }
+                        let vt = self.ty_of(&object.span).unwrap_or(Ty::String);
+                        return self.static_assign(
+                            e.span,
+                            AssignOp::Assign,
+                            dcid,
+                            slot,
+                            &info.ty,
+                            ns,
+                            &vt,
+                        );
+                    }
+                }
+                self.bad(e.span, format!("cannot assign to `{name}`"))
+            }
+            ExprKind::Member { object: mobj, name } => {
+                let ot = self.ty_of(&mobj.span);
+                let ot = match ot {
+                    Some(Ty::Ptr(inner)) => Some((*inner).clone()),
+                    other => other,
+                };
+                let cid = match ot {
+                    Some(otv @ (Ty::Class(..) | Ty::Struct(..))) => {
+                        self.class_id_of(&otv, e.span)?
+                    }
+                    _ => None,
+                };
+                let Some(cid) = cid else {
+                    return self.bad(
+                        e.span,
+                        "string index assignment over this member type is not lowered yet",
+                    );
+                };
+                let Some(idx) = self.instance_field_index(cid as i64, name) else {
+                    return self.bad(
+                        e.span,
+                        format!(
+                            "`{name}` is not a field of this `{}`",
+                            self.class_name_of(cid)
+                        ),
+                    );
+                };
+                let field_ty = self.field_at(cid as i64, idx).ty.clone();
+                let owned = self.field_at(cid as i64, idx).manual;
+                let mo = self.expr(mobj)?;
+                let idxc = self.int_const(idx as i64);
+                let raw = self.extern_call_t1(
+                    "pickle_obj_slot_get",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![mo, idxc],
+                )?;
+                let i = self.expr(index)?;
+                let v = self.byte_rhs(value)?;
+                let byte = self.str_index_byte(op, raw, i, v)?;
+                let ns = self.extern_call_t1(
+                    "pickle_str_set",
+                    vec![IrTy::Ptr, IrTy::Int, IrTy::Int],
+                    IrTy::Str,
+                    vec![raw, i, byte],
+                )?;
+                let vt = self.ty_of(&object.span).unwrap_or(Ty::String);
+                self.field_assign(e.span, AssignOp::Assign, mo, &field_ty, idx, ns, &vt, owned)
+            }
+            _ => self.bad(
+                e.span,
+                "string index assignment over a non-variable target is not lowered yet (strings are copy-on-write)",
+            ),
+        }
+    }
+
+    /// The byte (int ABI) to write into the string: an ASCII `char` literal
+    /// lowers directly to its 0..=255 value (the checker admits it into a
+    /// `byte` slot), anything else lowers as its own value expression.
+    fn byte_rhs(&mut self, value: &Expr) -> Result<Temp, ()> {
+        if let ExprKind::Lit(Lit::Char(c)) = &value.kind {
+            if *c as u32 <= 0x7F {
+                return Ok(self.int_const(*c as u8 as i64));
+            }
+        }
+        self.expr(value)
+    }
+
+    /// The byte to write back for `s[i] op= v`: `v` itself for a plain store,
+    /// or the current byte combined with `v` for a compound operator.
+    fn str_index_byte(
+        &mut self,
+        op: AssignOp,
+        s: Temp,
+        i: Temp,
+        v: Temp,
+    ) -> Result<Temp, ()> {
+        if op == AssignOp::Assign {
+            return Ok(v);
+        }
+        let cur = self.extern_call_t1(
+            "pickle_str_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Int,
+            vec![s, i],
+        )?;
+        let dst = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst,
+            op: assign_opcode(op),
+            a: cur,
+            b: v,
+        });
         Ok(dst)
     }
 

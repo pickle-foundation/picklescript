@@ -118,6 +118,19 @@ string model (`04-types.md`). `print(c)` on a `char` writes the scalar as
 UTF-8 and `print(b)` on a `byte` writes the raw byte, so non-ASCII text
 round-trips through the copy loop `for (c in s) { out += "{c}" }`.
 
+**String buffer building is compiled.** `s[i] = v` writes a byte of a string
+(copy-on-write: the value is replaced, other aliases keep the old bytes) where
+`v` is a `byte`-typed value, an `int` literal in `0..=255`, or an ASCII `char`
+literal — plus `+=`/`-=`-style compounds over the current byte (`s[i] += 1`
+lower-cases/shifts). Targets are variables and field slots: locals,
+`this.x`, bare instance fields (`text[i] = ...` inside a method), bare static
+fields (`sbuf[i] = ...`), and `obj.field[i] = ...`. Together with `s[i]`
+reads, a compiler can build a string byte-by-byte without a `List<byte>`
+staging buffer. Not lowered yet: writes through `&T` parameters (still
+rejected), and nested targets like `m[k][j] = ...` (strings are
+copy-on-write); `Type.staticField[i] = ...` stores through the type name are
+also out.
+
 Compiled map operations today: `{ "a": 1 }` literals, `m[k]` reads and
 assignments (including `+=`-style compounds), `m.has(k)`, `m.get(k) -> V?`
 and `m.remove(k) -> V?` (both return the value as an option — `none` when the

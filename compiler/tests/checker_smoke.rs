@@ -2729,3 +2729,34 @@ fn rejects_str_byte_bridge_on_int_list() {
         error_msgs(&d)
     );
 }
+
+#[test]
+fn accepts_string_index_assign() {
+    let d = check_str(
+        r#"fn main() {
+            let s = "abc"
+            s[0] = 'H'
+            s[1] = 65
+            s[2] += 1
+            let b = s[0]
+            s[1] = b
+            println(s)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_string_index_assign_out_of_range_byte() {
+    let d = check_str(
+        r#"fn main() {
+            let s = "abc"
+            s[0] = 256
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a byte-range error, got:\n{}",
+        error_msgs(&d)
+    );
+}

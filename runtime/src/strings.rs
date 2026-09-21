@@ -164,6 +164,31 @@ pub extern "C" fn pickle_str_cmp(
     string_cmp(a, b) as i64
 }
 
+/// Copy of `obj` with byte `index` replaced by `v` (a `byte` on the compiler's
+/// `i64` ABI, 0..=255); panics on out-of-range. Strings are immutable, so the
+/// bytes are copied into a fresh object (copy-on-write).
+#[no_mangle]
+pub extern "C" fn pickle_str_set(
+    obj: *const PickleObject,
+    index: i64,
+    v: i64,
+) -> *mut PickleObject {
+    let len = string_bytes_len(obj);
+    if index < 0 || index as u64 >= len as u64 {
+        panic!("pickle: string index {index} out of range (len {len})");
+    }
+    let gc = crate::gc::gc_mut();
+    let out = gc.alloc(builtin_string_total(len) as u32, PICKLE_CLASS_STRING);
+    unsafe {
+        str_set_len(out, len);
+        if len > 0 {
+            std::ptr::copy_nonoverlapping(str_bytes(obj), str_bytes(out) as *mut u8, len);
+        }
+        *(str_bytes(out) as *mut u8).add(index as usize) = v as u8;
+    }
+    out
+}
+
 /// Byte at `index` of a string, widened to the compiler's `byte` ABI (`i64`,
 /// always 0..=255); panics on out-of-range.
 #[no_mangle]

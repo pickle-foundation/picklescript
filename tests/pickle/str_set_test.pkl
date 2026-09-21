@@ -1,0 +1,71 @@
+test fn str_set_int_literal() {
+    let s = "abcdef"
+    s[0] = 65
+    s[5] = 33
+    expect(s).toBe("Abcde!")
+    expect(s[0] == 65).toBe(true)
+}
+
+test fn str_set_char_literal() {
+    let s = "abcdef"
+    s[1] = 'Z'
+    expect(s).toBe("aZcdef")
+    s[3] = '3'
+    expect(s).toBe("aZc3ef")
+}
+
+test fn str_set_compound() {
+    let s = "a1f"
+    s[0] += 1
+    expect(s).toBe("b1f")
+    s[2] -= 32
+    expect(s).toBe("b1F")
+}
+
+test fn str_set_byte_value() {
+    let s = "hello"
+    let b = s[0]
+    s[1] = b
+    expect(s).toBe("hhllo")
+}
+
+test fn str_set_copy_on_write() {
+    let s = "abc"
+    let t = s
+    s[0] = 'x'
+    expect(s).toBe("xbc")
+    expect(t).toBe("abc")
+}
+
+test fn str_set_keeps_alias_reads() {
+    let s = "abcdef"
+    let t = s
+    s[2] = 'X'
+    expect(len(s)).toBe(6)
+    expect(s[2] == 88).toBe(true)
+    expect(t[2] == 99).toBe(true)
+}
+
+class StrSetHolder {
+    var text = "world"
+    static var sbuf = "hello"
+    fn bump() {
+        text[0] = 'W'
+        sbuf[1] = 'E'
+    }
+}
+
+test fn str_set_field_targets() {
+    let d = StrSetHolder()
+    d.text[3] = 'L'
+    expect(d.text).toBe("worLd")
+    d.bump()
+    expect(d.text).toBe("WorLd")
+    expect(StrSetHolder.sbuf).toBe("hEllo")
+}
+
+test fn str_set_local_write_back() {
+    var v = "abc"
+    v[1] = 'Y'
+    expect(v).toBe("aYc")
+}

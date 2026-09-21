@@ -2568,4 +2568,41 @@ fn emits_map_get_builtin() {
     );
 }
 
+#[test]
+fn emits_str_index_assign_builtins() {
+    let m = emit_str(
+        r#"fn main() {
+            let s = "abc"
+            s[0] = 'H'
+            s[1] = 65
+            s[2] += 1
+            println(s)
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    for want in ["pickle_str_set", "pickle_str_get"] {
+        assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
+    }
+}
+
+#[test]
+fn rejects_nested_string_index_assign() {
+    let mut map = SourceMap::default();
+    let diags = DiagnosticSink::new();
+    let out = frontend(
+        "test.pkl",
+        r#"fn main() {
+            let xs = ["abc"]
+            xs[0][1] = 'x'
+        }"#,
+        &mut map,
+        &diags,
+    )
+    .expect("frontend failed");
+    assert!(
+        emit_ir(&out.program, &out.resolved, &diags).is_none(),
+        "expected the emitter to refuse a nested string index-assignment target"
+    );
+}
+
 
