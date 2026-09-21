@@ -1,8 +1,8 @@
 import math.ops
 import math.ops as mo
-use math.ops.add
-use text.format.*
-use text.format.helper as shout
+import add from math.ops
+import helper from text.format as shout
+import * from text.format
 
 fn main() {
     let a = math.ops.add(1, 2)

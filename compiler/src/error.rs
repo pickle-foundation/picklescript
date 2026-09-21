@@ -197,8 +197,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     CatalogueEntry {
         code: ErrorCode::AmbiguousImport,
         title: "ambiguous imported name",
-        rule: "two loaded modules both export the same top-level function or const, and a bare reference in this file cannot tell them apart. Disambiguate with `use <mod>.<item> as <alias>` first.",
-        example: "use a.utils.helper  use b.utils.helper  fn main() { helper() }",
+        rule: "two loaded modules both export the same top-level function or const, and a bare reference in this file cannot tell them apart. Disambiguate with `import <item> from <mod> as <alias>` first.",
+        example: "import helper from a.utils  import helper from b.utils  fn main() { helper() }",
     },
     CatalogueEntry {
         code: ErrorCode::DuplicateMember,

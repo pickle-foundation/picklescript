@@ -13,6 +13,8 @@
 
 # self-hosting port sources (local-only until the switchover; never pushed)
 /compiler-selfhost/
+/cli-selfhost/
+/runtime-selfhost/
 
 # Editors
 .vscode/

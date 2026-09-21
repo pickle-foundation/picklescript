@@ -187,7 +187,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// True when an operator-prefixed next line should be glued onto the
+    /// expression currently being parsed.
+    ///
+    /// Glue is refused when the last significant token was a closing brace:
+    /// a block-ended construct (`if` without `else`, `match`, `unsafe`,
+    /// lambda, bare block) is complete on its own line, so a following
+    /// operator-prefixed line is a NEW statement (`-1` after `}` is unary
+    /// negation, not `(if-expr) - 1`). Otherwise chains and multi-line
+    /// arithmetic still continue (`a\n+ b`, `f()\n.bar()`).
     fn next_begins_continuation(&self) -> bool {
+        if self.last_sig_was_rbrace() {
+            return false;
+        }
         match self.peek_non_nl(1) {
             Some(t) => matches!(
                 t,
@@ -221,6 +233,20 @@ impl<'a> Parser<'a> {
             ),
             None => false,
         }
+    }
+
+    /// Whether the closest token behind the cursor (past any newlines) is a
+    /// closing brace.
+    fn last_sig_was_rbrace(&self) -> bool {
+        let mut i = self.pos;
+        while i > 0 {
+            i -= 1;
+            match &self.tokens[i].token.kind {
+                Tok::Newline => continue,
+                k => return matches!(k, Tok::RBrace),
+            }
+        }
+        false
     }
 
     fn peek_non_nl(&self, mut ahead: usize) -> Option<Tok> {
@@ -290,12 +316,18 @@ impl<'a> Parser<'a> {
                     module = Some(self.parse_module_decl()?);
                     self.newlines();
                 }
-                Tok::Import | Tok::Use => {
+                Tok::Import => {
                     let imp = self.parse_import()?;
                     imports.push(imp);
                     self.newlines();
                 }
                 _ => {
+                    if self.at(&Tok::Public) && self.peek_at(1) == &Tok::Import {
+                        let imp = self.parse_import()?;
+                        imports.push(imp);
+                        self.newlines();
+                        continue;
+                    }
                     match self.parse_item() {
                         Ok(more) => items.extend(more),
                         Err(()) => self.recover_to_item(),
@@ -330,42 +362,96 @@ impl<'a> Parser<'a> {
 
     fn parse_import(&mut self) -> PResult<ImportDecl> {
         let start = self.span();
-        let is_import = self.at(&Tok::Import);
-        self.bump();
-        let mut path = Vec::new();
-        loop {
-            path.push(self.expect_ident("import path")?);
-            if self.at(&Tok::Dot) {
+        let is_public = self.eat(&Tok::Public);
+        self.expect(&Tok::Import)?;
+
+        let (source, kind) = if self.at(&Tok::LBrace) {
+            self.bump();
+            let mut items = Vec::new();
+            if self.at(&Tok::RBrace) {
+                self.err_here("import list must not be empty");
                 self.bump();
-                // `use a.b.*` ends the dotted path at the star.
-                if !is_import && self.at(&Tok::Star) {
+            } else {
+                loop {
+                    let istart = self.span();
+                    let itm_path = self.parse_dotted_path("import path")?;
+                    let alias = if self.eat(&Tok::As) {
+                        Some(self.expect_ident("import alias")?)
+                    } else {
+                        None
+                    };
+                    items.push(ImportItem {
+                        path: itm_path,
+                        alias,
+                        span: istart.to(self.prev_span()),
+                    });
+                    if self.eat(&Tok::Comma) {
+                        self.newlines();
+                        continue;
+                    }
                     break;
                 }
+                self.expect(&Tok::RBrace)?;
+            }
+            self.expect(&Tok::From)?;
+            let source = self.parse_dotted_path("import source")?;
+            (source, ImportKind::Items { items })
+        } else if self.at(&Tok::Star) {
+            self.bump();
+            self.expect(&Tok::From)?;
+            let source = self.parse_dotted_path("import source")?;
+            (source, ImportKind::Wildcard)
+        } else {
+            let first = self.parse_dotted_path("import path")?;
+            if self.eat(&Tok::From) {
+                let source = self.parse_dotted_path("import source")?;
+                let alias = if self.eat(&Tok::As) {
+                    Some(self.expect_ident("import alias")?)
+                } else {
+                    None
+                };
+                let span = start.to(self.prev_span());
+                (
+                    source,
+                    ImportKind::Items {
+                        items: vec![ImportItem {
+                            path: first,
+                            alias,
+                            span,
+                        }],
+                    },
+                )
+            } else {
+                let alias = if self.eat(&Tok::As) {
+                    Some(self.expect_ident("import alias")?)
+                } else {
+                    None
+                };
+                (first, ImportKind::Module { alias })
+            }
+        };
+
+        let span = start.to(self.prev_span());
+        self.expect_stmt_end()?;
+        Ok(ImportDecl {
+            is_public,
+            source,
+            kind,
+            span,
+        })
+    }
+
+    fn parse_dotted_path(&mut self, what: &str) -> PResult<Vec<String>> {
+        let mut segs = Vec::new();
+        loop {
+            segs.push(self.expect_ident(what)?);
+            if self.at(&Tok::Dot) {
+                self.bump();
             } else {
                 break;
             }
         }
-        let span = start.to(self.prev_span());
-
-        let kind = if is_import {
-            let mut alias = None;
-            if self.eat(&Tok::As) {
-                alias = Some(self.expect_ident("import alias")?);
-            }
-            ImportKind::Module { path, alias }
-        } else if self.at(&Tok::Star) {
-            self.bump();
-            ImportKind::Star { path }
-        } else if self.at(&Tok::As) {
-            self.bump();
-            let name = self.expect_ident("use alias")?;
-            ImportKind::Item { path, alias: Some(name) }
-        } else {
-            ImportKind::Item { path, alias: None }
-        };
-
-        self.expect_stmt_end()?;
-        Ok(ImportDecl { kind, span })
+        Ok(segs)
     }
 
     fn recover_to_item(&mut self) {
@@ -3190,7 +3276,6 @@ fn stmt_span(s: &Stmt) -> Span {
 /// else. Reserved words — `fn`, `let`, `if`, `match`, ... — are not here.
 fn contextual_ident(t: &Tok) -> Option<&'static str> {
     Some(match t {
-        Tok::Use => "use",
         Tok::Get => "get",
         Tok::Set => "set",
         Tok::Init => "init",
@@ -3228,7 +3313,6 @@ fn member_field_name(t: &Tok) -> bool {
             | Tok::Task
             | Tok::Channel
             | Tok::Async
-            | Tok::Use
     )
 }
 

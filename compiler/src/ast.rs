@@ -15,16 +15,34 @@ pub struct ModuleDecl {
 
 #[derive(Debug, Clone)]
 pub enum ImportKind {
-    /// `import a.b.c` or `import a.b as x`
-    Module { path: Vec<String>, alias: Option<String> },
-    /// `use a.b.item` or `use a.b.item as x`
-    Item { path: Vec<String>, alias: Option<String> },
-    /// `use a.b.*`
-    Star { path: Vec<String> },
+    /// `import a.b` / `import a.b as x`: brings the module namespace into
+    /// scope and splices its public items unqualified.
+    Module { alias: Option<String> },
+    /// `import x from a.b [as z]`, `import x.y from a.b as z`,
+    /// `import { x, y as yy } from a.b`: binds each imported symbol by its
+    /// local name (alias-or-last-segment). A symbol that names a module file
+    /// also splices that module's public items.
+    Items { items: Vec<ImportItem> },
+    /// `import * from a.b`: binds all public symbols of the source unqualified.
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportItem {
+    /// Symbol path within the source (e.g. `x`, or `x.y` for a nested export).
+    pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
+    /// `pub import ...` re-exports the imported names from this module.
+    pub is_public: bool,
+    /// Module source: the dot-path after `from`, or the module path itself for
+    /// module imports (`import a.b`). A source may name a package directory or
+    /// a module file.
+    pub source: Vec<String>,
     pub kind: ImportKind,
     pub span: Span,
 }

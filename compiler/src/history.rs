@@ -405,16 +405,39 @@ pub fn deps_of(program: &Program) -> Vec<String> {
     use crate::ast::ImportKind::*;
     let mut out = Vec::new();
     for imp in &program.imports {
+        let prefix = if imp.is_public { "pub " } else { "" };
         let text = match &imp.kind {
-            Module { path, alias } => match alias {
-                Some(a) => format!("import {} as {a}", path.join(".")),
-                None => format!("import {}", path.join(".")),
+            Module { alias } => match alias {
+                Some(a) => format!("{prefix}import {} as {a}", imp.source.join(".")),
+                None => format!("{prefix}import {}", imp.source.join(".")),
             },
-            Item { path, alias } => match alias {
-                Some(a) => format!("use {} as {a}", path.join(".")),
-                None => format!("use {}", path.join(".")),
-            },
-            Star { path } => format!("use {}.*", path.join(".")),
+            Items { items } if items.len() == 1 => {
+                let it = &items[0];
+                match &it.alias {
+                    Some(a) => format!(
+                        "{prefix}import {} from {} as {a}",
+                        it.path.join("."),
+                        imp.source.join(".")
+                    ),
+                    None => format!(
+                        "{prefix}import {} from {}",
+                        it.path.join("."),
+                        imp.source.join(".")
+                    ),
+                }
+            }
+            Items { items } => {
+                let body = items
+                    .iter()
+                    .map(|it| match &it.alias {
+                        Some(a) => format!("{} as {a}", it.path.join(".")),
+                        None => it.path.join("."),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{prefix}import {{ {body} }} from {}", imp.source.join("."))
+            }
+            Wildcard => format!("{prefix}import * from {}", imp.source.join(".")),
         };
         out.push(text);
     }

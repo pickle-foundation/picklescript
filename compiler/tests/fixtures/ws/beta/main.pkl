@@ -1,0 +1,9 @@
+module beta
+
+import { greet } from alpha
+import { twice } from alpha.ops
+
+fn main() {
+    expect(greet()).toBe("hello")
+    expect(twice(2)).toBe(4)
+}

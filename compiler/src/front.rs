@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -122,11 +122,301 @@ struct FileImports {
 
 struct ModuleBinding {
     exports: Rc<HashSet<String>>,
+    /// Module path owning the exported declarations; `None` means the binding
+    /// key itself is the owning module (used to canonicalize collided flat
+    /// names for qualified references).
+    provider: Option<Vec<String>>,
+}
+
+/// Where a module path resolves on disk: a single `.pkl` module file, or a
+/// package directory treated as a module for import purposes.
+enum ModuleLoc {
+    File(PathBuf),
+    Package(PathBuf),
+}
+
+/// A workspace manifest (`picklescript.toml`): crate names mapped to the
+/// directories that hold that crate's modules. Only the `[workspace]`
+/// `members` array is read; everything else (package metadata, paths,
+/// registry, dependencies) is reserved for the future package manager.
+#[derive(Default)]
+struct Workspace {
+    crates: HashMap<String, PathBuf>,
+}
+
+impl Workspace {
+    /// Find the nearest `picklescript.toml` at or above `start` and read its
+    /// `[workspace] members` (paths resolved relative to the manifest file).
+    /// The walk matches the module base search — up to (and including) `cwd`.
+    fn discover(start: &Path) -> Workspace {
+        let cwd = std::env::current_dir().ok();
+        let mut dir = Some(if start.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            start.to_path_buf()
+        });
+        let mut seen = HashSet::new();
+        while let Some(d) = dir {
+            let canon = d.canonicalize().unwrap_or_else(|_| d.clone());
+            if !seen.insert(canon.clone()) {
+                break;
+            }
+            let manifest = d.join("picklescript.toml");
+            if manifest.is_file() {
+                if let Some(crates) = read_workspace_members(&manifest) {
+                    return Workspace { crates };
+                }
+            }
+            if let Some(c) = &cwd {
+                if canon == c.canonicalize().unwrap_or_else(|_| c.clone()) {
+                    break;
+                }
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+        Workspace::default()
+    }
+
+    fn crate_dir(&self, name: &str) -> Option<&Path> {
+        self.crates.get(name).map(|p| p.as_path())
+    }
+}
+
+/// Read a `picklescript.toml` and return the `[workspace] members` mapping of
+/// crate name to directory, resolved relative to the manifest's own directory.
+/// Returns `None` when the file carries no usable `members` array.
+fn read_workspace_members(manifest: &Path) -> Option<HashMap<String, PathBuf>> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let base = manifest.parent().unwrap_or_else(|| Path::new("."));
+    let raw = parse_workspace_members(&text);
+    if raw.is_empty() {
+        return None;
+    }
+    Some(
+        raw.into_iter()
+            .map(|(name, dir)| (name, base.join(dir)))
+            .collect(),
+    )
+}
+
+/// Parse the raw `[workspace] members = [ { name = "x", path = "y" }, ... ]`
+/// list out of a manifest's text (a tight TOML subset; inline tables and
+/// bare-string entries are accepted, everything else is ignored).
+fn parse_workspace_members(text: &str) -> HashMap<String, String> {
+    let mut members = HashMap::new();
+    let mut section = String::new();
+    let mut pending: Option<String> = None;
+    for raw in text.lines() {
+        let clean = strip_toml_comment(raw).trim();
+        if clean.is_empty() {
+            continue;
+        }
+        if let Some(buf) = pending.as_mut() {
+            buf.push_str(clean);
+            buf.push(' ');
+            if array_is_closed(buf) {
+                let full = std::mem::take(&mut pending).unwrap();
+                parse_members_array(&full, &mut members);
+            }
+            continue;
+        }
+        if clean.starts_with('[') && clean.ends_with(']') {
+            section = clean[1..clean.len() - 1].trim().to_string();
+            continue;
+        }
+        if section == "workspace" {
+            if let Some(eq) = clean.find('=') {
+                if clean[..eq].trim() == "members" {
+                    let value = clean[eq + 1..].trim();
+                    if value.starts_with('[') {
+                        if array_is_closed(value) {
+                            parse_members_array(value, &mut members);
+                        } else {
+                            pending = Some(value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    members
+}
+
+/// Whether a `[ ... ]` buffer has reached balanced brackets (its array is
+/// complete), ignoring brackets inside quoted strings.
+fn array_is_closed(s: &str) -> bool {
+    let mut depth = 0i64;
+    let mut in_str: Option<char> = None;
+    let mut prev = '\0';
+    for c in s.chars() {
+        if let Some(q) = in_str {
+            if c == q && prev != '\\' {
+                in_str = None;
+            }
+        } else {
+            match c {
+                '"' | '\'' => in_str = Some(c),
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        prev = c;
+    }
+    depth <= 0
+}
+
+/// Extract `{ name = "...", path = "..." }` tables (and bare string entries)
+/// from an array body, writing each `name -> path` into `out`.
+fn parse_members_array(array: &str, out: &mut HashMap<String, String>) {
+    let mut rest = array;
+    loop {
+        let Some(start) = rest.find(['{', '"', '\'']) else {
+            break;
+        };
+        let Some(c) = rest.chars().nth(start) else {
+            break;
+        };
+        if c == '{' {
+            let after = &rest[start + 1..];
+            let Some(close) = matching_brace(after) else {
+                break;
+            };
+            let table = &after[..close];
+            if let (Some(name), Some(path)) = (extract_kv(table, "name"), extract_kv(table, "path")) {
+                out.insert(name, path);
+            }
+            rest = &after[close + 1..];
+        } else {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find(c) else {
+                break;
+            };
+            let value = after[..end].trim();
+            if !value.is_empty() {
+                out.insert(value.to_string(), value.to_string());
+            }
+            rest = &after[end + 1..];
+        }
+    }
+}
+
+/// Index just past the `}` closing the top-level `{ ... }` starting at the
+/// beginning of `table`, ignoring braces inside quoted strings.
+fn matching_brace(table: &str) -> Option<usize> {
+    let mut depth = 1i64;
+    let mut in_str: Option<char> = None;
+    let mut prev = '\0';
+    for (i, c) in table.char_indices() {
+        if let Some(q) = in_str {
+            if c == q && prev != '\\' {
+                in_str = None;
+            }
+        } else {
+            match c {
+                '"' | '\'' => in_str = Some(c),
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        prev = c;
+    }
+    None
+}
+
+/// Pull `key = value` out of an inline table body, with the value given
+/// bare, single-, or double-quoted.
+fn extract_kv(table: &str, want: &str) -> Option<String> {
+    let mut rest = table;
+    loop {
+        let idx = rest.find(want)?;
+        let before = idx.checked_sub(1).and_then(|i| rest.as_bytes().get(i)).copied();
+        if matches!(before, Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
+            rest = &rest[idx + want.len()..];
+            continue;
+        }
+        let after = rest[idx + want.len()..].trim_start();
+        let Some(eq) = after.strip_prefix('=') else {
+            rest = &rest[idx + want.len()..];
+            continue;
+        };
+        let value = eq.trim_start();
+        if value.starts_with('"') || value.starts_with('\'') {
+            let q = value.chars().next().unwrap();
+            let end = value[1..].find(q)?;
+            return Some(value[1..1 + end].to_string());
+        }
+        let end = value.find([',', '}']).unwrap_or(value.len());
+        let bare = value[..end].trim();
+        return if bare.is_empty() { None } else { Some(bare.to_string()) };
+    }
+}
+
+/// Drop a trailing `#` comment that is not inside a quoted string.
+fn strip_toml_comment(line: &str) -> &str {
+    let mut in_str: Option<char> = None;
+    let mut prev = '\0';
+    for (i, c) in line.char_indices() {
+        if let Some(q) = in_str {
+            if c == q && prev != '\\' {
+                in_str = None;
+            }
+        } else {
+            match c {
+                '#' => return &line[..i],
+                '"' | '\'' => in_str = Some(c),
+                _ => {}
+            }
+        }
+        prev = c;
+    }
+    line
+}
+
+/// What a `from`-import (an `ImportItem`) resolved to.
+enum ItemTarget {
+    /// The imported path names a whole module file; its public items become
+    /// available and its name binds for qualified access.
+    ModuleFile { idx: usize, local: String },
+    /// The imported path names one exported symbol of its provider module.
+    Symbol {
+        idx: usize,
+        /// The exported item's own name within its module.
+        name: String,
+        /// The local binding (alias or last path segment).
+        local: String,
+    },
+}
+
+/// A namespace re-export of the form `pub import a.b` / `pub import a.b as x`:
+/// consumers that load this module get a qualified `module.name.<export>`
+/// binding pointing at the provider module's exports.
+#[derive(Clone)]
+struct PubNs {
+    name: String,
+    /// Module path owning the re-exported declarations.
+    provider: Vec<String>,
+    exports: Rc<HashSet<String>>,
 }
 
 impl FileImports {
     fn exports_of(&self, path: &[String]) -> Option<&HashSet<String>> {
         self.modules.get(path).map(|m| m.exports.as_ref())
+    }
+
+    /// The module path owning a bound module (used to canonicalize collided
+    /// flat names); falls back to the bound path itself.
+    fn provider_of(&self, path: &[String]) -> Vec<String> {
+        self.modules
+            .get(path)
+            .and_then(|m| m.provider.clone())
+            .unwrap_or_else(|| path.to_vec())
     }
 }
 
@@ -144,6 +434,14 @@ struct ModuleFile {
     fid: FileId,
     module_path: Vec<String>,
     exports: HashSet<String>,
+    /// Package virtual modules list member exports as their own; such names
+    /// must not count toward collision (the members themselves do).
+    is_package: bool,
+    pub_ns: Vec<PubNs>,
+    /// Flattened symbol re-exports (`pub import { x, y } from A` /
+    /// `pub import * from A`): local name as exported by this module, with
+    /// the index of the module that actually defines it.
+    pub_items: Vec<(String, usize)>,
     imports: Vec<ImportDecl>,
     program: Program,
 }
@@ -155,6 +453,7 @@ struct Loader<'a> {
     files: Vec<ModuleFile>,
     imports_for: HashMap<FileId, Rc<FileImports>>,
     file_roots: HashMap<FileId, String>,
+    workspace: Workspace,
 }
 
 impl<'a> Loader<'a> {
@@ -166,6 +465,7 @@ impl<'a> Loader<'a> {
             files: Vec::new(),
             imports_for: HashMap::new(),
             file_roots: HashMap::new(),
+            workspace: Workspace::default(),
         }
     }
 
@@ -183,12 +483,16 @@ impl<'a> Loader<'a> {
                 exports.insert(n.to_string());
             }
         }
-        let root_path = PathBuf::from(file_name);
+let root_path = PathBuf::from(file_name);
+        self.workspace = Workspace::discover(root_path.parent().unwrap_or_else(|| Path::new(".")));
         self.files.push(ModuleFile {
             file_path: root_path.clone(),
             fid,
             module_path,
             exports,
+            is_package: false,
+            pub_ns: Vec::new(),
+            pub_items: Vec::new(),
             imports: program.imports.clone(),
             program,
         });
@@ -204,7 +508,7 @@ impl<'a> Loader<'a> {
 
         let mut item_counts: HashMap<&str, usize> = HashMap::new();
         for f in &self.files {
-            if f.module_path.is_empty() {
+            if f.module_path.is_empty() || f.is_package {
                 continue;
             }
             for n in &f.exports {
@@ -242,34 +546,95 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Resolve a module path to a file: first relative to the importing
-    /// file's directory, then under `<cwd>/src/`.
-    fn resolve_module_file(&self, importer: &Path, segments: &[String]) -> Option<PathBuf> {
+    /// Where a module path points: a single module file, or a package
+    /// directory whose members are module files (`x/y.pkl` for the module
+    /// path `pkg.x.y` imported from that package).
+    fn resolve_module_loc(&self, importer: &Path, segments: &[String]) -> Option<ModuleLoc> {
+        if segments.is_empty() {
+            return None;
+        }
         let mut rel = PathBuf::new();
         for s in segments {
             rel.push(s);
         }
-        rel.set_extension("pkl");
-        let importer_dir = importer
-            .parent()
-            .map(Path::to_path_buf)
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from("."));
-        let candidate = importer_dir.join(&rel);
-        if candidate.is_file() {
-            return Some(candidate);
+        let rel_file = rel.with_extension("pkl");
+
+        // A leading workspace crate name resolves inside that crate's own
+        // directory: the crate root maps to `lib.pkl`/`main.pkl` and each
+        // deeper segment to a module file or package dir within the crate.
+        // A crate name is authoritative, so no other base is searched.
+        if let Some(crate_dir) = self.workspace.crate_dir(&segments[0]) {
+            if segments.len() == 1 {
+                for stem in ["lib", "main"] {
+                    let f = crate_dir.join(format!("{stem}.pkl"));
+                    if f.is_file() {
+                        return Some(ModuleLoc::File(f));
+                    }
+                }
+                return None;
+            }
+            let mut sub = PathBuf::new();
+            for s in &segments[1..] {
+                sub.push(s);
+            }
+            let f = crate_dir.join(sub.with_extension("pkl"));
+            if f.is_file() {
+                return Some(ModuleLoc::File(f));
+            }
+            let p = crate_dir.join(&sub);
+            if p.is_dir() {
+                return Some(ModuleLoc::Package(p));
+            }
+            return None;
         }
-        if let Ok(cwd) = std::env::current_dir() {
-            let candidate = cwd.join("src").join(&rel);
-            if candidate.is_file() {
-                return Some(candidate);
+
+        // Bases searched per location: the importing file's directory, then
+        // each ancestor up to (and including) the process working directory,
+        // then finally `<cwd>/src/`. A directory base is a candidate for a
+        // file (segments joined with `.pkl`) or a package (a real directory).
+        let mut bases: Vec<PathBuf> = Vec::new();
+        let cwd = std::env::current_dir().ok();
+        let mut dir = match importer.parent() {
+            Some(p) if !p.as_os_str().is_empty() => Some(p.to_path_buf()),
+            _ => Some(PathBuf::from(".")),
+        };
+        let mut seen = HashSet::new();
+        while let Some(d) = dir {
+            let canon = d.canonicalize().unwrap_or_else(|_| d.clone());
+            if !seen.insert(canon) {
+                break;
+            }
+            bases.push(d.clone());
+            if let Some(c) = &cwd {
+                if d == *c {
+                    break;
+                }
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+        if let Some(c) = &cwd {
+            if c.parent().is_none() {
+                // cwd is a filesystem root; nothing above.
+            }
+            bases.push(c.join("src"));
+        }
+
+        for base in bases {
+            let f = base.join(&rel_file);
+            if f.is_file() {
+                return Some(ModuleLoc::File(f));
+            }
+            let p = base.join(&rel);
+            if p.is_dir() {
+                return Some(ModuleLoc::Package(p));
             }
         }
         None
     }
 
-    /// Load the file for module `segments` (if not already loaded) and return
-    /// its index. Emits `ModuleNotFound` when no file matches.
+    /// Load the module `segments` (if not already loaded) and return its
+    /// index. Emits `ModuleNotFound` when there is no matching file or
+    /// package directory.
     fn ensure_module(&mut self, importer: &Path, segments: &[String], span: Span) -> Option<usize> {
         if segments.is_empty() {
             self.diags.emit(
@@ -278,18 +643,27 @@ impl<'a> Loader<'a> {
             );
             return None;
         }
-        match self.resolve_module_file(importer, segments) {
-            Some(file) => self.load_file(&file, Some((segments, span))),
+        match self.resolve_module_loc(importer, segments) {
+            Some(ModuleLoc::File(file)) => self.load_file(&file, Some((segments, span))),
+            Some(ModuleLoc::Package(dir)) => self.load_package(&dir, Some((segments, span))),
             None => {
+                let mut note =
+                    "searched up the importing file's directory tree, then `<cwd>/src/`"
+                        .to_string();
+                if let Some(dir) = self.workspace.crate_dir(&segments[0]) {
+                    note.push_str(&format!(
+                        "; then inside workspace crate `{}` at `{}`",
+                        segments[0],
+                        dir.display()
+                    ));
+                }
                 self.diags.emit(
                     Diagnostic::error_at(
                         span,
                         format!("cannot find module `{}`", render_path(segments)),
                     )
                     .with_code(ErrorCode::ModuleNotFound)
-                    .note(
-                        "searched relative to the importing file, then `<cwd>/src/<path>.pkl`",
-                    ),
+                    .note(note),
                 );
                 None
             }
@@ -333,12 +707,15 @@ impl<'a> Loader<'a> {
                 exports.insert(n.to_string());
             }
         }
-        let idx = self.files.len();
+let idx = self.files.len();
         self.files.push(ModuleFile {
             file_path: path.to_path_buf(),
             fid,
             module_path,
             exports,
+            is_package: false,
+            pub_ns: Vec::new(),
+            pub_items: Vec::new(),
             imports: program.imports.clone(),
             program,
         });
@@ -348,6 +725,78 @@ impl<'a> Loader<'a> {
                 .insert(fid, self.files[idx].module_path.join("."));
         }
         self.process_imports(idx);
+        self.finish_exports(idx);
+        Some(idx)
+    }
+
+    /// After imports are processed, public re-exports contribute names to the
+    /// module's export surface (namespaces stay qualified-only; flattened
+    /// items are visible to wildcard/item imports of this module).
+    fn finish_exports(&mut self, idx: usize) {
+        let ns: Vec<String> = self.files[idx]
+            .pub_ns
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        let items: Vec<String> = self.files[idx]
+            .pub_items
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.files[idx].exports.extend(ns.into_iter());
+        self.files[idx].exports.extend(items.into_iter());
+    }
+
+    /// Materialize a package directory as a module node: load every member
+    /// module file (`*.pkl`, non-recursive) as its own module and expose the
+    /// union of their exports as the package's exports.
+    fn load_package(&mut self, dir: &Path, imported_as: Option<(&[String], Span)>) -> Option<usize> {
+        let segments = imported_as.map(|(s, _)| s.to_vec()).unwrap_or_default();
+        let span = imported_as.map(|(_, s)| s);
+        let mut exports = HashSet::new();
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().map(|e| e == "pkl").unwrap_or(false) && p.is_file() {
+                let stem = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let mut mpath = segments.clone();
+                mpath.push(stem);
+                if let Some(idx) = self.load_file(&p, span.map(|s| (mpath.as_slice(), s))) {
+                    exports.extend(self.files[idx].exports.clone());
+                }
+            }
+        }
+        let fid = self.map.add(dir.display().to_string(), String::new());
+let idx = self.files.len();
+        self.files.push(ModuleFile {
+            file_path: dir.to_path_buf(),
+            fid,
+            module_path: segments.clone(),
+            exports,
+            is_package: true,
+            pub_ns: Vec::new(),
+            pub_items: Vec::new(),
+            imports: Vec::new(),
+            program: Program {
+                module: None,
+                imports: Vec::new(),
+                items: Vec::new(),
+            },
+        });
+        let canon = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        self.loaded.insert(canon, idx);
+        let mut fi = FileImports::default();
+        if !segments.is_empty() {
+            let own_provider = segments.join(".");
+            for name in self.files[idx].exports.clone() {
+                fi.bindings.entry(name).or_default().push(own_provider.clone());
+            }
+            fi.own_module = Some(own_provider);
+        }
+        self.imports_for.insert(fid, Rc::new(fi));
         Some(idx)
     }
 
@@ -357,17 +806,19 @@ impl<'a> Loader<'a> {
         let importer = self.files[idx].file_path.clone();
         let mut fi = FileImports::default();
         let mut bound_aliases = HashSet::new();
+        let mut bound_symbols = HashSet::new();
         for imp in &imports {
             match &imp.kind {
-                ImportKind::Module { path, alias } => {
-                    let target = self.ensure_module(&importer, path, imp.span);
+                ImportKind::Module { alias } => {
+                    let target = self.ensure_module(&importer, &imp.source, imp.span);
                     let exports = target
                         .map(|t| self.files[t].exports.clone())
                         .unwrap_or_default();
                     let alias_name = alias
                         .clone()
-                        .unwrap_or_else(|| path.last().cloned().unwrap_or_default());
-                    if !bound_aliases.insert(alias_name.clone()) || fi.aliases.contains_key(&alias_name)
+                        .unwrap_or_else(|| imp.source.last().cloned().unwrap_or_default());
+                    if !bound_aliases.insert(alias_name.clone())
+                        || fi.aliases.contains_key(&alias_name)
                     {
                         self.diags.emit(
                             Diagnostic::error_at(
@@ -377,79 +828,150 @@ impl<'a> Loader<'a> {
                             .with_code(ErrorCode::DuplicateImportAlias),
                         );
                     }
-                    fi.aliases.insert(alias_name, path.clone());
+                    if imp.is_public {
+                        if let Some(t) = target {
+                            let texports = self.files[t].exports.clone();
+                            let tpath = self.files[t].module_path.clone();
+                            self.files[idx].pub_ns.push(PubNs {
+                                name: alias_name.clone(),
+                                provider: tpath,
+                                exports: Rc::new(texports),
+                            });
+                        }
+                    }
+                    fi.aliases.insert(alias_name, imp.source.clone());
                     fi.modules.insert(
-                        path.clone(),
+                        imp.source.clone(),
                         ModuleBinding {
                             exports: Rc::new(exports),
+                            provider: None,
                         },
                     );
+                    if let Some(t) = target {
+                        self.splice_ns_reexports(t, &mut fi);
+                    }
                 }
-                ImportKind::Item { path, alias } => {
-                    if path.len() < 2 {
-                        self.diags.emit(
-                            Diagnostic::error_at(
-                                imp.span,
-                                "`use` requires a module-qualified path like `use a.b.item`",
-                            )
-                            .with_code(ErrorCode::ModuleNotFound),
-                        );
-                        continue;
-                    }
-                    let mpath = path[..path.len() - 1].to_vec();
-                    let item = path[path.len() - 1].clone();
-                    let provider = render_path(&mpath);
-                    let target = self.ensure_module(&importer, &mpath, imp.span);
-                    let exports = target
-                        .map(|t| self.files[t].exports.clone())
-                        .unwrap_or_default();
-                    if target.is_some() && !exports.contains(&item) {
-                        self.diags.emit(
-                            Diagnostic::error_at(
-                                imp.span,
-                                format!(
-                                    "`{item}` is not exported by module `{}`",
-                                    render_path(&mpath)
-                                ),
-                            )
-                            .with_code(ErrorCode::NotExported),
-                        );
-                    }
-                    fi.modules
-                        .entry(mpath.clone())
-                        .or_insert(ModuleBinding {
-                            exports: Rc::new(exports.clone()),
-                        });
-                    if let Some(alias) = alias {
-                        if fi.renames.contains_key(alias) {
-                            self.diags.emit(
-                                Diagnostic::error_at(
-                                    imp.span,
-                                    format!("duplicate import alias `{alias}`"),
-                                )
-                                .with_code(ErrorCode::DuplicateImportAlias),
-                            );
+                ImportKind::Items { items } => {
+                    for item in items {
+                        match self.load_item(&importer, &imp.source, item) {
+                            None => {}
+                            Some(ItemTarget::ModuleFile {
+                                idx: tid,
+                                local,
+                            }) => {
+                                if !bound_aliases.insert(local.clone())
+                                    || fi.aliases.contains_key(&local)
+                                {
+                                    self.diags.emit(
+                                        Diagnostic::error_at(
+                                            item.span,
+                                            format!("duplicate import alias `{local}`"),
+                                        )
+                                        .with_code(ErrorCode::DuplicateImportAlias),
+                                    );
+                                }
+                                let target_path = self.files[tid].module_path.clone();
+                                let exports = self.files[tid].exports.clone();
+                                if imp.is_public {
+                                    self.files[idx].pub_ns.push(PubNs {
+                                        name: local.clone(),
+                                        provider: target_path.clone(),
+                                        exports: Rc::new(exports.clone()),
+                                    });
+                                }
+                                fi.aliases.insert(local, target_path.clone());
+                                fi.modules.insert(
+                                    target_path,
+                                    ModuleBinding {
+                                        exports: Rc::new(exports),
+                                        provider: None,
+                                    },
+                                );
+                                self.splice_ns_reexports(tid, &mut fi);
+                            }
+                            Some(ItemTarget::Symbol {
+                                idx: tid,
+                                name,
+                                local,
+                            }) => {
+                                let provider = self.files[tid].module_path.clone();
+                                if imp.is_public {
+                                    self.files[idx].pub_items.push((name.clone(), tid));
+                                }
+                                fi.modules
+                                    .entry(provider.clone())
+                                    .or_insert(ModuleBinding {
+                                        exports: Rc::new(self.files[tid].exports.clone()),
+                                        provider: None,
+                                    });
+                                match &item.alias {
+                                    Some(_) => {
+                                        if fi.renames.contains_key(&local)
+                                            || bound_symbols.contains(&local)
+                                        {
+                                            self.diags.emit(
+                                                Diagnostic::error_at(
+                                                    item.span,
+                                                    format!("duplicate import alias `{local}`"),
+                                                )
+                                                .with_code(ErrorCode::DuplicateImportAlias),
+                                            );
+                                        }
+                                        bound_symbols.insert(local.clone());
+                                        fi.renames.insert(local, (name, provider));
+                                    }
+                                    None => {
+                                        fi.bindings
+                                            .entry(name.clone())
+                                            .or_default()
+                                            .push(render_path(&provider));
+                                    }
+                                }
+                            }
                         }
-                        fi.renames.insert(alias.clone(), (item, mpath));
-                    } else {
-                        fi.bindings.entry(item).or_default().push(provider);
+                    }
+                    if let Some(t) = self.loaded_for(&importer, &imp.source) {
+                        self.splice_ns_reexports(t, &mut fi);
                     }
                 }
-                ImportKind::Star { path } => {
-                    let target = self.ensure_module(&importer, path, imp.span);
+                ImportKind::Wildcard => {
+                    let target = self.ensure_module(&importer, &imp.source, imp.span);
                     let exports = target
                         .map(|t| self.files[t].exports.clone())
                         .unwrap_or_default();
-                    let provider = render_path(path);
                     for name in &exports {
+                        let def = target.and_then(|t| {
+                            self.files[t]
+                                .pub_items
+                                .iter()
+                                .find(|(n, _)| n == name)
+                                .map(|(_, i)| *i)
+                        });
+                        let provider = match def {
+                            Some(d) => render_path(&self.files[d].module_path),
+                            None => render_path(&imp.source),
+                        };
                         fi.bindings
                             .entry(name.clone())
                             .or_default()
-                            .push(provider.clone());
+                            .push(provider);
+                        if imp.is_public {
+                            if let Some(t) = target {
+                                self.files[idx]
+                                    .pub_items
+                                    .push((name.clone(), def.unwrap_or(t)));
+                            }
+                        }
                     }
-                    fi.modules.entry(path.clone()).or_insert(ModuleBinding {
-                        exports: Rc::new(exports),
-                    });
+                    fi.modules
+                        .entry(imp.source.clone())
+                        .or_insert(ModuleBinding {
+                            exports: Rc::new(exports),
+                            provider: None,
+                        });
+                    if let Some(t) = target {
+                        self.splice_ns_reexports(t, &mut fi);
+                    }
                 }
             }
         }
@@ -463,6 +985,138 @@ impl<'a> Loader<'a> {
         }
         self.imports_for
             .insert(self.files[idx].fid, Rc::new(fi));
+    }
+
+    /// Resolve one `from`-import item inside its source module.
+    ///
+    /// The item path is resolved as the deepest module-file chain inside the
+    /// source's tree first (`source/item1/.../itemT.pkl`), so `import Token
+    /// from lexer` binds the module file `lexer/Token.pkl` and
+    /// `import math.Vector.add from engine` (when `engine/math/Vector.pkl`
+    /// exists) binds the final export `add`. Otherwise the path is looked up
+    /// as a direct exported symbol of the source module itself.
+    fn load_item(&mut self, importer: &Path, source: &[String], item: &ImportItem) -> Option<ItemTarget> {
+        let n = item.path.len();
+        if n == 0 {
+            self.diags.emit(
+                Diagnostic::error_at(item.span, "imported name must not be empty")
+                    .with_code(ErrorCode::ModuleNotFound),
+            );
+            return None;
+        }
+        for t in (1..=n).rev() {
+            let rem = &item.path[t..];
+            if rem.len() > 1 {
+                continue;
+            }
+            let mut segs = source.to_vec();
+            segs.extend_from_slice(&item.path[..t]);
+            if let Some(ModuleLoc::File(f)) = self.resolve_module_loc(importer, &segs) {
+                if let Some(idx) = self.load_file(&f, Some((&segs, item.span))) {
+                    return match rem.first() {
+                        Some(name) => {
+                            if !self.files[idx].exports.contains(name) {
+                                self.diags.emit(
+                                    Diagnostic::error_at(
+                                        item.span,
+                                        format!(
+                                            "`{name}` is not exported by module `{}`",
+                                            render_path(&segs)
+                                        ),
+                                    )
+                                    .with_code(ErrorCode::NotExported),
+                                );
+                                return None;
+                            }
+                            let local = item.alias.clone().unwrap_or_else(|| name.clone());
+                            Some(ItemTarget::Symbol {
+                                idx,
+                                name: name.clone(),
+                                local,
+                            })
+                        }
+                        None => {
+                            let local = item
+                                .alias
+                                .clone()
+                                .unwrap_or_else(|| item.path.last().cloned().unwrap_or_default());
+                            Some(ItemTarget::ModuleFile { idx, local })
+                        }
+                    };
+                }
+            }
+        }
+        if let Some(idx) = self.ensure_module(importer, source, item.span) {
+            if n == 1 {
+                let name = &item.path[0];
+                if self.files[idx].exports.contains(name) {
+                    // A re-exported symbol resolves to its defining module so
+                    // ambiguity/canonicalization sees the real provider.
+                    let def = self
+                        .files[idx]
+                        .pub_items
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, i)| *i)
+                        .unwrap_or(idx);
+                    let local = item.alias.clone().unwrap_or_else(|| name.clone());
+                    return Some(ItemTarget::Symbol {
+                        idx: def,
+                        name: name.clone(),
+                        local,
+                    });
+                }
+            }
+            self.diags.emit(
+                Diagnostic::error_at(
+                    item.span,
+                    format!(
+                        "`{}` is not exported by module `{}`",
+                        item.path.join("."),
+                        render_path(source)
+                    ),
+                )
+                .with_code(ErrorCode::NotExported),
+            );
+        }
+        None
+    }
+
+    /// Whether the source has already been loaded (its index), without
+    /// emitting a `ModuleNotFound` for an unresolvable path.
+    fn loaded_for(&self, importer: &Path, segments: &[String]) -> Option<usize> {
+        match self.resolve_module_loc(importer, segments) {
+            Some(ModuleLoc::File(f)) => {
+                let c = f.canonicalize().unwrap_or(f);
+                self.loaded.get(&c).copied()
+            }
+            Some(ModuleLoc::Package(d)) => {
+                let c = d.canonicalize().unwrap_or(d);
+                self.loaded.get(&c).copied()
+            }
+            None => None,
+        }
+    }
+
+    /// Copy `pub import a.b` namespace re-exports of a loaded module into the
+    /// importing file's scope, so `module.reexport.symbol` resolves.
+    fn splice_ns_reexports(&mut self, tidx: usize, fi: &mut FileImports) {
+        let ns = self.files[tidx].pub_ns.clone();
+        let tpath = self.files[tidx].module_path.clone();
+        for p in ns {
+            let mut full = tpath.clone();
+            full.push(p.name.clone());
+            if fi.modules.contains_key(&full) {
+                continue;
+            }
+            fi.modules.insert(
+                full,
+                ModuleBinding {
+                    exports: p.exports,
+                    provider: Some(p.provider),
+                },
+            );
+        }
     }
 }
 
@@ -532,7 +1186,7 @@ impl<'a> Rewriter<'a> {
                         suggestion.push_str(" / ");
                     }
                     suggestion.push_str(&format!(
-                        "use `{p}.{name} as {name}{}`",
+                        "import {name} from `{p}` as {name}{}",
                         alias_suffix(i)
                     ));
                 }
@@ -998,7 +1652,7 @@ impl<'a> Rewriter<'a> {
                 if remaining.len() == 1 && self.collided.contains(&remaining[0]) {
                     return Some(qualified_expr(
                         span,
-                        &[self.canon(&remaining[0], &render_path(prefix))],
+                        &[self.canon(&remaining[0], &render_path(&ctx.provider_of(prefix)))],
                     ));
                 }
                 return Some(qualified_expr(span, remaining));
@@ -1012,7 +1666,7 @@ impl<'a> Rewriter<'a> {
                     if remaining.len() == 1 && self.collided.contains(&remaining[0]) {
                         return Some(qualified_expr(
                             span,
-                            &[self.canon(&remaining[0], &render_path(mod_path))],
+                            &[self.canon(&remaining[0], &render_path(&ctx.provider_of(mod_path)))],
                         ));
                     }
                     return Some(qualified_expr(span, remaining));
@@ -1079,4 +1733,55 @@ fn qualified_expr(span: Span, remaining: &[String]) -> Expr {
         };
     }
     e
+}
+
+#[cfg(test)]
+mod workspace_parse_tests {
+    use super::parse_workspace_members;
+
+    #[test]
+    fn parses_inline_table_members() {
+        let toml = "[workspace]
+members = [
+    { name = \"alpha\", path = \"alpha\" },
+    { name = \"beta\", path = \"beta\" },
+]
+";
+        let m = parse_workspace_members(toml);
+        assert_eq!(m.get("alpha").map(|s| s.as_str()), Some("alpha"));
+        assert_eq!(m.get("beta").map(|s| s.as_str()), Some("beta"));
+    }
+
+    #[test]
+    fn parses_single_line_members() {
+        let toml = "[workspace]
+members = [{ name = \"compiler\", path = \"compiler-selfhost\" }]
+";
+        let m = parse_workspace_members(toml);
+        assert_eq!(m.get("compiler").map(|s| s.as_str()), Some("compiler-selfhost"));
+    }
+
+    #[test]
+    fn bare_string_entries_map_name_to_path() {
+        let toml = "[workspace]
+members = [\"alpha\", \"beta\"]
+";
+        let m = parse_workspace_members(toml);
+        assert_eq!(m.get("alpha").map(|s| s.as_str()), Some("alpha"));
+        assert_eq!(m.get("beta").map(|s| s.as_str()), Some("beta"));
+    }
+
+    #[test]
+    fn ignores_other_sections() {
+        let toml = "[package]
+name = \"picklescript\"
+[workspace]
+members = [{ name = \"compiler\", path = \"compiler-selfhost\" }]
+[registry]
+default = \"pickle\"
+";
+        let m = parse_workspace_members(toml);
+        assert_eq!(m.get("compiler").map(|s| s.as_str()), Some("compiler-selfhost"));
+        assert_eq!(m.len(), 1);
+    }
 }

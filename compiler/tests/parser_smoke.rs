@@ -188,8 +188,8 @@ fn parses_struct_enum_import() {
     assert_eq!(p.module.as_ref().unwrap().path, vec!["game"]);
     assert_eq!(p.imports.len(), 2);
     match &p.imports[0].kind {
-        ImportKind::Module { path, alias } => {
-            assert_eq!(path, &vec!["geometry".to_string()]);
+        ImportKind::Module { alias } => {
+            assert_eq!(p.imports[0].source, vec!["geometry".to_string()]);
             assert!(alias.is_none());
         }
         _ => panic!("expected module import"),

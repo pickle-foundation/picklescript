@@ -1,0 +1,5 @@
+module alpha
+
+fn greet() -> string {
+    return "hello"
+}

@@ -339,12 +339,12 @@ fn char_empty_and_unterminated_reported() {
 fn keyword_lookup_is_complete() {
     // The match-based keyword table must keep covering every reserved word.
 for s in [
-        "module", "import", "use", "class", "struct", "enum", "interface", "fn",
+        "module", "import", "class", "struct", "enum", "interface", "fn",
         "constructor", "property", "get", "set", "static", "override", "let", "var",
         "const", "public", "private", "protected", "if", "else", "while", "for", "in",
         "break", "continue", "return", "match", "case", "true", "false", "none", "async",
-        "await", "task", "channel", "unsafe", "extends", "implements", "is", "as", "this",
-        "super", "init", "deinit", "operator",
+        "await", "task", "channel", "unsafe", "extends", "implements", "is", "as", "from",
+        "this", "super", "init", "deinit", "operator",
     ] {
         assert!(
             Tok::keyword(s).is_some(),

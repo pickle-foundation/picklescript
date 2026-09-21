@@ -1,0 +1,57 @@
+module continuation_test
+
+class Vec2 {
+    var x: int
+    var y: int
+    constructor(x: int, y: int) {
+        this.x = x
+        this.y = y
+    }
+    fn sum() -> int {
+        this.x + this.y
+    }
+}
+
+fn multiLine(x: int) -> int {
+    let total = x
+         + 2
+         * 3
+    total
+}
+
+fn chained(v: Vec2) -> int {
+    v
+        .sum()
+}
+
+fn ifTail(c: bool) -> int {
+    if (c) {
+        return 1
+    }
+    -1
+}
+
+fn matchTail(v: int) -> int {
+    match (v) {
+        case 0 -> 10
+        case _ -> 20
+    }
+    -1
+}
+
+fn negateTail(x: int) -> int {
+    -x
+}
+
+fn id_fn<T>(x: T) -> T {
+    return x
+}
+
+test fn continuation_checks() {
+    expect(id_fn<int>(multiLine(4))).toBe(10)
+    expect(id_fn<int>(chained(Vec2(3, 4)))).toBe(7)
+    expect(id_fn<int>(ifTail(true))).toBe(1)
+    expect(id_fn<int>(ifTail(false))).toBe(-1)
+    expect(id_fn<int>(matchTail(0))).toBe(-1)
+    expect(id_fn<int>(negateTail(3))).toBe(-3)
+}

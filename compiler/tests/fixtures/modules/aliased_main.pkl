@@ -1,5 +1,5 @@
-use math.ops.helper as mathHelper
-use text.format.helper as textHelper
+import helper from math.ops as mathHelper
+import helper from text.format as textHelper
 
 fn main() -> int {
     return mathHelper() + textHelper()

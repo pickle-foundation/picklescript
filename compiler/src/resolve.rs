@@ -196,10 +196,10 @@ impl<'a> Resolver<'a> {
         self.declare_prelude_interfaces();
 
         for imp in &prog.imports {
-            if let ImportKind::Module { path, alias } = &imp.kind {
+            if let ImportKind::Module { alias } = &imp.kind {
                 let alias = alias
                     .clone()
-                    .unwrap_or_else(|| path.last().cloned().unwrap_or_default());
+                    .unwrap_or_else(|| imp.source.last().cloned().unwrap_or_default());
                 if self.import_aliases.contains_key(&alias) {
                     self.diags.emit(
                         Diagnostic::error_at(
@@ -209,7 +209,7 @@ impl<'a> Resolver<'a> {
                         .with_code(crate::error::ErrorCode::DuplicateImportAlias),
                     );
                 }
-                self.import_aliases.insert(alias, path.clone());
+                self.import_aliases.insert(alias, imp.source.clone());
             }
         }
 
@@ -246,7 +246,8 @@ impl<'a> Resolver<'a> {
                             "`{name}` is provided by module `{a}` and module `{b}`"
                         ))
                         .note(format!(
-                            "use `use {a}.{name} as {name}A` / `use {b}.{name} as {name}B` \
+                            "import {name} from `{a}` as {name}A / \
+                             import {name} from `{b}` as {name}B \
                              to import them under different names"
                         ));
                     }
