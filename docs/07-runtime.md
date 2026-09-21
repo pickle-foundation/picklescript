@@ -75,6 +75,12 @@ operations (places compiled code already spills), plus an explicit
   `file_exists(path)` probes the filesystem; `delete(path)` removes a file or
   empty directory; `mkdir(path)` creates a directory; `list_dir(path)` returns
   a `List<string>` of child paths or `none`. Errors are values, never raised.
+- **Streams**: `stream_open_read/write/append(path)` return a buffered
+  `Stream?`; `stdout_stream()`/`stderr_stream()` bind the console. A stream's
+  slot 0 holds a raw `Box` pointer to its `BufReader`/`BufWriter` (never
+  traced); `pickle_stream_read/write/flush/close` drive it with null-safe
+  values, and `stream_finalizer` closes the handle when the GC sweeps a
+  stream that was not closed by the program.
 - **Error bridge**: `panic(msg)` -> unwind banner + nonzero exit; call-stack
   capture is a debug-mode feature (frame pointers).
 

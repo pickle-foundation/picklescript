@@ -157,8 +157,10 @@ enforces key types at literal, index, and method sites; optional, tuple,
 reference, function, and pointer keys are not lowered.
 
 Enums follow the same extern path. An enum value is a managed object
-(`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (7; user classes start at
-`PICKLE_CLASS_USER_BASE`, 9).
+(`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (7). Streams are managed
+objects too (class id `PICKLE_CLASS_STREAM`, 9) whose slot 0 is a *raw*
+`Box` pointer to the open handle; user classes start at
+`PICKLE_CLASS_USER_BASE`, 10.
 Its payload slot 0 holds the variant tag as a *raw* `i64` (unmanaged, skipped
 by the tracer); payload slots 1.. hold the variant's fields, boxed with the
 same element rules as `List<T>` elements. Field count is derived at runtime

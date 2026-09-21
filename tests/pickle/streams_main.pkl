@@ -1,0 +1,31 @@
+fn main() {
+    let path = "tests/pickle/__stream_main.tmp"
+    delete(path)
+    let s = stream_open_write(path)
+    var opened = false
+    if (let some(w) = s) {
+        opened = true
+        let n1 = w.write(bytes("stream"))
+        let n2 = w.write(bytes(" main"))
+        w.close()
+        println("wrote={n1 + n2}")
+    }
+    println("opened={opened}")
+    let r = stream_open_read(path)
+    if (let some(rd) = r) {
+        var out = ""
+        while (true) {
+            let chunk = rd.read(3)
+            if (let some(c) = chunk) {
+                out += str(c)
+            } else {
+                break
+            }
+        }
+        rd.close()
+        println("data={out}")
+    }
+    let out2 = stdout_stream()
+    println("console_flushed={out2.flush()}")
+    delete(path)
+}

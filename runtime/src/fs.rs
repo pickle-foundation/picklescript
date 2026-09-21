@@ -7,11 +7,11 @@
 use crate::object::PickleObject;
 use crate::strings::{string_bytes_len, string_bytes_ptr, string_from_bytes};
 
-fn path_bytes(path: *const PickleObject) -> &'static [u8] {
+pub(crate) fn path_bytes(path: *const PickleObject) -> &'static [u8] {
     unsafe { std::slice::from_raw_parts(string_bytes_ptr(path), string_bytes_len(path)) }
 }
 
-fn path_of(path: *const PickleObject) -> &'static std::path::Path {
+pub(crate) fn path_of(path: *const PickleObject) -> &'static std::path::Path {
     std::path::Path::new(std::str::from_utf8(path_bytes(path)).unwrap_or(""))
 }
 

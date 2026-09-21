@@ -25,16 +25,17 @@ mod object;
 mod panic;
 mod raw;
 pub(crate) mod shadow;
-pub(crate) mod strings;
 mod statics;
+mod stream;
+pub(crate) mod strings;
 mod test;
 mod trace;
 mod r#tuple;
 
-/// Descriptor for the builtin types; ids 0..=8 are reserved and `tuple` keeps a
+/// Descriptor for the builtin types; ids 0..=9 are reserved and `tuple` keeps a
 /// (non-traced) placeholder so user classes, registered via
 /// `pickle_runtime_register_class_table`/`pickle_class_register`, start at
-/// `PICKLE_CLASS_USER_BASE` (9).
+/// `PICKLE_CLASS_USER_BASE` (10).
 const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     string_desc(),
     list_desc(),
@@ -45,6 +46,7 @@ const BUILTIN_DESCRIPTORS: &[object::ClassDescriptor] = &[
     box_char_desc(),
     enum_desc(),
     tuple_desc(),
+    stream_desc(),
 ];
 
 const fn string_desc() -> object::ClassDescriptor {
@@ -156,6 +158,21 @@ const fn tuple_desc() -> object::ClassDescriptor {
         mask_words: 0,
         managed_mask: std::ptr::null(),
         finalizer: object::builtin_nop_finalizer,
+    }
+}
+
+// The stream slot 0 holds a raw `*mut StreamInner` that the collector must
+// never chase, so this descriptor only reserves class id 9 for `PStream`; the
+// finalizer drops the boxed inner state when the object is swept.
+const fn stream_desc() -> object::ClassDescriptor {
+    object::ClassDescriptor {
+        name_ptr: b"stream\0".as_ptr(),
+        name_len: 6,
+        flags: object::PICKLE_CLASS_FLAG_FINALIZER,
+        slot_count: 1,
+        mask_words: 0,
+        managed_mask: std::ptr::null(),
+        finalizer: stream::stream_finalizer,
     }
 }
 
@@ -320,6 +337,16 @@ pub mod abi {
     pub use crate::fs::pickle_mkdir;
     pub use crate::fs::pickle_read_file;
     pub use crate::fs::pickle_write_file;
+
+    pub use crate::stream::pickle_stderr_stream;
+    pub use crate::stream::pickle_stdout_stream;
+    pub use crate::stream::pickle_stream_close;
+    pub use crate::stream::pickle_stream_flush;
+    pub use crate::stream::pickle_stream_open_append;
+    pub use crate::stream::pickle_stream_open_read;
+    pub use crate::stream::pickle_stream_open_write;
+    pub use crate::stream::pickle_stream_read;
+    pub use crate::stream::pickle_stream_write;
 
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;

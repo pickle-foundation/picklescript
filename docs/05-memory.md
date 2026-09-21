@@ -403,11 +403,17 @@ struct PickleObjectHeader {
 struct PString  { header, len: usize, bytes: [u8] }
 struct PList    { header, len, cap, data: *mut void }  // element-kind tag in class table
 struct PMap     { header, entries: *mut Entry, len, cap }
+struct PStream  { header, inner: *mut StreamInner }    // raw Box: never traced
 ```
 
 Class descriptors are emitted by the compiler into the generated object
 image; each carries `field_count`, a managed-field bitmask, and a name, so
-the collector marks exactly the pointer-bearing fields and no others.
+the collector marks exactly the pointer-bearing fields and no others. `stream`
+is the sole builtin with a *zero* managed-field mask plus a finalizer: its slot 0
+holds a raw `Box` to a `BufReader`/`BufWriter` that the collector must not
+follow, so `StreamInner` is heap-managed and released by `stream_finalizer`
+(descriptor flag `PICKLE_CLASS_FLAG_FINALIZER`) when a stream that was never
+`close()`d is swept.
 
 ## Safety guarantees summarized
 

@@ -2219,6 +2219,15 @@ impl<'a> Checker<'a> {
             if bname == "bytes" {
                 return self.check_bytes(e, args);
             }
+            // `stream_open_read/write/append(path)`: buffered file streams
+            // as `Stream?`.
+            if bname == "stream_open_read" || bname == "stream_open_write" || bname == "stream_open_append" {
+                return self.check_stream_open(e, bname, args);
+            }
+            // `stdout_stream()` / `stderr_stream()`: write-only console streams.
+            if bname == "stdout_stream" || bname == "stderr_stream" {
+                return self.check_stream_singleton(e, bname, args);
+            }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
                 return self.check_expect(e, args);
@@ -3144,6 +3153,22 @@ impl<'a> Checker<'a> {
                             k.bare_name(),
                             v.bare_name()
                         ),
+                    );
+                    Ty::Unknown
+                }
+            };
+        }
+        if let Ty::Stream = ot {
+            // Builtin stream methods (buffered I/O).
+            return match name {
+                "read" => Ty::Fn(vec![Ty::Int], Box::new(Ty::Option(Box::new(Ty::List(Box::new(Ty::Byte)))))),
+                "write" => Ty::Fn(vec![Ty::List(Box::new(Ty::Byte))], Box::new(Ty::Int)),
+                "flush" => Ty::Fn(vec![], Box::new(Ty::Bool)),
+                "close" => Ty::Fn(vec![], Box::new(Ty::Bool)),
+                other => {
+                    self.err(
+                        e.span,
+                        format!("no member `{other}` on `Stream` (members are `read`, `write`, `flush`, `close`)"),
                     );
                     Ty::Unknown
                 }
@@ -4149,6 +4174,36 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         Ty::Option(Box::new(Ty::List(Box::new(Ty::String))))
+    }
+
+    /// `stream_open_read/write/append(path)`: opens a buffered file stream,
+    /// returning `Stream?` (`none` when the path cannot be opened).
+    fn check_stream_open(&mut self, e: &Expr, bname: &str, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, format!("`{bname}(path)` takes exactly one argument"));
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::String | Ty::Unknown) {
+            self.err(args[0].value.span, format!("`{bname}` requires a `string` path"));
+            return Ty::Unknown;
+        }
+        Ty::Option(Box::new(Ty::Stream))
+    }
+
+    /// `stdout_stream()` / `stderr_stream()`: a write-only console stream.
+    fn check_stream_singleton(&mut self, e: &Expr, bname: &str, args: &[CallArg]) -> Ty {
+        if !args.is_empty() {
+            self.err(e.span, format!("`{bname}()` takes no arguments"));
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        Ty::Stream
     }
 
     fn check_if(

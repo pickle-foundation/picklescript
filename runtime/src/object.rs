@@ -36,7 +36,12 @@ pub const PICKLE_CLASS_ENUM: u32 = 7;
 /// every payload slot is a managed pointer to a boxed scalar or object (see
 /// `layout::TUPLE_*`).
 pub const PICKLE_CLASS_TUPLE: u32 = 8;
-pub const PICKLE_CLASS_USER_BASE: u32 = 9;
+/// `PStream { header, inner: *mut StreamInner }` — a buffered file/console
+/// stream whose single payload slot is a *raw* pointer to a Rust-heap
+/// `stream::StreamInner` (never traced; the class descriptor has no managed
+/// slots and a finalizer that drops the inner state, see `layout::STREAM_*`).
+pub const PICKLE_CLASS_STREAM: u32 = 9;
+pub const PICKLE_CLASS_USER_BASE: u32 = 10;
 
 /// Object flags.
 pub const PICKLE_FLAG_MARKED: u32 = 1 << 0;

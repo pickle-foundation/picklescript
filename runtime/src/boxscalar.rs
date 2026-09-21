@@ -104,7 +104,7 @@ mod tests {
     use super::*;
     use crate::object::{
         PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT,
-        PICKLE_CLASS_TUPLE,
+        PICKLE_CLASS_STREAM,
     };
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {
@@ -138,12 +138,12 @@ mod tests {
         assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_CHAR), Some(&b"char"[..]));
         let c = pickle_box_char(b'x' as i32);
         assert_eq!(unsafe { (*c).class_id }, PICKLE_CLASS_BOX_CHAR);
-        // Class ids must match the descriptor registration order: the enum and
-        // tuple hold placeholder descriptors, so the user-class range begins at
-        // `PICKLE_CLASS_TUPLE + 1` (`PICKLE_CLASS_USER_BASE`).
+        // Class ids must match the descriptor registration order: the enum,
+        // tuple, and stream hold placeholder descriptors, so the user-class
+        // range begins at `PICKLE_CLASS_STREAM + 1` (`PICKLE_CLASS_USER_BASE`).
         assert_eq!(
             crate::gc::gc_mut().descriptors.len(),
-            PICKLE_CLASS_TUPLE as usize + 1
+            PICKLE_CLASS_STREAM as usize + 1
         );
         // Payload sits directly after the header.
         assert_eq!(i as usize + 24, unsafe { payload(i) } as usize);

@@ -45,6 +45,13 @@ pub const ENUM_HEADER_SLOTS: usize = 1; // the tag occupies payload slot 0
 pub const TUPLE_LEN_OFF: usize = HEADER; // usize
 pub const TUPLE_FIELDS_OFF: usize = HEADER + 8; // [*mut PickleObject]
 
+/// `PStream { header, inner: *mut StreamInner }` — payload slot 0 holds a raw
+/// pointer to the Rust-heap `stream::StreamInner` (buffer + file handle). The
+/// slot is *not* a managed reference: the collector never chases it, and the
+/// class descriptor's finalizer drops the boxed inner state.
+pub const STREAM_INNER_OFF: usize = HEADER; // *mut StreamInner
+pub const STREAM_OBJECT_SIZE: usize = HEADER + 8;
+
 /// Fixed payload sizes of the builtin objects.
 pub const STRING_PAYLOAD: usize = 8;
 pub const LIST_PAYLOAD: usize = 24;

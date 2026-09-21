@@ -38,11 +38,11 @@ fn sanitize_symbol(s: &str) -> String {
 
 /// Runtime class ids for user classes start at this id: the runtime reserves
 /// 0..=6 for the builtin boxed types (string/list/map/int/float/bool/char),
-/// 7 for `PEnum`, and 8 for `PTuple`, so the first user class registered at
-/// runtime gets id `PICKLE_CLASS_USER_BASE`. The compiler assigns
+/// 7 for `PEnum`, 8 for `PTuple`, and 9 for `PStream`, so the first user class
+/// registered at runtime gets id `PICKLE_CLASS_USER_BASE`. The compiler assigns
 /// `base + index` in declaration order, matching the runtime's allocation
 /// order.
-const PICKLE_CLASS_USER_BASE: i64 = 9;
+const PICKLE_CLASS_USER_BASE: i64 = 10;
 
 /// Front-end subset that emits IR. The module must already pass the checker.
 ///
@@ -1151,7 +1151,7 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir")
+            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir" | "stream_open_read" | "stream_open_write" | "stream_open_append" | "stdout_stream" | "stderr_stream")
     }
 
     /// Register a lambda's hoisted body and its closure class.
@@ -7103,7 +7103,7 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir") {
+                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir" | "stream_open_read" | "stream_open_write" | "stream_open_append" | "stdout_stream" | "stderr_stream") {
                     return false;
                 }
             }
@@ -8346,6 +8346,31 @@ fn build_lambda_body(
                 // when the directory cannot be read.
                 self.extern_call_t1("pickle_list_dir", vec![IrTy::Str], IrTy::Ptr, vec![p])
             }
+            "stream_open_read" | "stream_open_write" | "stream_open_append" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, format!("`{name}(path)` takes exactly one argument"));
+                }
+                let p = self.expr(&args[0].value)?;
+                // Returns a `Stream` object pointer, or `null` (`none`) when
+                // the path cannot be opened.
+                let sym = match name.as_str() {
+                    "stream_open_read" => "pickle_stream_open_read",
+                    "stream_open_write" => "pickle_stream_open_write",
+                    _ => "pickle_stream_open_append",
+                };
+                self.extern_call_t1(sym, vec![IrTy::Str], IrTy::Ptr, vec![p])
+            }
+            "stdout_stream" | "stderr_stream" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, format!("`{name}()` takes no arguments"));
+                }
+                let sym = if name == "stdout_stream" {
+                    "pickle_stdout_stream"
+                } else {
+                    "pickle_stderr_stream"
+                };
+                self.extern_call_t1(sym, vec![], IrTy::Ptr, vec![])
+            }
             _ if self.generic_user_fn(name) => self.bad(
                 e.span,
                 format!(
@@ -9301,6 +9326,7 @@ fn build_lambda_body(
                 }
             }
             Some(Ty::List(_)) => self.list_method_call(e, object, name, args),
+            Some(Ty::Stream) => self.stream_method_call(e, object, name, args),
             _ => self.bad(e.span, "method calls on this type are not lowered yet"),
         }
     }
@@ -9512,6 +9538,74 @@ fn build_lambda_body(
         }
     }
 
+    /// Lower a `Stream` method call. `Stream` is carried at the ABI as a raw
+    /// object pointer; every method takes that pointer as its receiver and its
+    /// result maps directly onto the IR boundary type (`List<byte>?` = pointer,
+    /// `int`/`bool` = the scalar itself).
+    fn stream_method_call(
+        &mut self,
+        e: &Expr,
+        object: &Expr,
+        name: &str,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        let obj = self.expr(object)?;
+        match name {
+            "read" => {
+                if args.len() != 1 {
+                    return self.bad(e.span, "`read` takes one argument (a byte count)");
+                }
+                let n = self.expr(&args[0].value)?;
+                // Returns up to `n` bytes as a `List<byte>` (pointer), or the
+                // null pointer (`none`) at end of stream.
+                self.extern_call_t1(
+                    "pickle_stream_read",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![obj, n],
+                )
+            }
+            "write" => {
+                if args.len() != 1 {
+                    return self.bad(e.span, "`write` takes one argument (a `List<byte>`)");
+                }
+                let bytes = self.expr(&args[0].value)?;
+                // The `List<byte>` object is its own boundary representation.
+                self.extern_call_t1(
+                    "pickle_stream_write",
+                    vec![IrTy::Ptr, IrTy::Ptr],
+                    IrTy::Int,
+                    vec![obj, bytes],
+                )
+            }
+            "flush" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, "`flush` takes no arguments");
+                }
+                self.extern_call_t1(
+                    "pickle_stream_flush",
+                    vec![IrTy::Ptr],
+                    IrTy::Bool,
+                    vec![obj],
+                )
+            }
+            "close" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, "`close` takes no arguments");
+                }
+                self.extern_call_t1(
+                    "pickle_stream_close",
+                    vec![IrTy::Ptr],
+                    IrTy::Bool,
+                    vec![obj],
+                )
+            }
+            other => {
+                self.bad(e.span, format!("`{other}` method on `Stream` is not lowered yet"))
+            }
+        }
+    }
+
     // ---- primitive ops ----
 
     /// How a `List<T>` element is represented at the runtime boundary.
@@ -9533,6 +9627,7 @@ fn build_lambda_body(
             | Ty::Map(..)
             | Ty::Tuple(..)
             | Ty::Range(..)
+            | Ty::Stream
             | Ty::Ptr(..)
             | Ty::Fn(..) => Ok(Ptr),
             Ty::Ref(..) => self.bad(span, "lists of `&T` references are not supported yet"),
@@ -9571,6 +9666,7 @@ fn build_lambda_body(
                 "optional map keys are not lowered yet (a `T?` key has no boxed identity)",
             ),
             Ty::Tuple(..) => self.bad(span, "tuple map keys are not lowered yet"),
+            Ty::Stream => self.bad(span, "`Stream` map keys are not lowered yet"),
             Ty::Ref(..) => self.bad(span, "`&T` map keys are not lowered yet"),
             Ty::None | Ty::Empty => self.bad(span, "a map key of type `none` is impossible"),
             Ty::Unknown => self.bad(span, "map key type is not statically known"),
@@ -9721,7 +9817,8 @@ fn build_lambda_body(
             | Ty::List(..)
             | Ty::Map(..)
             | Ty::Tuple(..)
-            | Ty::Range(..) => {
+            | Ty::Range(..)
+            | Ty::Stream => {
                 let _ = span;
                 Ok(IrTy::Ptr)
             }

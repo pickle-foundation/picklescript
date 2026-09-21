@@ -372,6 +372,31 @@ impl<'a> Resolver<'a> {
                 Ty::List(Box::new(Ty::Byte)),
                 true,
             ),
+            // `stream_open_read/write/append(path)`: open a buffered file
+            // stream as `Stream?` — checked strictly by dedicated rules; the
+            // loose declaration makes the name resolvable and dispatchable.
+            mk(
+                "stream_open_read",
+                vec![any("path")],
+                Ty::Option(Box::new(Ty::Stream)),
+                true,
+            ),
+            mk(
+                "stream_open_write",
+                vec![any("path")],
+                Ty::Option(Box::new(Ty::Stream)),
+                true,
+            ),
+            mk(
+                "stream_open_append",
+                vec![any("path")],
+                Ty::Option(Box::new(Ty::Stream)),
+                true,
+            ),
+            // `stdout_stream()` / `stderr_stream()`: write-only console
+            // streams; checked strictly by dedicated rules.
+            mk("stdout_stream", vec![], Ty::Stream, true),
+            mk("stderr_stream", vec![], Ty::Stream, true),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.
@@ -512,6 +537,10 @@ impl<'a> TypeCtx<'a> {
             if path[0] == "Map" {
                 // Builtin map type; key/value resolved by `instantiate`.
                 return Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown));
+            }
+            if path[0] == "Stream" {
+                // Builtin stream type (open buffered file/console handle).
+                return Ty::Stream;
             }
             if let Some(g) = generics.iter().find(|g| **g == path[0]) {
                 return Ty::Var(g.clone());

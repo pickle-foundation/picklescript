@@ -143,13 +143,41 @@ array), and `for (v in m)` still iterates just the values.
 
 ## I/O model
 
-File/streams expose `read(n)? -> bytes`, `write(bytes)`, `flush()`,
-`close()`. Bytes are `List<byte>` in v1 with a `string` conversion builtin
-for text. Stdout/stderr are `Stream` values; `print` routes to stdout.
+A `Stream` is an open, buffered I/O handle backed by a `BufReader`/`BufWriter`
+around a file (or the process's stdout/stderr). Constructors are flat builtins:
 
-The whole-file layer of `std.fs` is already shipped as intrinsics on the
-string (opaque-byte) ABI, the first runtime piece the self-hosted compiler
-needs to load source:
+- `stream_open_read(path) -> Stream?` — opens `path` for reading; `none` when
+  it cannot be opened.
+- `stream_open_write(path) -> Stream?` — opens `path` for writing, creating
+  and truncating it; `none` when it cannot be opened.
+- `stream_open_append(path) -> Stream?` — opens `path` for appending, creating
+  it if absent; `none` when it cannot be opened.
+- `stdout_stream() -> Stream` / `stderr_stream() -> Stream` — write-only
+  bindings to the console. `stdout_stream().write(...)` routes through the same
+  console bridge as `print`, so test captures see it.
+
+A stream is used through its methods (dispatched like the `List`/`Map`
+builtin methods):
+
+- `s.read(n: int) -> List<byte>?` — reads up to `n` bytes: a short, non-empty
+  list at a file's tail; `none` at end of stream, on a closed/non-readable
+  stream, or when the underlying read fails. Errors are values.
+- `s.write(bytes: List<byte>) -> int` — writes the byte list, returning how
+  many bytes were written (`0` on a closed/non-writable stream, less than the
+  list length if the write fails partway).
+- `s.flush() -> bool` — pushes buffered output to the host (`true` for a
+  reader, which buffers nothing; `false` once closed).
+- `s.close() -> bool` — flushes and releases the handle. Idempotent: the first
+  close reports `true`, a second one `false`, and every later `read`/`write`/
+  `flush` is a null/no-op.
+
+Bytes round-trip through the `bytes(...)`/`str(...)` bridges, exactly like the
+whole-file layer: `s.write(bytes(read_file(p)))` and
+`str(s.read(n) ?? bytes(""))`.
+
+The whole-file layer of `std.fs` ships as intrinsics on the string
+(opaque-byte) ABI, the first runtime piece the self-hosted compiler needs to
+load source:
 
 - `read_file(path) -> string?` — reads a whole file byte-exact as `string`,
   or `none` when the file cannot be read.
@@ -167,11 +195,6 @@ Round-trips are byte-exact (no UTF-8 re-validation). `List<byte>` reads
 compose from the `bytes(...)` bridge, so no dedicated byte-list I/O is needed:
 `bytes(read_file(p))` materializes a file's bytes for in-place processing and
 `write_file(p, str(xs))` stores them back.
-
-The buffered `Stream` model remains a documented design (open handle +
-`read(n)? -> bytes` / `write(bytes)` / `flush()` / `close()`); whole-file I/O
-covers the self-hosted compiler, which reads and rewrites source in bulk, so
-Streams are scheduled with the stdlib `Iterable`/`Iterator` work.
 
 ## Networking & HTTP
 

@@ -1,0 +1,158 @@
+test fn stream_write_read_roundtrip() {
+    let path = "tests/pickle/__stream_roundtrip.tmp"
+    delete(path)
+    let s = stream_open_write(path)
+    if (let some(w) = s) {
+        expect(w.write(bytes("hello"))).toBe(5)
+        expect(w.flush()).toBe(true)
+        expect(w.close()).toBe(true)
+    } else {
+        expect("unexpected").toBe("open write returned none")
+        return
+    }
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("hello")
+    } else {
+        expect("unexpected").toBe("roundtrip: read_file returned none")
+        return
+    }
+    let r = stream_open_read(path)
+    if (let some(rd) = r) {
+        var out = ""
+        while (true) {
+            let chunk = rd.read(2)
+            if (let some(c) = chunk) {
+                out += str(c)
+            } else {
+                break
+            }
+        }
+        expect(out).toBe("hello")
+        expect(rd.close()).toBe(true)
+    } else {
+        expect("unexpected").toBe("open read returned none")
+        return
+    }
+    delete(path)
+}
+
+test fn stream_read_partial_chunks_and_eof() {
+    let path = "tests/pickle/__stream_eof.tmp"
+    write_file(path, "abcdef")
+    let r = stream_open_read(path)
+    if (let some(rd) = r) {
+        // A read past the buffered tail returns exactly what remains.
+        let first = rd.read(4)
+        if (let some(c) = first) {
+            expect(str(c)).toBe("abcd")
+        } else {
+            expect("unexpected").toBe("first read was none")
+        }
+        let second = rd.read(4)
+        if (let some(c) = second) {
+            expect(str(c)).toBe("ef")
+        } else {
+            expect("unexpected").toBe("final partial read was none")
+        }
+        // Past EOF every read reports none.
+        let third = rd.read(2)
+        if (let some(_c) = third) {
+            expect("unexpected").toBe("read past EOF returned some")
+        } else {
+            expect(true).toBe(true)
+        }
+        rd.close()
+    } else {
+        expect("unexpected").toBe("open read returned none")
+    }
+    delete(path)
+}
+
+test fn stream_append_extends_existing() {
+    let path = "tests/pickle/__stream_append.tmp"
+    write_file(path, "ab")
+    let s = stream_open_append(path)
+    if (let some(w) = s) {
+        expect(w.write(bytes("cd"))).toBe(2)
+        w.close()
+    } else {
+        expect("unexpected").toBe("open append returned none")
+        return
+    }
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("abcd")
+    } else {
+        expect("unexpected").toBe("append: read_file returned none")
+    }
+    delete(path)
+}
+
+test fn stream_write_open_creates_file() {
+    let path = "tests/pickle/__stream_create.tmp"
+    delete(path)
+    let s = stream_open_write(path)
+    if (let some(w) = s) {
+        w.write(bytes("x"))
+        w.close()
+    } else {
+        expect("unexpected").toBe("open write returned none")
+    }
+    expect(file_exists(path)).toBe(true)
+    delete(path)
+}
+
+test fn stream_missing_path_is_none() {
+    let r = stream_open_read("tests/pickle/__stream_never_exists.tmp")
+    if (let some(_s) = r) {
+        expect("unexpected").toBe("missing file opened read")
+    } else {
+        expect(true).toBe(true)
+    }
+}
+
+test fn stream_close_is_idempotent() {
+    let path = "tests/pickle/__stream_close.tmp"
+    let s = stream_open_write(path)
+    if (let some(w) = s) {
+        expect(w.close()).toBe(true)
+        expect(w.close()).toBe(false)
+        expect(w.write(bytes("x"))).toBe(0)
+        expect(w.flush()).toBe(false)
+    } else {
+        expect("unexpected").toBe("open write returned none")
+    }
+    delete(path)
+}
+
+test fn stream_flush_makes_data_visible_without_close() {
+    let path = "tests/pickle/__stream_flush.tmp"
+    let s = stream_open_write(path)
+    if (let some(w) = s) {
+        w.write(bytes("data"))
+        expect(w.flush()).toBe(true)
+    } else {
+        expect("unexpected").toBe("open write returned none")
+        return
+    }
+    let data = read_file(path)
+    if (let some(txt) = data) {
+        expect(txt).toBe("data")
+    } else {
+        expect("unexpected").toBe("flush: read_file returned none")
+    }
+    delete(path)
+}
+
+test fn stream_console_streams_are_usable() {
+    let out = stdout_stream()
+    let err = stderr_stream()
+    // Zero-length writes are no-ops (nothing printed to the console) but
+    // exercise the write path and report success.
+    expect(out.write(bytes(""))).toBe(0)
+    expect(err.write(bytes(""))).toBe(0)
+    expect(out.flush()).toBe(true)
+    expect(err.flush()).toBe(true)
+    // Leave the console streams open; closing them is our call to make.
+}

@@ -35,6 +35,8 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     /// `(T1, T2, ...)`
     Tuple(Vec<Ty>),
+    /// A `Stream`: an open buffered file/console handle (see `docs/05-memory.md`).
+    Stream,
     /// `(T1, T2) -> R`
     Fn(Vec<Ty>, Box<Ty>),
     /// No value (statements, void return).
@@ -152,6 +154,7 @@ impl Ty {
             Ty::List(..) => "list",
             Ty::Map(..) => "map",
             Ty::Tuple(..) => "tuple",
+            Ty::Stream => "stream",
             Ty::Fn(..) => "function",
             Ty::Option(..) => "optional",
             _ => "type",
@@ -179,6 +182,7 @@ impl Ty {
             }
             Ty::List(inner) => format!("List<{}>", inner.bare_name()),
             Ty::Map(k, v) => format!("Map<{}, {}>", k.bare_name(), v.bare_name()),
+            Ty::Stream => "stream".into(),
             Ty::Tuple(items) => {
                 let inner = items.iter().map(Ty::bare_name).collect::<Vec<_>>().join(", ");
                 format!("({inner})")
@@ -204,6 +208,7 @@ impl Ty {
             Ty::String => Some("string"),
             Ty::List(_) => Some("list"),
             Ty::Map(..) => Some("map"),
+            Ty::Stream => Some("stream"),
             _ => None,
         }
     }
