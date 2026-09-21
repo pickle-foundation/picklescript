@@ -8600,6 +8600,24 @@ fn build_lambda_body(
                             vec![obj, kt],
                         )
                     }
+                    "get" => {
+                        if args.len() != 1 {
+                            return self.bad(e.span, "`get` takes one argument (a key)");
+                        }
+                        let k = self.expr(&args[0].value)?;
+                        if !matches!(self.irty(args[0].value.span)?, IrTy::Str) {
+                            return self.bad(args[0].value.span, "map keys must be `string` values");
+                        }
+                        // Null when absent, else the stored boxed-scalar or
+                        // managed pointer — exactly the `T?` representation,
+                        // so the raw result is the option.
+                        self.extern_call_t1(
+                            "pickle_map_get",
+                            vec![IrTy::Ptr, IrTy::Str],
+                            IrTy::Ptr,
+                            vec![obj, k],
+                        )
+                    }
                     "remove" => {
                         if args.len() != 1 {
                             return self.bad(e.span, "`remove` takes one argument (a key)");

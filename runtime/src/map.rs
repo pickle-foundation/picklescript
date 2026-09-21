@@ -247,6 +247,17 @@ pub extern "C" fn pickle_map_get_boxed(
     }
 }
 
+/// Look up `key`; returns the stored value (a boxed scalar or managed
+/// pointer) when present, else null — exactly the `T?` option representation,
+/// so compiled code can hand the result straight to an option-typed slot.
+#[no_mangle]
+pub extern "C" fn pickle_map_get(
+    map: *const PickleObject,
+    key: *const PickleObject,
+) -> *mut PickleObject {
+    map_get(map, key)
+}
+
 /// Whether `key` is present.
 #[no_mangle]
 pub extern "C" fn pickle_map_has(map: *const PickleObject, key: *const PickleObject) -> bool {

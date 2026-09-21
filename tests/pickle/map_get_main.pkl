@@ -1,0 +1,10 @@
+fn main() {
+    let m = {"a": 1, "b": 2}
+    let got = m.get("a")
+    if (let some(v) = got) {
+        let missing = m.get("nope") ?? -1
+        println("got {v} missing {missing} has-b={m.has("b")}")
+    } else {
+        println("unexpected none")
+    }
+}

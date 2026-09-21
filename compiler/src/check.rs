@@ -3064,6 +3064,7 @@ impl<'a> Checker<'a> {
             // Builtin map methods (slice subset).
             return match name {
                 "has" => Ty::Fn(vec![k.as_ref().clone()], Box::new(Ty::Bool)),
+                "get" => Ty::Fn(vec![k.as_ref().clone()], Box::new(v.clone().opt_of())),
                 "remove" => Ty::Fn(vec![k.as_ref().clone()], Box::new(v.clone().opt_of())),
                 "keys" => Ty::Fn(vec![], Box::new(Ty::List(k.clone()))),
                 "values" => Ty::Fn(vec![], Box::new(Ty::List(v.clone()))),

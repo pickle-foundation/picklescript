@@ -1,0 +1,62 @@
+test fn map_get_present_int() {
+    let m = {"a": 1, "b": 2}
+    let got = m.get("a")
+    if (let some(v) = got) {
+        expect(v).toBe(1)
+    } else {
+        expect("unexpected").toBe("map_get_present_int: get returned none for a present key")
+    }
+}
+
+test fn map_get_absent_is_none() {
+    let m = {"a": 7}
+    if (let some(_v) = m.get("missing")) {
+        expect("unexpected").toBe("map_get_absent_is_none: get returned some for an absent key")
+    } else {
+        expect(true).toBe(true)
+    }
+}
+
+test fn map_get_none_coalesces() {
+    let m = {"x": 42}
+    let v = m.get("nope") ?? -1
+    expect(v).toBe(-1)
+    let w = m.get("x") ?? -1
+    expect(w).toBe(42)
+}
+
+test fn map_get_string_value() {
+    let m = {"k": "hello"}
+    let got = m.get("k")
+    if (let some(v) = got) {
+        expect(v).toBe("hello")
+    } else {
+        expect("unexpected").toBe("map_get_string_value: get returned none for a present key")
+    }
+}
+
+test fn map_get_is_read_only() {
+    let m = {"a": 1, "b": 2}
+    if (let some(_v) = m.get("a")) {
+        expect(true).toBe(true)
+    } else {
+        expect("unexpected").toBe("map_get_is_read_only: get returned none for a present key")
+    }
+    expect(m.has("a")).toBe(true)
+    expect(len(m.keys())).toBe(2)
+}
+
+test fn map_get_tracks_removal() {
+    let m = {"a": 1}
+    if (let some(v) = m.get("a")) {
+        expect(v).toBe(1)
+    } else {
+        expect("unexpected").toBe("map_get_tracks_removal: get returned none for a present key")
+    }
+    m.remove("a")
+    if (let some(_v) = m.get("a")) {
+        expect("unexpected").toBe("map_get_tracks_removal: get returned some after remove")
+    } else {
+        expect(true).toBe(true)
+    }
+}

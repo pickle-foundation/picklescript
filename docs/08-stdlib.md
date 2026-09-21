@@ -119,11 +119,11 @@ UTF-8 and `print(b)` on a `byte` writes the raw byte, so non-ASCII text
 round-trips through the copy loop `for (c in s) { out += "{c}" }`.
 
 Compiled map operations today: `{ "a": 1 }` literals, `m[k]` reads and
-assignments (including `+=`-style compounds), `m.has(k)`, `m.keys()` /
-`m.values()` (fresh `List`s), and `m.remove(k) -> V?` — removes `k`, returns
-the removed value as an option (`none` when the key was absent), so `?` /
-`?.` / `??` pattern-match it directly. Keys are `string`-typed only in v1;
-`m.get(k)` is not lowered yet (use `m[k]` or `m.has(k)`).
+assignments (including `+=`-style compounds), `m.has(k)`, `m.get(k) -> V?`
+and `m.remove(k) -> V?` (both return the value as an option — `none` when the
+key is absent — so `?` / `?.` / `??` / `if (let some(v) = ...)` compose
+directly), and `m.keys()` / `m.values()` (fresh `List`s). Keys are
+`string`-typed only in v1.
 
 ## I/O model
 

@@ -2552,4 +2552,20 @@ fn emits_map_remove_builtin() {
     );
 }
 
+#[test]
+fn emits_map_get_builtin() {
+    let m = emit_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            let v = m.get("a") ?? -1
+            println(v)
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    assert!(
+        symbols.contains(&"pickle_map_get".to_string()),
+        "symbols: {symbols:?}"
+    );
+}
+
 

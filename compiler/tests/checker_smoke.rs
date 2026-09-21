@@ -2670,6 +2670,23 @@ fn accepts_map_remove_option() {
 }
 
 #[test]
+fn accepts_map_get_option() {
+    let d = check_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            let v: int? = m.get("a")
+            let w = m.get("a") ?? -1
+            if (let some(x) = m.get("a")) {
+                print("{x}")
+            } else {
+                print("none")
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
 fn rejects_map_remove_arity() {
     let d = check_str(
         r#"fn main() {
