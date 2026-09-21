@@ -85,9 +85,10 @@ return [expr] | return          // bare return == return none, if option
 > binding is unconditional. `match` lowers over enums (variant patterns) **and**
 > non-enums: literal patterns against `int`/`float`/`byte`/`char`/`bool`/`string`
 > scrutinees (string patterns must be non-interpolated), plus `some(v)`/`none`
-> against options; arms may carry `if` guards that fall through on `false`, a
-> binding/wildcard arm is a catch-all, and a non-exhaustive chain faults with
-> "pickle: match is not exhaustive" at runtime. `Or` (`case a | b`) and tuple
+> against options; arms may carry `if` guards that fall through on `false`. A
+> catch-all is written `case _ -> body`, `else -> body`, or the historical
+> bare `case -> body`; a non-exhaustive chain faults with "pickle: match is
+> not exhaustive" at runtime. `Or` (`case a | b`) and tuple
 > patterns lower only for enums; matching over other composite types still bails
 > "not lowered yet".
 
@@ -149,19 +150,24 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
 
 ## Operators
 
+Binary operators, loosest to tightest:
+
 | Precedence | Operators                    |
 |-----------|------------------------------|
-| high      | `.` `?` `::` `(` `[` `->`    |
-|           | `!` `-` (unary) `~`          |
-|           | `**`                         |
-|           | `*` `/` `%`                  |
-|           | `+` `-`                      |
-|           | `<<` `>>` `&`                |
+| low       | `=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=` |
+|           | `..` `..=` `<-`             |
+|           | `||` `??`                   |
+|           | `&&`                        |
+|           | `|`                         |
+|           | `^`                         |
+|           | `&`                         |
 |           | `==` `!=` `<` `<=` `>` `>=` `is` `in` |
-|           | `&&` / `and`                 |
-|           | `||` / `or`                  |
-|           | `??` (default) `?:`          |
-|           | `=` `:=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=` `++=` |
+|           | `<<` `>>`                   |
+|           | `+` `-`                     |
+|           | `*` `/` `%`                 |
+|           | `**`                        |
+| high      | `!` `-` (unary) `~`         |
+|           | `.` `?.` `?` `(` `[`        |
 
 - `==` is structural for structs and enums, identity for classes unless
   overridden (`operator == (other) -> bool`).
@@ -175,11 +181,15 @@ fn apply(fn f: (int) -> int, n: int) -> int { f(n) }
   mismatched types (e.g. `bool > int` from a chained `x < 3 > x / 2`) is a
   checker error.
 - `is` type test; `in` membership / map key test.
-- `?` postfix on `T?`: `let x = maybe?.field` (short-circuit `none`).
-- `a ?? b`: `a` if present, else `b`.
+- Options: `x?` force-unwraps a `T?` and panics on `none`; `x?.name` is safe
+  navigation (short-circuits to `none`); `a ?? b` is `a` if present, else `b`.
+  The unary bits: `!` not, `-` negate, `~` bitwise not.
 - `&expr` address-of (inside `unsafe`), `*T` raw pointer / `&T` immutable
-  reference param types, `ptr->field` pointer field access, `<-` channel send:
+  reference param types, `p.field` field access through a pointer
+  (auto-dereferences; there is no `->` operator), `<-` channel send:
   `ch <- value`.
+- There is no `::`, `?:`, or `:=` operator, and no word forms `and`/`or` —
+  write `&&` and `||`.
 
 ## Modules
 
