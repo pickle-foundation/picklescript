@@ -62,6 +62,7 @@ pub extern "C" fn pickle_mkdir(path: *const PickleObject) -> bool {
 pub extern "C" fn pickle_list_dir(path: *const PickleObject) -> *mut PickleObject {
     let gc = crate::gc::gc_mut();
     let l = crate::list::list_new(0, gc);
+    let _lease = gc.temp_lease(l);
     let entries = match std::fs::read_dir(path_of(path)) {
         Ok(read) => read,
         Err(_) => return std::ptr::null_mut(),

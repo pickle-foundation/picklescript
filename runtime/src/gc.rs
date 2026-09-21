@@ -53,6 +53,10 @@ pub struct Gc {
     /// Objects owned by `#[manualAlloc]` bindings. Always traced as roots and
     /// never swept; released only by `pickle_manual_free`.
     manual_objects: Vec<*mut PickleObject>,
+    /// Objects that a native runtime helper is still building. Traced as roots
+    /// (so nested collections mid-helper cannot sweep them) until the helper
+    /// registers the finished value somewhere visible via `temp_unroot`.
+    temp_roots: Vec<*mut PickleObject>,
     /// Owned (`#[manualAlloc]`) field mask per registered class id: bit `i`
     /// marks payload slot `i` as an owned object freed recursively with its
     /// holder.
@@ -73,6 +77,7 @@ impl Gc {
             class_parents: Vec::new(),
             live_bytes: AtomicU32::new(0),
             manual_objects: Vec::new(),
+            temp_roots: Vec::new(),
             class_owned_mask: Vec::new(),
             class_iface_buckets: Vec::new(),
         }
@@ -262,7 +267,7 @@ impl Gc {
             cells.iter().map(|cell| cell.cell).collect()
         };
         let descriptors = &self.descriptors;
-        trace::trace_from_roots(descriptors, &roots, &self.manual_objects);
+        trace::trace_from_roots(descriptors, &roots, &self.manual_objects, &self.temp_roots);
 
         // Sweep: release dead list/map raw buffers and pick out the objects
         // whose finalizers must run. Finalizers are *deferred*: the heap borrow
@@ -358,6 +363,29 @@ impl Gc {
         obj
     }
 
+    /// Temporarily root `obj` while a native helper is still building it.
+    /// Unlike `manual_adopt` the flag is untouched: this is purely a liveness
+    /// lease so a nested collection inside the helper cannot sweep the
+    /// not-yet-published value. The helper must call `temp_unroot` before
+    /// returning a value that has been published to a slot/frame/root.
+    pub fn temp_root(&mut self, obj: *mut PickleObject) {
+        if !obj.is_null() && !self.temp_roots.contains(&obj) {
+            self.temp_roots.push(obj);
+        }
+    }
+
+    /// Release the liveness lease on `obj` taken by `temp_root`.
+    pub fn temp_unroot(&mut self, obj: *mut PickleObject) {
+        self.temp_roots.retain(|&o| o != obj);
+    }
+
+    /// RAII lease keeping `obj` live across any nested collections triggered
+    /// inside a native helper. See [`TempRootLease`].
+    pub fn temp_lease(&mut self, obj: *mut PickleObject) -> TempRootLease {
+        self.temp_root(obj);
+        TempRootLease(obj)
+    }
+
     /// Explicitly release a `#[manualAlloc]` object: run its finalizer, free
     /// any raw side buffers, and return the block to the heap. Panics if the
     /// object was not adopted (double free / free of a managed object).
@@ -402,6 +430,33 @@ impl Gc {
 impl Default for Gc {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// RAII guard that keeps `obj` alive across nested collections until dropped.
+/// A native helper that builds a fresh aggregate (list/map/string) and then
+/// keeps allocating must hold one of these over the whole build, or a nested
+/// collection will sweep the half-built value (see the `str_to_bytes` crash
+/// this fixed). Mirrors the compiler side: the JIT roots values via shadow
+/// frames; helpers root their in-flight temporaries via this lease.
+#[must_use]
+pub struct TempRootLease(*mut PickleObject);
+
+impl TempRootLease {
+    pub fn release(mut self) {
+        self.release_inner();
+    }
+    fn release_inner(&mut self) {
+        if !self.0.is_null() {
+            gc_mut().temp_unroot(self.0);
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+impl Drop for TempRootLease {
+    fn drop(&mut self) {
+        self.release_inner();
     }
 }
 

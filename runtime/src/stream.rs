@@ -136,6 +136,7 @@ pub extern "C" fn pickle_stream_read(stream: *mut PickleObject, n: i64) -> *mut 
     }
     let gc = crate::gc::gc_mut();
     let l = crate::list::list_new(got, gc);
+    let _lease = gc.temp_lease(l);
     for &byte in &buf[..got] {
         crate::list::list_push(l, crate::boxscalar::pickle_box_i64(byte as i64));
     }
@@ -277,6 +278,7 @@ mod tests {
     fn list_of(bytes: &[u8]) -> *mut PickleObject {
         let gc = &mut crate::gc::gc_mut();
         let l = crate::list::list_new(bytes.len(), gc);
+        let _lease = gc.temp_lease(l);
         for b in bytes {
             crate::list::list_push(l, crate::boxscalar::pickle_box_i64(*b as i64));
         }

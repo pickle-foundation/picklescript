@@ -251,6 +251,10 @@ pub extern "C" fn pickle_str_to_bytes(obj: *const PickleObject) -> *mut PickleOb
     let gc = crate::gc::gc_mut();
     let len = string_bytes_len(obj);
     let out = crate::list::list_new(len, gc);
+    // The in-flight list is only a Rust local while the per-byte box_i64
+    // allocations below can trigger a nested collection; the lease keeps it
+    // alive until it is returned and the caller shadows it.
+    let _lease = gc.temp_lease(out);
     unsafe {
         let data = str_bytes(obj);
         for i in 0..len {

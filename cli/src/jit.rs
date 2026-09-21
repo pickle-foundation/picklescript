@@ -792,6 +792,13 @@ fn lower_instr(
             let a = *values.get(&addr.0).context("loadraw address")?;
             let v = builder.ins().load(clif_ty(*ty), MemFlags::trusted(), a, 0);
             values.insert(dst.0, v);
+            // A managed value loaded out of a raw buffer (list element, enum
+            // payload, class field) must be rooted in its shadow cell too, or a
+            // collection during a later allocating call can free it while the
+            // SSA value still references it.
+            if is_managed(*ty) {
+                write_through(builder, plan, frame, dst.0, v);
+            }
         }
         IrInstr::StoreRaw { addr, v, ty } => {
             let a = *values.get(&addr.0).context("storeraw address")?;

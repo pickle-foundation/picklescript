@@ -103,15 +103,20 @@ impl Heap {
             while !cur.is_null() {
                 unsafe {
                     let full = (*cur).size as usize;
-                    if full >= size {
+                    // Only reuse a block whose span can exactly match the
+                    // request: either a perfect fit, or a split that leaves a
+                    // leftover big enough to become its own free block. A
+                    // smaller leftover cannot carry a header, so absorbing it
+                    // would make the header size disagree with the block span
+                    // and the sweep would walk into the orphaned bytes.
+                    if full == size || full >= size + SPLIT_MIN {
                         let next = (*cur).next;
                         if prev.is_null() {
                             self.free_heads[idx] = next;
                         } else {
                             (*prev).next = next;
                         }
-                        // Split if there is meaningful room left over.
-                        if full >= size + SPLIT_MIN {
+                        if full > size {
                             let tail = (cur as *mut u8).add(size) as *mut PickleObject;
                             self.push_free(tail, full - size);
                             (*cur).size = size as u32;

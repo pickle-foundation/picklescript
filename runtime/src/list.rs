@@ -248,7 +248,9 @@ pub extern "C" fn pickle_list_sort(list: *mut PickleObject, kind: i64) {
 /// `start`, exclusive of `end`.
 #[no_mangle]
 pub extern "C" fn pickle_range(start: i64, end: i64, step: i64) -> *mut PickleObject {
-    let list = list_new(0, crate::gc::gc_mut());
+    let gc = crate::gc::gc_mut();
+    let list = list_new(0, gc);
+    let _lease = gc.temp_lease(list);
     if step == 0 {
         return list;
     }
@@ -282,6 +284,7 @@ mod tests {
         let _guard = setup();
         let gc = crate::gc::gc_mut();
         let l = list_new(0, gc);
+        let _lease = gc.temp_lease(l);
         assert_eq!(list_len_of(l), 0);
         let mut ids: Vec<usize> = Vec::new();
         for i in 0..100usize {

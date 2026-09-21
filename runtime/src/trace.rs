@@ -20,6 +20,7 @@ pub fn trace_from_roots(
     descriptors: &DescriptorTable,
     roots: &[*mut *mut PickleObject],
     manual: &[*mut PickleObject],
+    temp_roots: &[*mut PickleObject],
 ) {
     let mut worklist: Vec<*mut PickleObject> = Vec::new();
     for cell in roots {
@@ -29,6 +30,11 @@ pub fn trace_from_roots(
         }
     }
     for obj in manual {
+        if !obj.is_null() {
+            enqueue(&mut worklist, *obj);
+        }
+    }
+    for obj in temp_roots {
         if !obj.is_null() {
             enqueue(&mut worklist, *obj);
         }
@@ -191,7 +197,7 @@ mod tests {
 
             let root: *mut PickleObject = list;
             let roots: Vec<*mut *mut PickleObject> = vec![(&root as *const *mut PickleObject) as *mut _];
-            trace_from_roots(&desc, &roots, &[]);
+            trace_from_roots(&desc, &roots, &[], &[]);
 
             assert!((*list).is_marked());
             assert!((*elem).is_marked());
