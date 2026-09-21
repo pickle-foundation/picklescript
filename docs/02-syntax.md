@@ -7,7 +7,10 @@ Version 1. Files use the `.pkl` extension.
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Type names are conventionally
   `UpperCamelCase`; the compiler warns on style violations but doesn't
   require them.
-- Keywords are reserved and lowercase.
+- Keywords are lowercase. A small set is *reserved* (cannot appear as an
+  identifier); a larger set is *contextual* — reserved only at its syntax
+  position and an ordinary identifier everywhere else (see
+  [Keyword model](#keyword-model)).
 - Comments: `// line`, `/// doc line`, `/* block */`, `/** doc block */`.
   Doc comments attach to the following declaration.
 - Numeric literals:
@@ -192,21 +195,61 @@ use text.*                   // unqualified: everything public
 Import paths resolve against `src/` and package dependencies. A file's module
 path is derived from `module` declaration or its path under `src/`.
 
-## Full keyword list
+## Keyword model
+
+Two categories. Both are lowercase; neither contains `spawn` (a spelling
+reserved for future channels, not a token today).
+
+**Reserved keywords** — bind everywhere and may never be used as identifiers:
+`module import fn let var const class struct enum interface if else while for
+in break continue return match case true false none is as this super`. Also
+`await` and `unsafe` stay reserved at expression positions (`await x`,
+`unsafe { }`), so they cannot name an identifier there.
+
+**Contextual keywords** — bind only at their grammar position and are ordinary
+identifiers everywhere else:
 
 ```
-module import use class struct enum interface
-fn constructor property get set operator
-let var const static override public private protected
-if else while for in break continue return
-match case
-true false none
-init deinit
-async await task channel spawn
-unsafe
+use get set init deinit
+constructor operator property
+static override public private protected
 extends implements
-is as
-this super
+async task channel
+```
+
+Examples of valid uses as identifiers:
+
+```
+fn use(x: int) -> int => x      // free function named "use"
+let task = 2                    // local named "task"
+class User { init: int }        // field named "init"
+fn channel(v: int) -> int => v  // method named "channel"
+```
+
+The same words still bind at their declaration slots: `use` as the module
+import, `get`/`set` inside a `property`, `init { }` / `deinit { }` bodies, an
+`operator` member, a `constructor`, an access modifier, `class C extends B`,
+`class C implements I`, and `async task = ...`.
+`await x` lives at the prefix-operator position, reserved there.
+
+Field names in a class member slot accept the contextual set except
+`constructor`, `operator`, `property`, `static`, `override`, `public`,
+`private`, `protected` — those words bind at the member slot (a field can
+still be named `get`, `set`, `init`, ...).
+
+### Match catch-alls
+
+A fall-through match arm may be written three ways, meaning the same thing:
+
+```
+match (kind) {
+    case Kind.Savings -> print("savings")
+    case _ -> print("checking")      // wildcard pattern
+}
+// or
+    else -> print("checking")        // worded catch-all
+// or (historical)
+    case -> print("checking")        // bare-arrow catch-all
 ```
 
 ## Example walking

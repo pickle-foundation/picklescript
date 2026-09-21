@@ -1,0 +1,40 @@
+fn pick(v: int) -> int {
+    let r = match (v) {
+        case 1 -> 10
+        case 2 -> 20
+        else -> 90
+    }
+    return r
+}
+
+fn pick_underscore(v: int) -> int {
+    let r = match (v) {
+        case 1 -> 10
+        case _ -> 90
+    }
+    return r
+}
+
+fn pick_bare(v: int) -> int {
+    let r = match (v) {
+        case 1 -> 10
+        case -> 90
+    }
+    return r
+}
+
+test fn else_catch_all() {
+    expect(pick(1)).toBe(10)
+    expect(pick(2)).toBe(20)
+    expect(pick(99)).toBe(90)
+}
+
+test fn underscore_catch_all() {
+    expect(pick_underscore(1)).toBe(10)
+    expect(pick_underscore(99)).toBe(90)
+}
+
+test fn bare_case_catch_all_still_works() {
+    expect(pick_bare(1)).toBe(10)
+    expect(pick_bare(99)).toBe(90)
+}

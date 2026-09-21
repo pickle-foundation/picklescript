@@ -1,0 +1,51 @@
+class User {
+    use: string
+    get: bool = false
+    init: int = 1
+}
+
+class Counter {
+    fn get(v: int) -> int => v * 2
+    fn set(v: int) -> int => v + 1
+    fn init(v: int) -> int => v - 1
+}
+
+fn use(x: int) -> int => x
+fn set(v: int) -> int => v + 10
+fn get(v: int) -> int => v + 20
+fn init(v: int) -> int => v + 30
+fn task(v: int) -> int => v + 40
+fn channel(v: int) -> int => v + 50
+
+test fn contextual_words_as_values() {
+    let use = 1
+    let get = 2
+    let set = 3
+    let init = 4
+    let task = 5
+    let channel = 6
+    expect(use + get + set + init + task + channel).toBe(21)
+}
+
+test fn contextual_words_as_function_names() {
+    expect(use(1)).toBe(1)
+    expect(set(1)).toBe(11)
+    expect(get(1)).toBe(21)
+    expect(init(1)).toBe(31)
+    expect(task(1)).toBe(41)
+    expect(channel(1)).toBe(51)
+}
+
+test fn contextual_words_as_fields() {
+    let u = User("Ada")
+    expect(u.use).toBe("Ada")
+    expect(u.get).toBe(false)
+    expect(u.init).toBe(1)
+}
+
+test fn contextual_words_as_methods() {
+    let c = Counter()
+    expect(c.get(5)).toBe(10)
+    expect(c.set(3)).toBe(4)
+    expect(c.init(9)).toBe(8)
+}

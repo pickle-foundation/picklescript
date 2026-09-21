@@ -409,3 +409,47 @@ fn parses_attributes_with_arguments() {
     assert_eq!(p.items[0].attrs[0].name, "inline");
     assert_eq!(p.items[0].attrs[0].args.len(), 1, "attribute argument lost");
 }
+
+#[test]
+fn parses_contextual_keywords_as_identifiers() {
+    let p = parse_str(
+        r#"class User {
+            use: string
+            get: bool = false
+            init: int = 1
+            fn channel(v: int) -> int => v
+        }
+
+        fn use(x: int) -> int => x
+        fn task(v: int) -> int => v
+
+        fn main() {
+            let use = 1
+            let init = 2
+            let u = User("Ada")
+            print(u.use, u.get, u.init, u.channel(3))
+            print(use(1), task(2))
+        }"#,
+    );
+    assert_eq!(p.items.len(), 4, "all items must parse");
+    assert!(matches!(&p.items[0].kind, ItemKind::Class(c) if c.name == "User"));
+    assert!(matches!(&p.items[1].kind, ItemKind::Fn(f) if f.name == "use"));
+    assert!(matches!(&p.items[2].kind, ItemKind::Fn(f) if f.name == "task"));
+}
+
+#[test]
+fn parses_match_catch_all_forms() {
+    for src in [
+        r#"fn pick(v: int) -> int {
+            match (v) { case 1 -> 10, case -> 90 }
+        }"#,
+        r#"fn pick(v: int) -> int {
+            match (v) { case 1 -> 10, case _ -> 90 }
+        }"#,
+        r#"fn pick(v: int) -> int {
+            match (v) { case 1 -> 10, else -> 90 }
+        }"#,
+    ] {
+        let _ = parse_str(src);
+    }
+}

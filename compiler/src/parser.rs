@@ -261,6 +261,10 @@ impl<'a> Parser<'a> {
                 Ok(s)
             }
             other => {
+                if let Some(kw) = contextual_ident(&other) {
+                    self.bump();
+                    return Ok(kw.to_string());
+                }
                 self.err_at(
                     self.span(),
                     format!("expected identifier for {what}, found {}", other.describe()),
@@ -946,6 +950,10 @@ impl<'a> Parser<'a> {
                 Ok(s)
             }
             other => {
+                if let Some(kw) = contextual_ident(&other) {
+                    self.bump();
+                    return Ok(kw.to_string());
+                }
                 self.err_at(
                     self.span(),
                     format!("expected a function name, found {}", other.describe()),
@@ -1607,7 +1615,7 @@ impl<'a> Parser<'a> {
                     Ok(Pattern::Tuple(parts))
                 }
             }
-            Tok::Ident(_) => {
+            other if matches!(&other, Tok::Ident(_)) || contextual_ident(&other).is_some() => {
                 let mut path = Vec::new();
                 path.push(self.expect_ident("pattern")?);
                 while self.at(&Tok::Dot) {
@@ -2011,6 +2019,14 @@ impl<'a> Parser<'a> {
                     kind: ExprKind::Ident(name),
                 })
             }
+            other if contextual_ident(&other).is_some() => {
+                let name = contextual_ident(&other).unwrap().to_string();
+                self.bump();
+                Ok(Expr {
+                    span: start.to(self.prev_span()),
+                    kind: ExprKind::Ident(name),
+                })
+            }
             Tok::Fn => self.parse_lambda(start),
             Tok::LParen => self.parse_paren_expr(),
             Tok::LBracket => {
@@ -2408,8 +2424,13 @@ impl<'a> Parser<'a> {
                 break;
             }
             let arm_start = self.span();
-            self.expect(&Tok::Case)?;
-            let pattern = if self.at(&Tok::Arrow) {
+            let catch_all = if self.eat(&Tok::Else) {
+                true
+            } else {
+                self.expect(&Tok::Case)?;
+                false
+            };
+            let pattern = if catch_all || self.at(&Tok::Arrow) {
                 Pattern::Wildcard
             } else {
                 let first = self.parse_pattern()?;
@@ -2769,7 +2790,9 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     span,
                 })
             }
-            (false, Tok::Constructor) => {
+            (false, k) if matches!(&k, Tok::Constructor)
+                && matches!(self.peek_at(1), Tok::LParen | Tok::Dot) =>
+            {
                 self.bump();
                 let name = if self.at(&Tok::Dot) {
                     self.bump();
@@ -2798,19 +2821,18 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 m.visibility = visibility;
                 Ok(ClassMember::Method(m))
             }
-            (false, Tok::Operator) => {
+            (false, k) if matches!(&k, Tok::Operator) && is_operator_symbol(self.peek_at(1)) => {
                 let m = self.parse_operator_method(start, is_override)?;
                 Ok(ClassMember::Method(m))
             }
-            (false, Tok::Init) => {
+            (false, k) if matches!(&k, Tok::Init | Tok::Deinit) && self.peek_at(1) == &Tok::LBrace => {
                 self.bump();
                 let body = self.parse_block()?;
-                Ok(ClassMember::Init(body))
-            }
-            (false, Tok::Deinit) => {
-                self.bump();
-                let body = self.parse_block()?;
-                Ok(ClassMember::Deinit(body))
+                if matches!(k, Tok::Init) {
+                    Ok(ClassMember::Init(body))
+                } else {
+                    Ok(ClassMember::Deinit(body))
+                }
             }
             (false, Tok::Let) | (false, Tok::Var) => {
                 self.bump();
@@ -2839,8 +2861,10 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     span,
                 })
             }
-            (false, Tok::Ident(_)) => {
-                // field: `name: Type` or `name = expr` (`= expr` may infer)
+            (false, k) if member_field_name(&k) => {
+                // field: `name: Type` or `name = expr` (`= expr` may infer).
+                // `member_field_name` also admits contextual keywords so fields
+                // like `use`, `get`, `set`, or `init` stay legal names.
                 let name = self.expect_ident("field name")?;
                 let ty = if self.eat(&Tok::Colon) {
                     Some(self.parse_type()?)
@@ -3151,4 +3175,77 @@ fn stmt_span(s: &Stmt) -> Span {
         | Stmt::Empty(span) => *span,
         Stmt::Expr(e) => e.span,
     }
+}
+
+/// The "contextual" keyword set: words that bind only at their grammar
+/// position (a `get` accessor inside a `property`, `init` before a body, a
+/// `static` member modifier, ...) and are ordinary identifiers everywhere
+/// else. Reserved words — `fn`, `let`, `if`, `match`, ... — are not here.
+fn contextual_ident(t: &Tok) -> Option<&'static str> {
+    Some(match t {
+        Tok::Use => "use",
+        Tok::Get => "get",
+        Tok::Set => "set",
+        Tok::Init => "init",
+        Tok::Deinit => "deinit",
+        Tok::Task => "task",
+        Tok::Channel => "channel",
+        Tok::Async => "async",
+        Tok::Constructor => "constructor",
+        Tok::Operator => "operator",
+        Tok::Property => "property",
+        Tok::Static => "static",
+        Tok::Override => "override",
+        Tok::Public => "public",
+        Tok::Private => "private",
+        Tok::Protected => "protected",
+        Tok::Extends => "extends",
+        Tok::Implements => "implements",
+        _ => return None,
+    })
+}
+
+/// Whether a class/struct member slot should be read as a field name: plain
+/// identifiers plus the contextual words that rarely need their grammar
+/// meaning there (`get`/`set`/`init`/... as variable-safe names). Declaration
+/// keywords (`constructor`, `operator`, `property`) still bind at a member
+/// slot, exactly like `fn` does.
+fn member_field_name(t: &Tok) -> bool {
+    matches!(
+        t,
+        Tok::Ident(_)
+            | Tok::Get
+            | Tok::Set
+            | Tok::Init
+            | Tok::Deinit
+            | Tok::Task
+            | Tok::Channel
+            | Tok::Async
+            | Tok::Use
+    )
+}
+
+/// The operator-symbol tokens an `operator` member may overload.
+fn is_operator_symbol(t: &Tok) -> bool {
+    matches!(
+        t,
+        Tok::Plus
+            | Tok::Minus
+            | Tok::Star
+            | Tok::Slash
+            | Tok::Percent
+            | Tok::StarStar
+            | Tok::EqEq
+            | Tok::NotEq
+            | Tok::Lt
+            | Tok::Le
+            | Tok::Gt
+            | Tok::Ge
+            | Tok::Shl
+            | Tok::Shr
+            | Tok::Amp
+            | Tok::Pipe
+            | Tok::Caret
+            | Tok::LBracket
+    )
 }
