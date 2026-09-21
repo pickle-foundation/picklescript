@@ -13,7 +13,7 @@ a snapshot, and diff consecutive snapshots. Three questions are answered:
   versions of each file, newest to oldest, with the surface (public
   functions, classes, fields, methods, constructors, properties, enum
   variants, interface members, and constants) and the dependency lines
-  (`import`/`use`) between consecutive versions.
+  (`import`) between consecutive versions.
 - **When did this code stop (or start) compiling?** `pickle builds` prints
   the most recent build rows — commit, file, `ok`/`ERR`, and the stable
   error codes of the failures.
@@ -46,7 +46,7 @@ A snapshot is one JSON object per (commit, file):
 | `hash`    | FNV-1a 64 of the file content (hex); keys the cache entry |
 | `ok`      | the frontend (lex/parse/resolve/check) plus codegen reported no errors |
 | `codes`   | distinct stable error codes produced, sorted |
-| `deps`    | the module's `import`/`use` lines, sorted |
+| `deps`    | the module's `import` lines, sorted (source + symbols or wildcard) |
 | `items`   | the public surface (see below) |
 
 The compiler has no dependencies, so the cache is plain JSONL written

@@ -5,21 +5,21 @@ Namespace: everything lives under modules, mirroring the module system.
 ## Layout
 
 ```
-use std.io          print, println, readLine, stderr
-use std.fs          File, Dir, Path, readFile, writeFile, exists
-use std.net         Tcp, Udp, Tls, Host, resolve
-use std.http        Client, Request, Response, Server, get, post
-use std.json        Json, parse, serialize, stringify
-use std.collections List, Map, Set, Deque, Vec, Stack, Queue, OrderedMap, PriorityQueue
-use std.math        sin, cos, sqrt, abs, min, max, pow, floor, ceil, random, PI, E, TAU
-use std.crypto       sha256, md5, aes, hmac, randBytes, base64, hex
-use std.process     run, spawn, capture, exit, env
-use std.thread      thread, channel, task, parallel, Mutex, Atomic, Semaphore, Once
-use std.time        now, Instant, Duration, sleep, Timer, DateTime
-use std.text        String buffer, Unicode helpers, scan/format, regex
-use std.gc          collect, stats, Weak, Arena
-use std.os          args, exit, tempDir, homeDir, cwd, platform
-use std.test        assert, assertEqual, assertThrows, bench
+import * from std.io          print, println, readLine, stderr
+import * from std.fs          File, Dir, Path, readFile, writeFile, exists
+import * from std.net         Tcp, Udp, Tls, Host, resolve
+import * from std.http        Client, Request, Response, Server, get, post
+import * from std.json        Json, parse, serialize, stringify
+import * from std.collections List, Map, Set, Deque, Vec, Stack, Queue, OrderedMap, PriorityQueue
+import * from std.math        sin, cos, sqrt, abs, min, max, pow, floor, ceil, random, PI, E, TAU
+import * from std.crypto      sha256, md5, aes, hmac, randBytes, base64, hex
+import * from std.process     run, spawn, capture, exit, env
+import * from std.thread      thread, channel, task, parallel, Mutex, Atomic, Semaphore, Once
+import * from std.time        now, Instant, Duration, sleep, Timer, DateTime
+import * from std.text        String buffer, Unicode helpers, scan/format, regex
+import * from std.gc          collect, stats, Weak, Arena
+import * from std.os          args, exit, tempDir, homeDir, cwd, platform
+import * from std.test        assert, assertEqual, assertThrows, bench
 ```
 
 ## Design principles

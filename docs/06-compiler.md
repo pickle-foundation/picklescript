@@ -80,6 +80,13 @@ compiler is linked against `pickle-runtime`.
 - **Parser**: recursive descent, precedence climbing for binary operators.
   Produces an untyped AST with spans. Fails fast with recovery at the next
   declaration boundary so one session reports many errors.
+- **Loader** (front): discovers an optional workspace `picklescript.toml`
+  (`[workspace] members = [{ name, path }, ...]`, `[package]`, `[paths]`,
+  `[registry]`, lockfile) when a file is loaded, then resolves import module
+  paths. Paths search the importing directory up to `<cwd>/src/`; a leading
+  segment matching a workspace member is authoritative and resolves inside
+  that crate (root -> `lib.pkl`/`main.pkl`, deeper segments -> module files or
+  package dirs). TOML is hand-parsed (a tight subset); no dependency added.
 - **Resolver**: module graph → import graph; scope trees; binding of every
   identifier; visibility checks (private/protected); duplicate detection;
   method override validation; generic parameter scopes. Name collection is

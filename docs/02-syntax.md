@@ -209,21 +209,29 @@ the target file):
 ```
 import text                            // qualified: text.render(...)
 import text as t                       // aliased: t.render(...)
-use text.render                        // unqualified: render(...)
-use text.render as r                   // unqualified under a new name: r(...)
-use text.*                             // unqualified: everything public
+import render from text                // unqualified: render(...)
+import render from text as r           // unqualified under a new name: r(...)
+import { render, helper as shout } from text   // brace items
+import * from text                     // unqualified: everything public
+public import text                     // re-export: consumers get text.*
 ```
 
-`import` binds a **module name** (its last segment unless aliased) and lets you
-reference exports qualified (`text.render`, `t.render`), classes
-(`text.Person(...)`), enums (`text.Color.Red`), and their variants. `use` brings
-**exports** into the file's bare namespace; `use a.b.render as r` rebinds that
-one export under a new local name.
+`import <path>` binds a **module name** (its last segment unless aliased) and
+lets you reference exports qualified (`text.render`, `t.render`), classes
+(`text.Person(...)`), enums (`text.Color.Red`), and their variants. The forms
+with `from` bring the named **symbols** (`import render from text`, brace
+lists, `import * from text`) into the file's bare namespace; `... as r`
+rebinds one under a new local name. `public import` re-exports (namespace or
+flattened items).
 
-Import paths resolve relative to the **importing file's directory**, then under
-`<cwd>/src/`; each path segment maps to a directory and the last one to the
-`.pkl` file (`a.b` -> `a/b.pkl`). A `module` declaration that differs from the
-path used to load the file is an error (E0208). Declaring `module` without
+Import paths resolve relative to the **importing file's directory**, then each
+ancestor up to and including the process working directory, then `<cwd>/src/`;
+`a.b` maps to `a/b.pkl` first, else the **package** directory `a/b/` (a
+package = the union of its member `.pkl` files). A workspace `picklescript.toml`
+`[workspace] members` entry makes a leading crate name authoritative: the crate
+root maps to `lib.pkl`/`main.pkl` and deeper segments to module files or package
+dirs inside the crate's own directory. A `module` declaration that differs from
+the path used to load the file is an error (E0208). Declaring `module` without
 importing is fine: the file is an ordinary single-source module.
 
 All reachable modules are flattened into one program before type checking, so
@@ -236,20 +244,21 @@ each reference in a file that imports both must say which one is meant:
 
 - qualified reference: `math.ops.helper()` — unambiguous when both module names
   are in scope (`import math.ops; import text.format`) or via a module alias;
-- alias: `use math.ops.helper as mathHelper` — binds the bare name to that one
-  provider;
+- alias: `import helper from math.ops as mathHelper` — binds the bare name to
+  that one provider;
 - otherwise a bare `helper()` is rejected:
 
 ```
 error[E0209] ambiguous imported name `helper`
   = note: `helper` is provided by module `math.ops` and module `text.format`
-  = note: use `math.ops.helper as helperA` / use `text.format.helper as helperB`
+  = note: import helper from `math.ops` as helperA / import helper from
+          `text.format` as helperB
 ```
 
 Same-named **types** (classes, structs, enums, interfaces) across modules remain
 a hard duplicate-declaration error (E0201): a type's name must be unique in the
 merged program. Module path segments are identifiers, so reserved words such as
-`case` cannot appear in a path (`use text.case.*` is a syntax error).
+`case` cannot appear in a path (`import case from text` is a syntax error).
 
 ## Keyword model
 
@@ -257,8 +266,8 @@ Two categories. Both are lowercase; neither contains `spawn` (a spelling
 reserved for future channels, not a token today).
 
 **Reserved keywords** — bind everywhere and may never be used as identifiers:
-`module import fn let var const class struct enum interface if else while for
-in break continue return match case true false none is as this super`. Also
+`module import from fn let var const class struct enum interface if else while
+for in break continue return match case true false none is as this super`. Also
 `await` and `unsafe` stay reserved at expression positions (`await x`,
 `unsafe { }`), so they cannot name an identifier there.
 
@@ -266,26 +275,31 @@ in break continue return match case true false none is as this super`. Also
 identifiers everywhere else:
 
 ```
-use get set init deinit
+get set init deinit
 constructor operator property
 static override public private protected
 extends implements
 async task channel
 ```
 
+`from` is reserved exclusively for the import grammar (`import x from mod`).
+`use` is **no longer a keyword**: the old `use a.b.item` import syntax was
+replaced by `import item from a.b`, and `use` now lexes and binds as an
+ordinary identifier.
+
 Examples of valid uses as identifiers:
 
 ```
-fn use(x: int) -> int => x      // free function named "use"
+let use = 1                     // local named "use"
 let task = 2                    // local named "task"
 class User { init: int }        // field named "init"
 fn channel(v: int) -> int => v  // method named "channel"
 ```
 
-The same words still bind at their declaration slots: `use` as the module
-import, `get`/`set` inside a `property`, `init { }` / `deinit { }` bodies, an
-`operator` member, a `constructor`, an access modifier, `class C extends B`,
-`class C implements I`, and `async task = ...`.
+The same words still bind at their declaration slots: `get`/`set` inside a
+`property`, `init { }` / `deinit { }` bodies, an `operator` member, a
+`constructor`, an access modifier, `class C extends B`, `class C implements I`,
+and `async task = ...`.
 `await x` lives at the prefix-operator position, reserved there.
 
 Field names in a class member slot accept the contextual set except
