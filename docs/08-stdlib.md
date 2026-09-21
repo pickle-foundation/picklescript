@@ -136,7 +136,10 @@ assignments (including `+=`-style compounds), `m.has(k)`, `m.get(k) -> V?`
 and `m.remove(k) -> V?` (both return the value as an option — `none` when the
 key is absent — so `?` / `?.` / `??` / `if (let some(v) = ...)` compose
 directly), and `m.keys()` / `m.values()` (fresh `List`s). Keys are
-`string`-typed only in v1.
+`string`-typed only in v1. **Entries iteration is compiled**:
+`for ((k, v) in m)` binds the key and the value per
+trip (lowered as lockstep key/value snapshots — both walk the same entry
+array), and `for (v in m)` still iterates just the values.
 
 ## I/O model
 

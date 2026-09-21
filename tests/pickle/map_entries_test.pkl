@@ -1,0 +1,64 @@
+test fn entries_counts_each_entry_once() {
+    let m = {"a": 1, "b": 2, "c": 3}
+    var n = 0
+    var sum = 0
+    for ((k, v) in m) {
+        n += 1
+        sum += v
+        if (v != m[k]) {
+            expect(false).toBe(true)
+        }
+    }
+    expect(n).toBe(3)
+    expect(sum).toBe(6)
+}
+
+test fn entries_value_is_the_map_value_at_its_key() {
+    let m = {"x": 10, "y": 20, "z": 30}
+    var ok = true
+    var n = 0
+    for ((k, v) in m) {
+        n += 1
+        if (v != m[k]) {
+            ok = false
+        }
+    }
+    expect(n).toBe(3)
+    expect(ok).toBe(true)
+}
+
+test fn entries_string_values_pair_correctly() {
+    let m = {"alpha": "one", "beta": "two"}
+    let want = {"alpha": "one", "beta": "two"}
+    var ok = true
+    var n = 0
+    for ((k, v) in m) {
+        n += 1
+        if (v != want[k]) {
+            ok = false
+        }
+    }
+    expect(n).toBe(2)
+    expect(ok).toBe(true)
+}
+
+test fn entries_break_early() {
+    let m = {"a": 1}
+    var ran = 0
+    for ((k, v) in m) {
+        ran += 1
+        if (k == "a" && v == 1) {
+            break
+        }
+    }
+    expect(ran).toBe(1)
+}
+
+test fn plain_for_still_iterates_values() {
+    let m = {"a": 1, "b": 2}
+    var sum = 0
+    for (v in m) {
+        sum += v
+    }
+    expect(sum).toBe(3)
+}

@@ -2687,6 +2687,46 @@ fn accepts_map_get_option() {
 }
 
 #[test]
+fn accepts_map_entries_for() {
+    let d = check_str(
+        r#"fn main() {
+            let m = {"a": 1, "b": 2}
+            var sum = 0
+            var cat = ""
+            for ((k, v) in m) {
+                cat += k
+                sum += v
+            }
+            let w = {"x": "s"}
+            for ((key, value) in w) {
+                print(key, value)
+            }
+            for (v in m) {
+                print(v)
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_map_entries_pattern_arity() {
+    let d = check_str(
+        r#"fn main() {
+            let m = {"a": 1}
+            for ((k, v, w) in m) {
+                print(k, v, w)
+            }
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a map-entries arity error, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
 fn rejects_map_remove_arity() {
     let d = check_str(
         r#"fn main() {

@@ -1352,8 +1352,24 @@ impl<'a> Checker<'a> {
                     other => other,
                 };
                 let elem = match &st {
-                    Ty::List(_) | Ty::Map(_, _) | Ty::Range(_) => {
-                        st.elem().unwrap_or(Ty::Unknown)
+                    Ty::List(_) | Ty::Range(_) => st.elem().unwrap_or(Ty::Unknown),
+                    Ty::Map(_, _) => {
+                        // `for ((k, v) in m)` binds the key and the value; any
+                        // other pattern binds the value as before.
+                        if let Pattern::Tuple(parts) = pattern {
+                            if parts.len() != 2 {
+                                self.err(
+                                    pattern.span(),
+                                    "map entries pattern must bind exactly two names `(k, v)`",
+                                );
+                                Ty::Unknown
+                            } else {
+                                let v = st.elem().unwrap_or(Ty::Unknown);
+                                Ty::Tuple(vec![Ty::String, v])
+                            }
+                        } else {
+                            st.elem().unwrap_or(Ty::Unknown)
+                        }
                     }
                     Ty::String => Ty::Byte,
                     Ty::Unknown => Ty::Unknown,

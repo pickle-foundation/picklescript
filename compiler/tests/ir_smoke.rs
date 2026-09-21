@@ -1412,6 +1412,37 @@ fn emits_char_fields_and_collections_boxed() {
 }
 
 #[test]
+fn emits_map_entries_iteration() {
+    // `for ((k, v) in m)` lowers to key/value snapshots iterated in lockstep.
+    let m = emit_str(
+        r#"fn main() {
+            var m = {"alpha": 10, "beta": 20}
+            var cat = ""
+            var sum = 0
+            for ((k, v) in m) {
+                cat += k
+                sum += v
+            }
+            print(cat, sum)
+        }"#,
+    );
+    let syms = externs(&m);
+    for need in [
+        "pickle_map_keys",
+        "pickle_map_values",
+        "pickle_list_get",
+        "pickle_list_len",
+        "pickle_unbox_i64",
+    ] {
+        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+    }
+    assert!(
+        !syms.iter().any(|s| s == "pickle_map_get_boxed"),
+        "entries iteration should not need a per-trip map lookup, externs: {syms:?}"
+    );
+}
+
+#[test]
 fn emits_string_index_and_char_iteration() {
     // `s[i]` lowers to `pickle_str_get` (raw `char`, no unbox), and
     // `for (c in s)` iterates through `pickle_str_len` + `pickle_str_get`.

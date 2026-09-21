@@ -1240,9 +1240,12 @@ impl<'a> Parser<'a> {
     }
 
     fn scan_for_header_is_iteration(&self) -> bool {
-        // Look for a top-level `in` token inside the for header.
+        // Look for a top-level `in` token inside the for header. By the time
+        // this runs, `for (` are consumed, so the first remaining token may
+        // open a tuple-pattern group `((k, v) in m)` — that group's parens
+        // nest inward and must NOT be mistaken for the header closer.
         let mut depth = 0usize;
-        let mut i = self.pos + 1; // skip `for`
+        let mut i = self.pos;
         let toks = &self.tokens;
         loop {
             let t = &toks[i.min(toks.len() - 1)];
@@ -1254,7 +1257,7 @@ impl<'a> Parser<'a> {
                     }
                     depth -= 1;
                 }
-                Tok::In if depth == 0 => return true,
+                Tok::In => return true,
                 Tok::Newline if depth == 0 => return false,
                 Tok::Eof => return false,
                 _ => {}

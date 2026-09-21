@@ -1,0 +1,14 @@
+fn main() {
+    let m = {"a": 1, "b": 2, "c": 3}
+    var cat = ""
+    var sum = 0
+    for ((k, v) in m) {
+        cat += k
+        sum += v
+    }
+    println("entries {cat} sum={sum}")
+    let words = {"x": "v1", "y": "v2"}
+    for ((key, value) in words) {
+        println("{key}={value}")
+    }
+}

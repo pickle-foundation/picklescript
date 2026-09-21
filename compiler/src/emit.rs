@@ -3615,6 +3615,39 @@ fn build_lambda_body(
         body: &Block,
         span: Span,
     ) -> Result<(), ()> {
+        let seq_ot = match self.ty_of(&sequence.span) {
+            Some(Ty::Ref(inner)) => Some((*inner).clone()),
+            other => other,
+        };
+        // `for ((k, v) in m)` over a `Map<string, V>`: bind both the key and
+        // the value per trip.
+        if let Some(Ty::Map(k, v)) = &seq_ot {
+            if k.as_ref() != &Ty::String {
+                return self.bad(sequence.span, "map keys must be `string` values");
+            }
+            if let Pattern::Tuple(parts) = pattern {
+                if parts.len() != 2 {
+                    return self.bad(span, "map entries pattern must bind exactly two names `(k, v)`");
+                }
+                let kname = match &parts[0] {
+                    Pattern::Binding { name, .. } => name.clone(),
+                    _ => return self.bad(span, "map entries sub-patterns must be plain names"),
+                };
+                let vname = match &parts[1] {
+                    Pattern::Binding { name, .. } => name.clone(),
+                    _ => return self.bad(span, "map entries sub-patterns must be plain names"),
+                };
+                let map_t = self.expr(sequence)?;
+                return self.for_in_map_entries(
+                    &kname,
+                    &vname,
+                    map_t,
+                    v.as_ref().clone(),
+                    body,
+                    span,
+                );
+            }
+        }
         let Pattern::Binding { name, .. } = pattern else {
             return self.bad(span, "iteration patterns other than a binding are not lowered yet");
         };
@@ -3794,6 +3827,123 @@ fn build_lambda_body(
         let elem_slot = self.new_slot(elem_ir);
         self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
         self.declare(name, elem_slot);
+        self.block_body_only(body)?;
+        self.pop_scope();
+        self.loops.pop();
+        self.term(IrTerm::Branch { target: next_id });
+        self.cur = next_id;
+        let c = self.load(idx_slot);
+        let one = self.temp();
+        self.instr(IrInstr::Const {
+            dst: one,
+            c: IrConst::Int(1),
+        });
+        let nxt = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: nxt,
+            op: IrBinOp::Add,
+            a: c,
+            b: one,
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = end_id;
+        Ok(())
+    }
+
+    /// `for ((k, v) in m)` over a `Map<string, V>`: iterates the keys list and
+    /// the values list in lockstep — both `pickle_map_keys` /
+    /// `pickle_map_values` snapshots walk the same internal entry array, so
+    /// index i of the keys list pairs with index i of the values list. Keys
+    /// are pass-through string pointers; values unbox per `elem_rep`.
+    fn for_in_map_entries(
+        &mut self,
+        kname: &str,
+        vname: &str,
+        map_t: Temp,
+        vty: Ty,
+        body: &Block,
+        span: Span,
+    ) -> Result<(), ()> {
+        let vrep = self.elem_rep(&vty, span)?;
+        let v_ir = elem_ir(&vty);
+        let map_slot = self.new_slot(IrTy::Ptr);
+        let keys_slot = self.new_slot(IrTy::Ptr);
+        let vals_slot = self.new_slot(IrTy::Ptr);
+        let idx_slot = self.new_slot(IrTy::Int);
+        let len_slot = self.new_slot(IrTy::Int);
+        self.instr(IrInstr::StoreSlot { slot: map_slot, v: map_t });
+        let map_l = self.load(map_slot);
+        let keys_t =
+            self.extern_call_t1("pickle_map_keys", vec![IrTy::Ptr], IrTy::Ptr, vec![map_l])?;
+        let vals_t =
+            self.extern_call_t1("pickle_map_values", vec![IrTy::Ptr], IrTy::Ptr, vec![map_l])?;
+        self.instr(IrInstr::StoreSlot { slot: keys_slot, v: keys_t });
+        self.instr(IrInstr::StoreSlot { slot: vals_slot, v: vals_t });
+        let zero = self.temp();
+        self.instr(IrInstr::Const {
+            dst: zero,
+            c: IrConst::Int(0),
+        });
+        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        let keys_l = self.load(keys_slot);
+        let len_t =
+            self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![keys_l])?;
+        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+
+        let cond_id = self.new_block();
+        let body_id = self.new_block();
+        let next_id = self.new_block();
+        let end_id = self.new_block();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = cond_id;
+        let cur_t = self.load(idx_slot);
+        let end_l = self.load(len_slot);
+        let cmp = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: cmp,
+            op: IrBinOp::Lt,
+            a: cur_t,
+            b: end_l,
+        });
+        self.term(IrTerm::BranchIf {
+            cond: cmp,
+            then: body_id,
+            else_: end_id,
+        });
+        self.cur = body_id;
+        self.loops.push(LoopCtx {
+            continue_target: next_id,
+            break_target: end_id,
+        });
+        self.push_scope();
+        let i = self.load(idx_slot);
+        let keys_l = self.load(keys_slot);
+        let vals_l = self.load(vals_slot);
+        let kraw = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![keys_l, i],
+        )?;
+        let k_slot = self.new_slot(IrTy::Ptr);
+        self.instr(IrInstr::StoreSlot { slot: k_slot, v: kraw });
+        self.declare(kname, k_slot);
+        let vraw = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![vals_l, i],
+        )?;
+        let v = match vrep {
+            ElemRep::Scalar(_, unbox_sym, _) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], v_ir, vec![vraw])?
+            }
+            ElemRep::Ptr => vraw,
+        };
+        let v_slot = self.new_slot(v_ir);
+        self.instr(IrInstr::StoreSlot { slot: v_slot, v });
+        self.declare(vname, v_slot);
         self.block_body_only(body)?;
         self.pop_scope();
         self.loops.pop();
