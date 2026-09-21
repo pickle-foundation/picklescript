@@ -1577,6 +1577,91 @@ impl<'a> Emitter<'a> {
         None
     }
 
+    /// The nearest explicit-primary-constructor ancestor of `name` (the
+    /// deepest class in the chain that declares a primary `constructor`),
+    /// together with the absolute end slot of that ancestor's own instance
+    /// fields. Classes with only *named* constructors are still synthesized,
+    /// so they never count as explicit here.
+    fn nearest_explicit_primary_ancestor(&self, name: &str) -> Option<(String, usize)> {
+        let mut found = None;
+        let mut base = 0usize;
+        for cname in self.ancestry(name) {
+            let own = self.own_instance_fields(&cname);
+            if self
+                .table_of(&cname)
+                .map(|t| t.ctor.is_some())
+                .unwrap_or(false)
+            {
+                found = Some((cname.to_string(), base + own.len()));
+            }
+            base += own.len();
+        }
+        found
+    }
+
+    /// Parameter metadata for a synthesized constructor of `name`, in
+    /// parameter order: the absolute instance-field slot each parameter must
+    /// be stored into (`None` = a leading explicit-ancestor constructor
+    /// parameter, forwarded to the chained `super(...)`), plus the nearest
+    /// explicit-primary ancestor to chain into and how many leading
+    /// parameters that chain consumes. With no explicit-primary ancestor the
+    /// whole chain's uninitialized fields become the parameters (one per
+    /// field slot) and nothing is chained.
+    fn synthesized_ctor_param_meta(
+        &self,
+        name: &str,
+    ) -> (Vec<Option<usize>>, Option<(String, usize)>) {
+        let ancestry = self.ancestry(name);
+        let ancestor = self.nearest_explicit_primary_ancestor(name);
+        let empty: Vec<usize> = self
+            .collect_instance_inits(name)
+            .iter()
+            .map(|(i, _)| *i)
+            .collect();
+        let mut slots = Vec::new();
+        let mut cparam_count = 0usize;
+        let cut_base = match &ancestor {
+            Some((a, end)) => {
+                if let Some(t) = self.table_of(a) {
+                    cparam_count = t.ctor.as_ref().map(|c| c.params.len()).unwrap_or(0);
+                    slots.extend(std::iter::repeat_n(None, cparam_count));
+                }
+                *end
+            }
+            None => 0usize,
+        };
+        let mut base = 0usize;
+        for cname in &ancestry {
+            let own = self.own_instance_fields(cname);
+            // Only classes strictly below the nearest explicit ancestor
+            // contribute field parameters (its own fields are assigned by its
+            // constructor body); classes above it flow through that
+            // ancestor's own chain.
+            if ancestor.is_none() || base >= cut_base {
+                for (i, _) in own.iter().enumerate() {
+                    if !empty.contains(&(base + i)) {
+                        slots.push(Some(base + i));
+                    }
+                }
+            }
+            base += own.len();
+        }
+        let chain = ancestor.map(|(a, _)| (a, cparam_count));
+        (slots, chain)
+    }
+
+    /// The generic-plan name behind `name`: for a materialized instantiation
+    /// like `Counter<int>` the plan name `Counter` (declarations and
+    /// initializers live under the plan key); otherwise `name` unchanged.
+    /// Generic plan names never contain `<`, so the first `<` reliably splits
+    /// the instantiation suffix off.
+    fn plan_name<'b>(&self, name: &'b str) -> &'b str {
+        match name.find('<') {
+            Some(i) => &name[..i],
+            None => name,
+        }
+    }
+
     /// Instance-field initializers for `name` and its ancestors, root first,
     /// recorded at absolute slot numbers.
     fn collect_instance_inits(&self, name: &str) -> Vec<(usize, &'a Expr)> {
@@ -1584,11 +1669,12 @@ impl<'a> Emitter<'a> {
         let mut base = 0usize;
         for cname in self.ancestry(name) {
             let own = self.own_instance_fields(&cname);
+            let decl = self.plan_name(&cname);
             let members = self
                 .class_decls
-                .get(&cname)
+                .get(decl)
                 .map(|d| &d.members[..])
-                .or_else(|| self.struct_members.get(&cname).copied());
+                .or_else(|| self.struct_members.get(decl).copied());
             if let Some(members) = members {
                 for m in members {
                     if let ClassMember::Field {
@@ -1613,11 +1699,12 @@ impl<'a> Emitter<'a> {
     fn collect_init_blocks(&self, name: &str) -> Vec<&'a Block> {
         let mut out = Vec::new();
         for cname in self.ancestry(name) {
+            let decl = self.plan_name(&cname);
             let members = self
                 .class_decls
-                .get(&cname)
+                .get(decl)
                 .map(|d| &d.members[..])
-                .or_else(|| self.struct_members.get(&cname).copied());
+                .or_else(|| self.struct_members.get(decl).copied());
             if let Some(members) = members {
                 for m in members {
                     if let ClassMember::Init(b) = m {
@@ -1948,13 +2035,14 @@ impl<'a> Emitter<'a> {
             ClassMember::Constructor(cd) if cd.name.is_none() => Some(cd),
             _ => None,
         });
-        // Explicit constructors in a hierarchy need `super(...)` chaining:
-        // a class with a constructor whose parent declares an explicit
-        // constructor must open its body with a `super(...)` delegation, and a
-        // class that relies on the synthesized constructor cannot sit below a
-        // class that declares an explicit constructor (its body would never
-        // run). Named constructors delegate through their class's primary
-        // constructor, so they are fine wherever the primary is.
+        // Explicit constructors in a hierarchy need `super(...)` chaining: a
+        // class with a constructor whose parent declares an explicit
+        // constructor must open its body with a `super(...)` delegation. Named
+        // constructors delegate through their class's primary constructor, so
+        // they are fine wherever the primary is. A class that relies on the
+        // synthesized constructor below an explicit-primary ancestor chains
+        // into it with a synthesized `super(...)` (see
+        // `synthesized_ctor_param_meta`).
         let parent_explicit = parent
             .as_ref()
             .map(|p| self.table_of(p).map(|pt| pt.ctor.is_some()).unwrap_or(false))
@@ -1966,24 +2054,6 @@ impl<'a> Emitter<'a> {
                     format!(
                         "`{name}` constructor must call `super(...)` first to chain into `{}`",
                         parent.as_deref().unwrap_or("")
-                    ),
-                );
-                return;
-            }
-        } else if parent.is_some() {
-            // Synthesized constructor below an explicit-constructor ancestor
-            // would silently skip that ancestor's constructor body.
-            let ancestry = self.ancestry(name);
-            let explicit_ancestor = ancestry.iter().rev().skip(1).find(|a| {
-                self.table_of(a)
-                    .map(|t| t.ctor.is_some() || !t.named_ctors.is_empty())
-                    .unwrap_or(false)
-            });
-            if explicit_ancestor.is_some() {
-                let _: Result<(), ()> = self.bad(
-                    span,
-                    format!(
-                        "`{name}` cannot use the synthesized constructor below a class that declares explicit constructors (not lowered yet)"
                     ),
                 );
                 return;
@@ -3001,12 +3071,26 @@ fn build_lambda_body(
                 .map(|p| (p.name.clone(), p.ty.clone(), p.span, None))
                 .collect()
         } else {
-            ifields
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !inits.iter().any(|(si, _)| si == i))
-                .map(|(i, f)| (f.name.clone(), f.ty.clone(), f.span, Some(i)))
-                .collect()
+            // Synthesized constructor: the nearest explicit-primary ancestor's
+            // parameters (forwarded to the chained `super(...)`, `None`) then
+            // the uninitialized instance fields strictly below that ancestor
+            // (`Some(absolute field slot)`).
+            let (slots, _chain) = self.synthesized_ctor_param_meta(&table.name);
+            let mut out = Vec::new();
+            if let Some((anc, _)) = self.nearest_explicit_primary_ancestor(&table.name) {
+                if let Some(t) = self.table_of(&anc) {
+                    if let Some(c) = &t.ctor {
+                        for p in &c.params {
+                            out.push((p.name.clone(), p.ty.clone(), p.span, None));
+                        }
+                    }
+                }
+            }
+            for slot in slots.iter().flatten() {
+                let f = &ifields[*slot];
+                out.push((f.name.clone(), f.ty.clone(), f.span, Some(*slot)));
+            }
+            out
         };
         for (i, (name, ty, _span, _)) in params.iter().enumerate() {
             let ir = self.map_ty(ty, table.span).unwrap_or(IrTy::Ptr);
@@ -3083,6 +3167,17 @@ fn build_lambda_body(
                 self.emit_ctor_block(&cd.body)?;
             }
         }
+        // A class with no explicit constructor that sits below an
+        // explicit-primary ancestor chains into it via a synthesized
+        // `super(...)`: the leading constructor parameters are forwarded and
+        // the ancestor's body (and any further chain) runs inline.
+        if ctor.is_none() {
+            if let Some((ancestor, count)) =
+                self.synthesized_ctor_param_meta(&table.name).1
+            {
+                self.emit_synthesized_super_chain(&ancestor, count)?;
+            }
+        }
         for b in init_blocks {
             self.emit_ctor_block(b)?;
         }
@@ -3149,6 +3244,31 @@ fn build_lambda_body(
         self.emit_ctor_chain(&parent, &pt, &vals, delegation.span)
     }
 
+    /// Lower the synthesized `super(...)` of a class with no explicit
+    /// constructor that sits below an explicit-primary ancestor: forward the
+    /// first `count` constructor parameters (already in the function's local
+    /// slots) to the ancestor's inlined constructor chain.
+    fn emit_synthesized_super_chain(
+        &mut self,
+        ancestor: &str,
+        count: usize,
+    ) -> Result<(), ()> {
+        let Some(at) = self.table_of(ancestor) else {
+            return Ok(());
+        };
+        let cparams: Vec<ParamInfo> = at
+            .ctor
+            .as_ref()
+            .map(|c| c.params.clone())
+            .unwrap_or_default();
+        let mut vals = Vec::new();
+        for (i, p) in cparams.iter().take(count).enumerate() {
+            let v = self.load(Slot(i as u32));
+            vals.push((v, p.ty.clone(), p.span));
+        }
+        self.emit_ctor_chain(ancestor, &at, &vals, at.span)
+    }
+
     /// Run the constructor chain for class `cname`, whose constructor receives
     /// the already-evaluated `vals`. An explicit constructor has its
     /// parameters bound to the values (option-wrapped where the parameter is a
@@ -3213,27 +3333,20 @@ fn build_lambda_body(
                 self.emit_ctor_block(&cd.body)?;
             }
         } else {
-            // Synthesized parent: store the arguments into its uninitialized
-            // instance fields, in absolute (parent-first) slot order.
-            let ifields = self.all_instance_fields(cname);
-            let initialized: Vec<usize> = self
-                .collect_instance_inits(cname)
-                .iter()
-                .map(|(i, _)| *i)
-                .collect();
-            let uninit: Vec<(usize, &FieldInfo)> = ifields
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !initialized.contains(i))
-                .collect();
-            if uninit.len() != vals.len() {
+            // Synthesized parent: the arguments are the nearest
+            // explicit-primary ancestor's constructor parameters (forwarded
+            // up its chain) followed by the uninitialized instance fields
+            // strictly below that ancestor (stored into their absolute
+            // parent-first slots).
+            let (slots, chain) = self.synthesized_ctor_param_meta(cname);
+            if slots.len() != vals.len() {
                 self.pop_scope();
                 return self.bad(
                     span,
                     format!(
                         "`super(...)` passes {} argument(s) but `{cname}` expects {}",
                         vals.len(),
-                        uninit.len()
+                        slots.len()
                     ),
                 );
             }
@@ -3242,11 +3355,22 @@ fn build_lambda_body(
                 return self.bad(span, "`this` is not available in the constructor chain");
             };
             let this = self.load(this_slot);
-            for ((i, f), (v, ty, vspan)) in uninit.iter().zip(vals.iter()) {
+            if let Some((ancestor, count)) = &chain {
+                // Forward the leading constructor parameters into the nearest
+                // explicit-primary ancestor's chain.
+                let cand_vals = vals[..*count].to_vec();
+                if let Some(at) = self.table_of(ancestor) {
+                    self.emit_ctor_chain(ancestor, &at, &cand_vals, span)?;
+                }
+            }
+            let ifields = self.all_instance_fields(cname);
+            for (slot, (v, ty, vspan)) in slots.iter().zip(vals.iter()) {
+                let Some(field_slot) = slot else { continue };
+                let f = &ifields[*field_slot];
                 let rep = self.elem_rep(&f.ty, f.span)?;
                 let packed = self.pack_for_pointer_boundary(&rep, *v, ty, *vspan)?;
                 let boxed = self.box_for_store(&rep, packed, elem_ir(&f.ty))?;
-                self.field_store(this, *i as i64, &f.ty, boxed);
+                self.field_store(this, *field_slot as i64, &f.ty, boxed);
             }
         }
         self.pop_scope();

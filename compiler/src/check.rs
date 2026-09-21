@@ -896,26 +896,25 @@ impl<'a> Checker<'a> {
     }
 
     /// Parameter types of the constructor a named constructor delegates to:
-    /// the explicit primary constructor, or the synthesized one over the fields
-    /// without initializers.
+    /// the explicit primary constructor, or the synthesized one over the
+    /// chain (see `synthesized_ctor_param_tys`).
     fn primary_ctor_param_tys(&self, table: &ClassTable) -> Vec<Ty> {
         if let Some(c) = &table.ctor {
             c.params.iter().map(|p| p.ty.clone()).collect()
         } else {
-            let initialized = self.initialized_fields(&table.name);
-            table
-                .fields
-                .iter()
-                .filter(|f| !f.is_static && !initialized.contains(&f.name))
-                .map(|f| f.ty.clone())
-                .collect()
+            self.synthesized_ctor_param_tys(&table.name)
         }
     }
 
-    /// Synthesized-constructor parameter types for `name`: every non-static
-    /// field without a declared initializer, superclass fields first (the same
-    /// order the emitter lays out instance slots and constructor params).
-    fn synthesized_ctor_param_tys(&self, name: &str) -> Vec<Ty> {
+    /// The nearest explicit-primary-constructor ancestor of `name` (the
+    /// deepest class in the chain that declares a primary `constructor`),
+    /// together with the number of instance-field slots belonging to classes
+    /// up to and including that ancestor. Classes with only *named*
+    /// constructors are still synthesized, so they never count as explicit.
+    fn nearest_explicit_primary_field_count(&self, name: &str) -> Option<(String, usize)> {
+        // Ancestry, rootmost first, so the recorded slot is the absolute end
+        // slot of the ancestor's own instance fields (the same layout the
+        // emitter computes in `nearest_explicit_primary_ancestor`).
         let mut chain = vec![name.to_string()];
         let mut cur = name.to_string();
         while let Some(p) = self.class_table(&cur).and_then(|t| {
@@ -930,17 +929,71 @@ impl<'a> Checker<'a> {
             }
         }
         chain.reverse();
-        let mut out = Vec::new();
+        let mut found = None;
+        let mut count = 0usize;
         for cname in chain {
-            let initialized = self.initialized_fields(&cname);
-            if let Some(t) = self.class_table(&cname) {
-                for f in t
-                    .fields
-                    .iter()
-                    .filter(|f| !f.is_static && !initialized.contains(&f.name))
-                {
-                    out.push(f.ty.clone());
+            let t = self.class_table(&cname);
+            let own = t
+                .as_ref()
+                .map(|t| t.fields.iter().filter(|f| !f.is_static).count())
+                .unwrap_or(0);
+            if t.as_ref().map(|t| t.ctor.is_some()).unwrap_or(false) {
+                found = Some((cname.clone(), count + own));
+            }
+            count += own;
+        }
+        found
+    }
+
+    /// Synthesized-constructor parameter types for `name`: the nearest
+    /// explicit-primary ancestor's constructor parameters (forwarded through
+    /// the synthesized `super(...)`) followed by every non-static field
+    /// strictly below that ancestor without a declared initializer. With no
+    /// such ancestor, the whole chain's uninitialized fields become the
+    /// parameters (superclass fields first, matching the emitter's
+    /// instance-slot order).
+    fn synthesized_ctor_param_tys(&self, name: &str) -> Vec<Ty> {
+        let mut out = Vec::new();
+        let cut = match self.nearest_explicit_primary_field_count(name) {
+            Some((a, cut)) => {
+                if let Some(t) = self.class_table(&a) {
+                    if let Some(c) = &t.ctor {
+                        out.extend(c.params.iter().map(|p| p.ty.clone()));
+                    }
                 }
+                cut
+            }
+            None => 0usize,
+        };
+        let mut chain = vec![name.to_string()];
+        let mut cur = name.to_string();
+        while let Some(p) = self.class_table(&cur).and_then(|t| {
+            t.extends
+                .as_ref()
+                .and_then(|e| e.named().map(str::to_string))
+        }) {
+            chain.push(p.clone());
+            cur = p;
+            if chain.len() > 64 {
+                break;
+            }
+        }
+        chain.reverse();
+        let mut count = 0usize;
+        for cname in chain {
+            if let Some(t) = self.class_table(&cname) {
+                let own = t.fields.iter().filter(|f| !f.is_static).count();
+                if count >= cut {
+                    let initialized = self.initialized_fields(&cname);
+                    for f in t
+                        .fields
+                        .iter()
+                        .filter(|f| !f.is_static && !initialized.contains(&f.name))
+                    {
+                        out.push(f.ty.clone());
+                    }
+                }
+                count += own;
             }
         }
         out

@@ -264,8 +264,15 @@ Lowering rules:
   Named constructors lowdown unchanged: they delegate via `this(...)` to the
   class's primary constructor, which absorbs the chain. Validation: an explicit
   constructor whose parent declares an explicit constructor must start with
-  `super(...)` (else E0900), and a class with no explicit primary constructor
-  cannot sit below an ancestor that declares one.
+  `super(...)` (else E0900). A class with no explicit primary constructor may
+  still sit below an ancestor that declares one: its **synthesized constructor
+  forwards** the nearest explicit ancestor's constructor parameters `super(...)`
+  from the top (leading slots), and then takes only the uninitialized instance
+  fields strictly below that ancestor (initialized ones are filled by their
+  field initializer first). The example chain in `ctor_test.pkl` covers a
+  synthesized leaf one level below an explicit-primary base, a sibling that
+  mixes initialized/uninitialized fields, and a synthesized leaf several levels
+  below through synthesized intermediates.
 - A method redefined lower down with `override fn` is called through a
   **virtual dispatch cascade**. `build_virtual_dispatch` runs once after all
   classes register and, for every static receiver class, records the

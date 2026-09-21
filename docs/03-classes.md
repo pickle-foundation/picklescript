@@ -100,9 +100,14 @@ Rules:
 > gets its parameters bound and its body run inlined, a synthesized parent gets
 > its uninitialized fields filled — recursing across the whole hierarchy.
 > Named constructors in a hierarchy delegate through their class's primary
-> constructor, which handles the chain. A class that relies on the synthesized
-> constructor still cannot sit below a class that declares an explicit
-> constructor. Static fields and `const` members are inherited: `Child.parent
+> constructor, which handles the chain. A synthesized constructor also works
+> below a class that declares an explicit constructor: it forwards the nearest
+> explicit ancestor's constructor parameters through an implicit `super(...)`
+> chain and then takes every uninitialized instance field strictly below that
+> ancestor (initialized fields are skipped and filled by their field
+> initializer). It recurses across the whole hierarchy, so a synthesized class
+> several levels below an explicit-constructor ancestor chains down to it.
+> Static fields and `const` members are inherited: `Child.parent
 > field`/`Child.PARENT_CONST` resolves the ancestor that declares them (an own
 > field of the same name wins and shares the declaring class's runtime cell).
 > An instance method used as a bound value (`let f = c.m`) dispatches on the

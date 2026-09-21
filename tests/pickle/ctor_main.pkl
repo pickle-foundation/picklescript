@@ -1,0 +1,34 @@
+class SynthBelowBase {
+    var g: int = 100
+
+    constructor(g: int) {
+        this.g = this.g + g
+    }
+}
+
+class SynthLeaf extends SynthBelowBase {
+    var l: int
+}
+
+class AutoLeaf extends SynthBelowBase {
+    var a: int = 5
+    var b: int
+}
+
+class DeepMid extends SynthBelowBase {
+    var m: int = 1
+}
+
+class DeepLeaf extends DeepMid {
+    var d: int
+}
+
+fn main() {
+    var s = SynthLeaf(5, 7)
+    println(s.g, s.l)
+    var t = AutoLeaf(2, 9)
+    println(t.g, t.a, t.b)
+    var u = DeepLeaf(3, 4)
+    println(u.g, u.m, u.d)
+    println(s is SynthBelowBase, t is SynthBelowBase, u is SynthBelowBase)
+}

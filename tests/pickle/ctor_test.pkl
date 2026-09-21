@@ -73,6 +73,31 @@ class UnitChild extends UnitBase {
     }
 }
 
+class SynthBelowBase {
+    var g: int = 100
+
+    constructor(g: int) {
+        this.g = this.g + g
+    }
+}
+
+class SynthLeaf extends SynthBelowBase {
+    var l: int
+}
+
+class AutoLeaf extends SynthBelowBase {
+    var a: int = 5
+    var b: int
+}
+
+class DeepMid extends SynthBelowBase {
+    var m: int = 1
+}
+
+class DeepLeaf extends DeepMid {
+    var d: int
+}
+
 class NamedBox {
     var x: int
     var y: int
@@ -123,6 +148,26 @@ describe("constructor super chaining", {
         let u = UnitChild(4)
         expect(u.ready).toBe(true)
         expect(u.tag).toBe(4)
+    })
+
+    test("synthesized ctor below an explicit-primary ancestor forwards params", {
+        let s = SynthLeaf(5, 7)
+        expect(s.g).toBe(105)
+        expect(s.l).toBe(7)
+    })
+
+    test("synthesized ctor keeps sibling field initializers below explicit ancestor", {
+        let s = AutoLeaf(2, 9)
+        expect(s.g).toBe(102)
+        expect(s.a).toBe(5)
+        expect(s.b).toBe(9)
+    })
+
+    test("synthesized ctor chains down several levels to the explicit ancestor", {
+        let s = DeepLeaf(3, 4)
+        expect(s.g).toBe(103)
+        expect(s.m).toBe(1)
+        expect(s.d).toBe(4)
     })
 
     test("named ctor delegates through the primary and into the chain", {
