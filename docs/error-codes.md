@@ -86,7 +86,10 @@ class P { deinit {}  deinit {} }
 ### E0210 · unknown type
 
 A type name does not resolve to a declared class, struct, enum, interface,
-generic parameter, or built-in type.
+generic parameter, or built-in type. Name collection is two-pass, so a type
+declared later in the file (including self- and mutually recursive type
+graphs) resolves fine; this error only fires for names that are never
+declared.
 
 ```
 fn f(x: Widget) {}

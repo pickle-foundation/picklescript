@@ -204,6 +204,122 @@ impl Tok {
         }
     }
 
+    /// Stable kind name for the canonical `pickle lex` dump. The self-hosted
+    /// lexer must emit the same names, byte for byte, for differential testing.
+    pub fn canonical(&self) -> &'static str {
+        use Tok::*;
+        match self {
+            Ident(_) => "Ident",
+            Number => "Number",
+            Char(_) => "Char",
+            Str(_) => "Str",
+            Module => "Module",
+            Import => "Import",
+            Use => "Use",
+            Class => "Class",
+            Struct => "Struct",
+            Enum => "Enum",
+            Interface => "Interface",
+            Fn => "Fn",
+            Constructor => "Constructor",
+            Property => "Property",
+            Get => "Get",
+            Set => "Set",
+            Static => "Static",
+            Override => "Override",
+            Let => "Let",
+            Var => "Var",
+            Const => "Const",
+            Public => "Public",
+            Private => "Private",
+            Protected => "Protected",
+            If => "If",
+            Else => "Else",
+            While => "While",
+            For => "For",
+            In => "In",
+            Break => "Break",
+            Continue => "Continue",
+            Return => "Return",
+            Match => "Match",
+            Case => "Case",
+            True => "True",
+            False => "False",
+            None => "None",
+            Async => "Async",
+            Await => "Await",
+            Task => "Task",
+            Channel => "Channel",
+            Unsafe => "Unsafe",
+            Extends => "Extends",
+            Implements => "Implements",
+            Is => "Is",
+            As => "As",
+            This => "This",
+            Super => "Super",
+            Init => "Init",
+            Deinit => "Deinit",
+            Operator => "Operator",
+            LParen => "LParen",
+            RParen => "RParen",
+            LBrace => "LBrace",
+            RBrace => "RBrace",
+            LBracket => "LBracket",
+            RBracket => "RBracket",
+            Comma => "Comma",
+            Dot => "Dot",
+            Colon => "Colon",
+            ColonColon => "ColonColon",
+            Semicolon => "Semicolon",
+            Arrow => "Arrow",
+            FatArrow => "FatArrow",
+            Assign => "Assign",
+            PlusEq => "PlusEq",
+            MinusEq => "MinusEq",
+            StarEq => "StarEq",
+            SlashEq => "SlashEq",
+            PercentEq => "PercentEq",
+            ShlEq => "ShlEq",
+            ShrEq => "ShrEq",
+            AndEq => "AndEq",
+            OrEq => "OrEq",
+            XorEq => "XorEq",
+            Plus => "Plus",
+            Minus => "Minus",
+            Star => "Star",
+            Slash => "Slash",
+            Percent => "Percent",
+            StarStar => "StarStar",
+            Bang => "Bang",
+            Tilde => "Tilde",
+            Amp => "Amp",
+            Pipe => "Pipe",
+            Caret => "Caret",
+            Shl => "Shl",
+            Shr => "Shr",
+            EqEq => "EqEq",
+            NotEq => "NotEq",
+            Lt => "Lt",
+            Le => "Le",
+            Gt => "Gt",
+            Ge => "Ge",
+            AndAnd => "AndAnd",
+            OrOr => "OrOr",
+            Question => "Question",
+            QuestionDot => "QuestionDot",
+            QuestionQuestion => "QuestionQuestion",
+            QuestionColon => "QuestionColon",
+            Range => "Range",
+            RangeIncl => "RangeIncl",
+            SendOp => "SendOp",
+            Ellipsis => "Ellipsis",
+            At => "At",
+            Hash => "Hash",
+            Newline => "Newline",
+            Eof => "Eof",
+        }
+    }
+
     /// Look up a keyword by its source text. Compiles to a jump table rather
     /// than a linear scan.
     pub fn keyword(s: &str) -> Option<Tok> {
@@ -323,6 +439,129 @@ impl LexedToken {
             t.data.is_float = text.contains('.') || text.contains('e') || text.contains('E');
         }
         t
+    }
+
+    /// Canonical single-line dump for `pickle lex`. The self-hosted lexer
+    /// reproduces this string byte-for-byte; the differential test diffs the
+    /// output of `pickle lex` on both compilers, so the format is the
+    /// serialized contract that `compiler-selfhost/lexer/` must match.
+    ///
+    /// Format: `Kind start:end field=value ...`, one line per token.
+    /// - `Ident`   -> `text="..."` (escaped)
+    /// - `Number`  -> `text="..." suf="..."|"-" isf=0|1 int=-|<i128>`
+    /// - `Char`    -> `ch='x' int=-|<i128>`
+    /// - `Str`     -> space-separated segments: `T("...")` text,
+    ///   `E[tok; tok; ...]` interpolated expression token list
+    /// - any kind  -> trailing `doc="..."` when the token carries a doc comment
+    pub fn canonical(&self) -> String {
+        let mut out = String::new();
+        out.push_str(self.token.kind.canonical());
+        out.push(' ');
+        out.push_str(&self.token.span.start.to_string());
+        out.push(':');
+        out.push_str(&self.token.span.end.to_string());
+        match &self.token.kind {
+            Tok::Ident(name) => {
+                out.push_str(" text=");
+                out.push_str(&canonical_escape(name));
+            }
+            Tok::Number => {
+                out.push_str(" text=");
+                out.push_str(&canonical_escape(&self.data.text));
+                out.push_str(" suf=");
+                match &self.data.suffix {
+                    Some(s) => out.push_str(&canonical_escape(s)),
+                    None => out.push('-'),
+                }
+                out.push_str(" isf=");
+                out.push(if self.data.is_float { '1' } else { '0' });
+                out.push_str(" int=");
+                match self.data.int {
+                    Some(v) => out.push_str(&v.to_string()),
+                    None => out.push('-'),
+                }
+            }
+            Tok::Char(c) => {
+                out.push_str(" ch=");
+                out.push_str(&canonical_escape_char(*c));
+                out.push_str(" int=");
+                match self.data.int {
+                    Some(v) => out.push_str(&v.to_string()),
+                    None => out.push('-'),
+                }
+            }
+            Tok::Str(lit) => {
+                for seg in &lit.segments {
+                    out.push(' ');
+                    canonical_strseg(&mut out, seg);
+                }
+            }
+            _ => {}
+        }
+        if let Some(doc) = &self.data.doc {
+            out.push_str(" doc=");
+            out.push_str(&canonical_escape(doc));
+        }
+        out
+    }
+}
+
+/// Quote `s` with `"`, escaping the characters that would break the
+/// one-token-per-line canonical format. The self-hosted lexer reimplements
+/// the same table so dumps diff cleanly.
+fn canonical_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn canonical_escape_char(c: char) -> String {
+    let mut out = String::with_capacity(6);
+    out.push('\'');
+    match c {
+        '\\' => out.push_str("\\\\"),
+        '\'' => out.push_str("\\'"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        _ => out.push(c),
+    }
+    out.push('\'');
+    out
+}
+
+/// Render one string-literal segment. `Text` segments quote their content;
+/// `Expr` segments embed the canonical one-line dumps of their nested tokens.
+fn canonical_strseg(out: &mut String, seg: &StrSeg) {
+    match seg {
+        StrSeg::Text { text } => {
+            out.push_str("T(");
+            out.push_str(&canonical_escape(text));
+            out.push(')');
+        }
+        StrSeg::Expr { tokens } => {
+            out.push_str("E[");
+            for (i, t) in tokens.iter().enumerate() {
+                if i > 0 {
+                    out.push_str("; ");
+                }
+                out.push_str(&t.canonical());
+            }
+            out.push(']');
+        }
     }
 }
 

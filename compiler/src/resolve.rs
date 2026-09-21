@@ -202,15 +202,23 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        // First pass: register every declared name and a shell (identity-only)
+        // entry for every type. Bodies are resolved in a later pass, by which
+        // point every type — declared earlier or later — is present, so type
+        // and payload references may be forward, self, mutually recursive,
+        // or cyclic.
         let mut nmap: HashMap<String, Span> = HashMap::new();
+        let mut pending_fn: Vec<(&FnDecl, bool)> = Vec::new();
+        let mut pending_const: Vec<&ConstDecl> = Vec::new();
+        let mut pending_kind: Vec<ItemKindDecl<'a>> = Vec::new();
         for item in &prog.items {
             let (name, kind) = match &item.kind {
                 ItemKind::Fn(f) => (f.name.clone(), None),
-                ItemKind::Class(c) => (c.name.clone(), Some(("class", ItemKindDecl::Class(c)))),
-                ItemKind::Struct(s) => (s.name.clone(), Some(("struct", ItemKindDecl::Struct(s)))),
-                ItemKind::Enum(e) => (e.name.clone(), Some(("enum", ItemKindDecl::Enum(e)))),
+                ItemKind::Class(c) => (c.name.clone(), Some(ItemKindDecl::Class(c))),
+                ItemKind::Struct(s) => (s.name.clone(), Some(ItemKindDecl::Struct(s))),
+                ItemKind::Enum(e) => (e.name.clone(), Some(ItemKindDecl::Enum(e))),
                 ItemKind::Interface(i) => {
-                    (i.name.clone(), Some(("interface", ItemKindDecl::Interface(i))))
+                    (i.name.clone(), Some(ItemKindDecl::Interface(i)))
                 }
                 ItemKind::Const(c) => (c.name.clone(), None),
                 ItemKind::Test(f) => (f.name.clone(), None),
@@ -225,17 +233,30 @@ impl<'a> Resolver<'a> {
             }
             nmap.insert(name, item.span);
 
-            match &item.kind {
-                ItemKind::Fn(f) => self.declare_fn(f, false),
-                ItemKind::Test(f) => self.declare_fn(f, true),
-                ItemKind::Const(c) => self.declare_const(c),
-                _ => {}
-            }
-            if let Some((_, k)) = kind {
-                self.declare_kind(k);
+            match kind {
+                Some(k) => {
+                    self.register_kind_shell(k);
+                    pending_kind.push(k);
+                }
+                None => match &item.kind {
+                    ItemKind::Fn(f) => pending_fn.push((f, false)),
+                    ItemKind::Test(f) => pending_fn.push((f, true)),
+                    ItemKind::Const(c) => pending_const.push(c),
+                    _ => unreachable!(),
+                },
             }
         }
-        let _ = prog;
+
+        // Second pass: resolve all bodies against the complete type table.
+        for (f, is_test) in pending_fn {
+            self.declare_fn(f, is_test);
+        }
+        for c in pending_const {
+            self.declare_const(c);
+        }
+        for k in pending_kind {
+            self.fill_kind(k);
+        }
 
         self.post_checks();
 
@@ -249,7 +270,7 @@ impl<'a> Resolver<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum ItemKindDecl<'a> {
     Class(&'a ClassDecl),
     Struct(&'a StructDecl),
@@ -258,12 +279,21 @@ enum ItemKindDecl<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn declare_kind(&mut self, k: ItemKindDecl<'a>) {
+    fn register_kind_shell(&mut self, k: ItemKindDecl<'a>) {
         match k {
-            ItemKindDecl::Class(c) => self.declare_class(c),
-            ItemKindDecl::Struct(s) => self.declare_struct(s),
-            ItemKindDecl::Enum(e) => self.declare_enum(e),
-            ItemKindDecl::Interface(i) => self.declare_interface(i),
+            ItemKindDecl::Class(c) => self.register_class_shell(c),
+            ItemKindDecl::Struct(s) => self.register_struct_shell(s),
+            ItemKindDecl::Enum(e) => self.register_enum_shell(e),
+            ItemKindDecl::Interface(i) => self.register_interface_shell(i),
+        }
+    }
+
+    fn fill_kind(&mut self, k: ItemKindDecl<'a>) {
+        match k {
+            ItemKindDecl::Class(c) => self.fill_class(c),
+            ItemKindDecl::Struct(s) => self.fill_struct(s),
+            ItemKindDecl::Enum(e) => self.fill_enum(e),
+            ItemKindDecl::Interface(i) => self.fill_interface(i),
         }
     }
 
@@ -795,7 +825,82 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_class(&mut self, c: &ClassDecl) {
+    /// Returns a skeleton `ClassTable` entry (identity + generics only).
+    /// Its body — `extends`, `implements`, fields, methods — is resolved in a
+    /// later pass (`fill_class`) once every type in the module is registered.
+    fn register_class_shell(&mut self, c: &ClassDecl) {
+        let generics: Vec<String> = c.generics.iter().map(|g| g.name.clone()).collect();
+        self.types.insert(
+            c.name.clone(),
+            TypeTableEntry::Class(ClassTable {
+                name: c.name.clone(),
+                span: c.span,
+                visibility: c.visibility,
+                generics,
+                extends: None,
+                implements: Vec::new(),
+                fields: Vec::new(),
+                methods: Vec::new(),
+                properties: Vec::new(),
+                ctor: None,
+                named_ctors: Vec::new(),
+                consts: Vec::new(),
+            }),
+        );
+    }
+
+    fn register_struct_shell(&mut self, s: &StructDecl) {
+        let generics: Vec<String> = s.generics.iter().map(|g| g.name.clone()).collect();
+        self.types.insert(
+            s.name.clone(),
+            TypeTableEntry::Struct(ClassTable {
+                name: s.name.clone(),
+                span: s.span,
+                visibility: s.visibility,
+                generics,
+                extends: None,
+                implements: Vec::new(),
+                fields: Vec::new(),
+                methods: Vec::new(),
+                properties: Vec::new(),
+                ctor: None,
+                named_ctors: Vec::new(),
+                consts: Vec::new(),
+            }),
+        );
+    }
+
+    fn register_enum_shell(&mut self, e: &EnumDecl) {
+        let generics: Vec<String> = e.generics.iter().map(|g| g.name.clone()).collect();
+        self.types.insert(
+            e.name.clone(),
+            TypeTableEntry::Enum(EnumTable {
+                name: e.name.clone(),
+                span: e.span,
+                visibility: e.visibility,
+                generics,
+                implements: Vec::new(),
+                variants: Vec::new(),
+            }),
+        );
+    }
+
+    fn register_interface_shell(&mut self, i: &InterfaceDecl) {
+        let generics: Vec<String> = i.generics.iter().map(|g| g.name.clone()).collect();
+        self.types.insert(
+            i.name.clone(),
+            TypeTableEntry::Interface(InterfaceTable {
+                name: i.name.clone(),
+                span: i.span,
+                visibility: i.visibility,
+                generics,
+                extends: Vec::new(),
+                members: Vec::new(),
+            }),
+        );
+    }
+
+    fn fill_class(&mut self, c: &ClassDecl) {
         let generics: Vec<String> = c.generics.iter().map(|g| g.name.clone()).collect();
         let extends = c.extends.as_ref().map(|e| self.resolve_ty(e, &generics));
         if let Some(t) = &extends {
@@ -812,26 +917,19 @@ impl<'a> Resolver<'a> {
             .map(|t| self.resolve_ty(t, &generics))
             .collect();
         let members = self.resolve_class_members(&c.members, &generics, &c.name);
-        self.types.insert(
-            c.name.clone(),
-            TypeTableEntry::Class(ClassTable {
-                name: c.name.clone(),
-                span: c.span,
-                visibility: c.visibility,
-                generics,
-                extends,
-                implements,
-                fields: members.fields,
-                methods: members.methods,
-                properties: members.properties,
-                ctor: members.ctor,
-                named_ctors: members.named_ctors,
-                consts: members.consts,
-            }),
-        );
+        if let Some(TypeTableEntry::Class(t)) = self.types.get_mut(&c.name) {
+            t.extends = extends;
+            t.implements = implements;
+            t.fields = members.fields;
+            t.methods = members.methods;
+            t.properties = members.properties;
+            t.ctor = members.ctor;
+            t.named_ctors = members.named_ctors;
+            t.consts = members.consts;
+        }
     }
 
-    fn declare_struct(&mut self, s: &StructDecl) {
+    fn fill_struct(&mut self, s: &StructDecl) {
         let generics: Vec<String> = s.generics.iter().map(|g| g.name.clone()).collect();
         let implements: Vec<Ty> = s
             .implements
@@ -839,39 +937,19 @@ impl<'a> Resolver<'a> {
             .map(|t| self.resolve_ty(t, &generics))
             .collect();
         let members = self.resolve_class_members(&s.members, &generics, &s.name);
-        self.types.insert(
-            s.name.clone(),
-            TypeTableEntry::Struct(ClassTable {
-                name: s.name.clone(),
-                span: s.span,
-                visibility: s.visibility,
-                generics,
-                extends: None,
-                implements,
-                fields: members.fields,
-                methods: members.methods,
-                properties: members.properties,
-                ctor: members.ctor,
-                named_ctors: members.named_ctors,
-                consts: members.consts,
-            }),
-        );
+        if let Some(TypeTableEntry::Struct(t)) = self.types.get_mut(&s.name) {
+            t.implements = implements;
+            t.fields = members.fields;
+            t.methods = members.methods;
+            t.properties = members.properties;
+            t.ctor = members.ctor;
+            t.named_ctors = members.named_ctors;
+            t.consts = members.consts;
+        }
     }
 
-    fn declare_enum(&mut self, e: &EnumDecl) {
+    fn fill_enum(&mut self, e: &EnumDecl) {
         let generics: Vec<String> = e.generics.iter().map(|g| g.name.clone()).collect();
-        // Register the type early so payloads can reference the enum itself.
-        self.types.insert(
-            e.name.clone(),
-            TypeTableEntry::Enum(EnumTable {
-                name: e.name.clone(),
-                span: e.span,
-                visibility: e.visibility,
-                generics: generics.clone(),
-                implements: Vec::new(),
-                variants: Vec::new(),
-            }),
-        );
         let implements: Vec<Ty> = e
             .implements
             .iter()
@@ -895,7 +973,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_interface(&mut self, i: &InterfaceDecl) {
+    fn fill_interface(&mut self, i: &InterfaceDecl) {
         let generics: Vec<String> = i.generics.iter().map(|g| g.name.clone()).collect();
         let extends: Vec<Ty> = i
             .extends
@@ -929,17 +1007,10 @@ impl<'a> Resolver<'a> {
                 },
             })
             .collect();
-        self.types.insert(
-            i.name.clone(),
-            TypeTableEntry::Interface(InterfaceTable {
-                name: i.name.clone(),
-                span: i.span,
-                visibility: i.visibility,
-                generics,
-                extends,
-                members,
-            }),
-        );
+        if let Some(TypeTableEntry::Interface(t)) = self.types.get_mut(&i.name) {
+            t.extends = extends;
+            t.members = members;
+        }
     }
 
     fn resolve_class_members(

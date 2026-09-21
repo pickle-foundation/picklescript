@@ -82,7 +82,12 @@ compiler is linked against `pickle-runtime`.
   declaration boundary so one session reports many errors.
 - **Resolver**: module graph → import graph; scope trees; binding of every
   identifier; visibility checks (private/protected); duplicate detection;
-  method override validation; generic parameter scopes.
+  method override validation; generic parameter scopes. Name collection is
+  **two-pass**: every declared name (and an identity/generics-only shell for
+  every class, struct, enum, and interface) is registered before any body is
+  resolved, so a body may reference a type declared earlier *or later* in the
+  file — type and payload references may be forward, self-referential,
+  mutually recursive, or cyclic.
 - **Type checker**: bottom-up inference with expected-type propagation,
   signature unification across calls, interface conformance checks, option
   flattening, `is`/`as` validation, operator method lookup, monomorphization
@@ -568,6 +573,13 @@ the above.
 - `pickle fmt`     — parse -> print canonical source (formatter).
 - `pickle check`   — parse + resolve + typecheck only (fast CI gate).
 - `pickle ast`     — dump AST.
+- `pickle lex`     — dump the canonical token stream, one token per line
+  (`Kind start:end` plus kind-specific payload fields: `text=`, `suf=`,
+  `isf=`, `int=`, `ch=`, `T("...")`/`E[tok; ...]` string segments, and a
+  trailing `doc=` for doc-comment trivia). Newline and Eof tokens are
+  included. The format is the serialized contract the self-hosted lexer
+  (`compiler-selfhost/lexer/`) reproduces byte-for-byte, so `pickle lex`
+  output on the Rust and self-hosted compilers diff cleanly.
 - `pickle ir`      — dump typed IR.
 - `pickle test`  — discover test modules under `tests/` (or a given path) and JIT-compile, run, report. Directory targets only pick up `*_test.pkl` / `*.test.pkl` files. Supports `test fn name()` and `test("desc", ...)`/`it` suites with `describe` groups and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks; `--filter` narrows by test-name substring (matches the desugared path, so `describe`/`test` names both filter). `#[tag("name")]` on a test item attaches test tags (repeatable); `--tag name` runs only tests carrying it (repeatable, any-tag match, AND-combined with `--filter`).
 - `pickle repl`    — incremental front end + JIT.

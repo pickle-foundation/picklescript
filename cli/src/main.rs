@@ -37,6 +37,13 @@ enum Command {
         /// Source file to parse
         file: PathBuf,
     },
+    /// Lex a module and print its canonical token stream, one token per line.
+    /// The format is the serialized contract the self-hosted lexer must match,
+    /// so `pickle lex` output on both compilers diffs cleanly.
+    Lex {
+        /// Source file to lex
+        file: PathBuf,
+    },
     /// Lower a checked module to PickleIR and print it
     Ir {
         /// Source file to lower
@@ -227,6 +234,23 @@ fn run() -> Result<()> {
             let (source, mut map, diags) = load(file)?;
             if let Some(out) = frontend(&file.display().to_string(), &source, &mut map, &diags) {
                 println!("{:#?}", out.program);
+            }
+            let rendered = diags.render_all(&map, colored);
+            if !rendered.is_empty() {
+                eprint!("{rendered}");
+            }
+            if diags.any_error() {
+                std::process::exit(1);
+            }
+        }
+        Command::Lex { file } => {
+            let (source, mut map, diags) = load(file)?;
+            // Register the file so diagnostics can point into it, then dump
+            // every token the lexer produces, including trivia-era tokens
+            // (Newline, Eof) the parser otherwise discards.
+            let fid = map.add(file.display().to_string(), source.clone());
+            for t in pickle_compiler::lexer::lex(fid, &source, &diags) {
+                println!("{}", t.canonical());
             }
             let rendered = diags.render_all(&map, colored);
             if !rendered.is_empty() {
