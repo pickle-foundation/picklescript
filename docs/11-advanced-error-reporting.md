@@ -19,8 +19,9 @@ few tools built on top of it.
 
 Nothing here changes the language. It adds a rendering layer, a couple of
 subcommands, and — for the JSON mode — a serializer over diagnostics that
-already exist. `.?.` and `??` appear in examples below as possible future
-syntax; neither exists today.
+already exist. `??`/`?.` in the examples below are the language's own
+operators (both lowered); the rendering layer here is independent of how they
+type-check.
 
 ## Diagnostic structure
 
@@ -249,6 +250,6 @@ Each step builds on the previous one:
 6. Implement E0501 together with the manual-allocation design.
 7. `pickle impact` after cross-file resolution exists.
 
-Caveats: the syntax suggested in examples (`?.`, `??`) does not exist and
-must be designed separately if it is wanted; lifetime reporting waits on the
-allocation model; impact analysis waits on multi-file resolution.
+Caveats: the `?.`/`??` used in the examples are the language's own operators
+(lowered); lifetime reporting waits on the allocation model; impact analysis
+waits on multi-file resolution.

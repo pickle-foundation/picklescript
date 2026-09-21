@@ -3619,12 +3619,9 @@ fn build_lambda_body(
             Some(Ty::Ref(inner)) => Some((*inner).clone()),
             other => other,
         };
-        // `for ((k, v) in m)` over a `Map<string, V>`: bind both the key and
-        // the value per trip.
+        // `for ((k, v) in m)` over a `Map<K, V>`: bind both the key and the
+        // value per trip (scalar keys are unboxed in `for_in_map_entries`).
         if let Some(Ty::Map(k, v)) = &seq_ot {
-            if k.as_ref() != &Ty::String {
-                return self.bad(sequence.span, "map keys must be `string` values");
-            }
             if let Pattern::Tuple(parts) = pattern {
                 if parts.len() != 2 {
                     return self.bad(span, "map entries pattern must bind exactly two names `(k, v)`");
@@ -3642,6 +3639,7 @@ fn build_lambda_body(
                     &kname,
                     &vname,
                     map_t,
+                    k.as_ref().clone(),
                     v.as_ref().clone(),
                     body,
                     span,
@@ -3664,10 +3662,7 @@ fn build_lambda_body(
             let seq_t = self.expr(sequence)?;
             return self.for_in_values(name, seq_t, elem, body, span);
         }
-        if let Some(Ty::Map(k, v)) = &seq_ot {
-            if k.as_ref() != &Ty::String {
-                return self.bad(sequence.span, "map keys must be `string` values");
-            }
+        if let Some(Ty::Map(_, v)) = &seq_ot {
             let map_t = self.expr(sequence)?;
             let vals = self.extern_call_t1(
                 "pickle_map_values",
@@ -3851,22 +3846,29 @@ fn build_lambda_body(
         Ok(())
     }
 
-    /// `for ((k, v) in m)` over a `Map<string, V>`: iterates the keys list and
-    /// the values list in lockstep — both `pickle_map_keys` /
-    /// `pickle_map_values` snapshots walk the same internal entry array, so
-    /// index i of the keys list pairs with index i of the values list. Keys
-    /// are pass-through string pointers; values unbox per `elem_rep`.
+    /// `for ((k, v) in m)` over a `Map<K, V>`: iterates the keys list and the
+    /// values list in lockstep — both `pickle_map_keys` / `pickle_map_values`
+    /// snapshots walk the same internal entry array, so index i of the keys
+    /// list pairs with index i of the values list. Keys unbox per their
+    /// `ElemRep` (string keys are pass-through pointers; composite keys too);
+    /// values unbox per `elem_rep`.
     fn for_in_map_entries(
         &mut self,
         kname: &str,
         vname: &str,
         map_t: Temp,
+        kty: Ty,
         vty: Ty,
         body: &Block,
         span: Span,
     ) -> Result<(), ()> {
         let vrep = self.elem_rep(&vty, span)?;
         let v_ir = elem_ir(&vty);
+        let krep = self.key_rep(&kty, span)?;
+        let k_ir = match &krep {
+            ElemRep::Scalar(_, _, ir) => *ir,
+            ElemRep::Ptr => IrTy::Ptr,
+        };
         let map_slot = self.new_slot(IrTy::Ptr);
         let keys_slot = self.new_slot(IrTy::Ptr);
         let vals_slot = self.new_slot(IrTy::Ptr);
@@ -3926,8 +3928,14 @@ fn build_lambda_body(
             IrTy::Ptr,
             vec![keys_l, i],
         )?;
-        let k_slot = self.new_slot(IrTy::Ptr);
-        self.instr(IrInstr::StoreSlot { slot: k_slot, v: kraw });
+        let k = match &krep {
+            ElemRep::Scalar(_, unbox_sym, _) => {
+                self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], k_ir, vec![kraw])?
+            }
+            ElemRep::Ptr => kraw,
+        };
+        let k_slot = self.new_slot(k_ir);
+        self.instr(IrInstr::StoreSlot { slot: k_slot, v: k });
         self.declare(kname, k_slot);
         let vraw = self.extern_call_t1(
             "pickle_list_get",
@@ -5732,9 +5740,10 @@ fn build_lambda_body(
         }
     }
 
-    /// `m[k]` read for a `Map<string, V>`. Absent keys yield the value type's
-    /// default (`0`/`0.0`/`false`, the empty string, or null) via the runtime's
-    /// boxed get, so a scalar is never unboxed from a null pointer.
+    /// `m[k]` read for a `Map<string, V>` / scalar-keyed map. Absent keys
+    /// yield the value type's default (`0`/`0.0`/`false`, the empty string, or
+    /// null) via the runtime's boxed get, so a scalar is never unboxed from a
+    /// null pointer. Scalar keys are boxed before the lookup.
     fn map_index_read(
         &mut self,
         e: &Expr,
@@ -5743,15 +5752,12 @@ fn build_lambda_body(
         kty: Ty,
         vty: Ty,
     ) -> Result<Temp, ()> {
-        if kty != Ty::String {
-            return self.bad(index.span, "map keys must be `string` values");
-        }
+        let krep = self.key_rep(&kty, index.span)?;
         let vrep = self.elem_rep(&vty, e.span)?;
         let obj = self.expr(object)?;
         let k = self.expr(index)?;
-        if !matches!(self.irty(index.span)?, IrTy::Str) {
-            return self.bad(index.span, "map keys must be `string` values");
-        }
+        let k_ir = self.irty(index.span)?;
+        let key = self.box_for_store(&krep, k, k_ir)?;
         let default: Temp = match vrep {
             ElemRep::Scalar(box_sym, _, ir) => {
                 let zero = self.zero_scalar(ir, index.span)?;
@@ -5764,18 +5770,18 @@ fn build_lambda_body(
                     let nul = self.null_temp()?;
                     self.extern_call_t1(
                         "pickle_map_get_boxed",
-                        vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+                        vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
                         IrTy::Ptr,
-                        vec![obj, k, nul],
+                        vec![obj, key, nul],
                     )?
                 }
             }
         };
         let raw = self.extern_call_t1(
             "pickle_map_get_boxed",
-            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+            vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
             IrTy::Ptr,
-            vec![obj, k, default],
+            vec![obj, key, default],
         )?;
         match vrep {
             ElemRep::Scalar(_, unbox_sym, ir) => {
@@ -5785,7 +5791,8 @@ fn build_lambda_body(
         }
     }
 
-    /// `m[k] = v` and `m[k] op= v` for `Map<string, V>` targets.
+    /// `m[k] = v` and `m[k] op= v` for `Map<K, V>` targets (string or scalar
+    /// keys; scalar keys are boxed before the runtime call).
     fn map_index_assign(
         &mut self,
         op: AssignOp,
@@ -5795,23 +5802,20 @@ fn build_lambda_body(
         kty: Ty,
         vty: Ty,
     ) -> Result<Temp, ()> {
-        if kty != Ty::String {
-            return self.bad(index.span, "map keys must be `string` values");
-        }
+        let krep = self.key_rep(&kty, index.span)?;
         let vrep = self.elem_rep(&vty, object.span)?;
         let obj = self.expr(object)?;
         let k = self.expr(index)?;
-        if !matches!(self.irty(index.span)?, IrTy::Str) {
-            return self.bad(index.span, "map keys must be `string` values");
-        }
+        let k_ir = self.irty(index.span)?;
+        let key = self.box_for_store(&krep, k, k_ir)?;
         if op == AssignOp::Assign {
             let v = self.expr(value)?;
             let v_ty = self.irty(value.span)?;
             let boxed = self.box_for_store(&vrep, v, v_ty)?;
             self.extern_call_void(
                 "pickle_map_set",
-                vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
-                vec![obj, k, boxed],
+                vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
+                vec![obj, key, boxed],
             );
             return Ok(v);
         }
@@ -5828,9 +5832,9 @@ fn build_lambda_body(
         let default = self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![zero])?;
         let cur_ptr = self.extern_call_t1(
             "pickle_map_get_boxed",
-            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
+            vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
             IrTy::Ptr,
-            vec![obj, k, default],
+            vec![obj, key, default],
         )?;
         let cur = self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![cur_ptr])?;
         let v = self.expr(value)?;
@@ -5844,8 +5848,8 @@ fn build_lambda_body(
         let boxed = self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![dst])?;
         self.extern_call_void(
             "pickle_map_set",
-            vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
-            vec![obj, k, boxed],
+            vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
+            vec![obj, key, boxed],
         );
         Ok(dst)
     }
@@ -5885,12 +5889,13 @@ fn build_lambda_body(
     }
 
     /// `{ "k": v, ... }` map literal: build a `Map` by inserting each entry,
-    /// boxing scalar values along the way. Keys must be strings (v1 runtime).
+    /// boxing scalar values (and scalar keys) along the way.
     fn map_literal(&mut self, e: &Expr, pairs: &[(Expr, Expr)]) -> Result<Temp, ()> {
         let (kty, vty) = match self.ty_of(&e.span) {
             Some(Ty::Map(k, v)) => (k.as_ref().clone(), v.as_ref().clone()),
             _ => return self.bad(e.span, "map literal does not have a `Map` type"),
         };
+        let krep = self.key_rep(&kty, e.span)?;
         let vrep = self.elem_rep(&vty, e.span)?;
         let cap = self.temp();
         self.instr(IrInstr::Const {
@@ -5901,9 +5906,7 @@ fn build_lambda_body(
         for (k, v) in pairs {
             let kt = self.expr(k)?;
             let k_ir = self.irty(k.span)?;
-            if kty != Ty::String || !matches!(k_ir, IrTy::Str) {
-                return self.bad(k.span, "map keys must be `string` values");
-            }
+            let key = self.box_for_store(&krep, kt, k_ir)?;
             let vt = self.expr(v)?;
             let boxed = match vrep {
                 ElemRep::Scalar(box_sym, _, _) => {
@@ -5914,8 +5917,8 @@ fn build_lambda_body(
             };
             self.extern_call_void(
                 "pickle_map_set",
-                vec![IrTy::Ptr, IrTy::Str, IrTy::Ptr],
-                vec![map, kt, boxed],
+                vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
+                vec![map, key, boxed],
             );
         }
         Ok(map)
@@ -8927,9 +8930,7 @@ fn build_lambda_body(
 
         match ot {
             Some(Ty::Map(k, v)) => {
-                if k.as_ref() != &Ty::String {
-                    return self.bad(object.span, "map keys must be `string` values");
-                }
+                let krep = self.key_rep(&k, object.span)?;
                 let obj = self.expr(object)?;
                 let vrep = self.elem_rep(&v, e.span)?;
                 match name {
@@ -8938,14 +8939,13 @@ fn build_lambda_body(
                             return self.bad(e.span, "`has` takes one argument");
                         }
                         let kt = self.expr(&args[0].value)?;
-                        if !matches!(self.irty(args[0].value.span)?, IrTy::Str) {
-                            return self.bad(args[0].value.span, "map keys must be `string` values");
-                        }
+                        let a_ir = self.irty(args[0].value.span)?;
+                        let key = self.box_for_store(&krep, kt, a_ir)?;
                         self.extern_call_t1(
                             "pickle_map_has",
-                            vec![IrTy::Ptr, IrTy::Str],
+                            vec![IrTy::Ptr, IrTy::Ptr],
                             IrTy::Bool,
-                            vec![obj, kt],
+                            vec![obj, key],
                         )
                     }
                     "get" => {
@@ -8953,17 +8953,16 @@ fn build_lambda_body(
                             return self.bad(e.span, "`get` takes one argument (a key)");
                         }
                         let k = self.expr(&args[0].value)?;
-                        if !matches!(self.irty(args[0].value.span)?, IrTy::Str) {
-                            return self.bad(args[0].value.span, "map keys must be `string` values");
-                        }
+                        let a_ir = self.irty(args[0].value.span)?;
+                        let key = self.box_for_store(&krep, k, a_ir)?;
                         // Null when absent, else the stored boxed-scalar or
                         // managed pointer — exactly the `T?` representation,
                         // so the raw result is the option.
                         self.extern_call_t1(
                             "pickle_map_get",
-                            vec![IrTy::Ptr, IrTy::Str],
+                            vec![IrTy::Ptr, IrTy::Ptr],
                             IrTy::Ptr,
-                            vec![obj, k],
+                            vec![obj, key],
                         )
                     }
                     "remove" => {
@@ -8971,17 +8970,16 @@ fn build_lambda_body(
                             return self.bad(e.span, "`remove` takes one argument (a key)");
                         }
                         let k = self.expr(&args[0].value)?;
-                        if !matches!(self.irty(args[0].value.span)?, IrTy::Str) {
-                            return self.bad(args[0].value.span, "map keys must be `string` values");
-                        }
+                        let a_ir = self.irty(args[0].value.span)?;
+                        let key = self.box_for_store(&krep, k, a_ir)?;
                         // The runtime returns the stored pointer (a boxed
                         // scalar or managed value) or null — exactly the `T?`
                         // representation, so the raw result is the option.
                         self.extern_call_t1(
                             "pickle_map_remove",
-                            vec![IrTy::Ptr, IrTy::Str],
+                            vec![IrTy::Ptr, IrTy::Ptr],
                             IrTy::Ptr,
-                            vec![obj, k],
+                            vec![obj, key],
                         )
                     }
                     "keys" => {
@@ -9249,6 +9247,44 @@ fn build_lambda_body(
             Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
             Ty::Unknown => self.bad(span, "list element type is not statically known"),
             Ty::Var(_) => self.bad(span, "generic element types are not lowered yet"),
+        }
+    }
+
+    /// How a `Map<K, ...>` key is represented at the runtime boundary: keys
+    /// are managed objects — a string object, a boxed scalar, or a composite
+    /// object (list, map, enum, class/struct instance). `Ptr` means a key
+    /// passes through as a pointer (its runtime boundary is the object itself,
+    /// hashed/compared structurally by `runtime/src/map.rs`); `Scalar` means a
+    /// scalar key is boxed for storage (and unboxed on iteration).
+    fn key_rep(&mut self, kty: &Ty, span: Span) -> Result<ElemRep, ()> {
+        use ElemRep::*;
+        match kty {
+            Ty::String => Ok(Ptr),
+            Ty::Int => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
+            Ty::Float => Ok(Scalar("pickle_box_f64", "pickle_unbox_f64", IrTy::Float)),
+            Ty::Bool => Ok(Scalar("pickle_box_bool", "pickle_unbox_bool", IrTy::Bool)),
+            Ty::Byte => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
+            Ty::Char => Ok(Scalar("pickle_box_char", "pickle_unbox_char", IrTy::Char)),
+            // Composite keys are their own managed objects: the runtime hashes
+            // and compares them structurally by class id + payload.
+            Ty::List(..)
+            | Ty::Map(..)
+            | Ty::Class(..)
+            | Ty::Struct(..)
+            | Ty::Enum(..)
+            | Ty::Interface(..)
+            | Ty::Range(..) => Ok(Ptr),
+            Ty::Option(..) => self.bad(
+                span,
+                "optional map keys are not lowered yet (a `T?` key has no boxed identity)",
+            ),
+            Ty::Tuple(..) => self.bad(span, "tuple map keys are not lowered yet"),
+            Ty::Ref(..) => self.bad(span, "`&T` map keys are not lowered yet"),
+            Ty::None | Ty::Empty => self.bad(span, "a map key of type `none` is impossible"),
+            Ty::Unknown => self.bad(span, "map key type is not statically known"),
+            Ty::Var(_) => self.bad(span, "generic map key types are not lowered yet"),
+            Ty::Ptr(..) => self.bad(span, "`T*` map keys are not lowered yet"),
+            Ty::Fn(..) => self.bad(span, "function map keys are not lowered yet"),
         }
     }
 

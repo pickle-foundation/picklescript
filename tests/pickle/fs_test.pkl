@@ -69,6 +69,16 @@ test fn fs_delete_removes_and_reports() {
 
 test fn fs_list_dir_and_delete_in_dir() {
     let dir = "tests/pickle/__fsdir"
+    // Clear a leftover directory from an interrupted prior run so `mkdir`
+    // below starts from a clean slate (mkdir fails when the dir exists).
+    if (file_exists(dir)) {
+        if (let some(prev) = list_dir(dir)) {
+            for (p in prev) {
+                delete(p)
+            }
+        }
+        delete(dir)
+    }
     expect(mkdir(dir)).toBe(true)
     write_file("{dir}/one.txt", "1")
     write_file("{dir}/two.txt", "2")
@@ -92,6 +102,7 @@ test fn fs_list_dir_and_delete_in_dir() {
     expect(saw_two).toBe(true)
     expect(delete("{dir}/one.txt")).toBe(true)
     expect(delete("{dir}/two.txt")).toBe(true)
+    expect(delete(dir)).toBe(true)
 }
 
 fn path_contains(s: string, sub: string): bool {

@@ -1,0 +1,123 @@
+class Pt {
+    x: int
+    y: int
+}
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+enum Shape {
+    Circle
+    Square
+    Rect(w: int, h: int)
+}
+
+test fn list_keys_structural_lookup() {
+    var m = {[1, 2]: "pair"}
+    expect(m[[1, 2]]).toBe("pair")
+    expect(m.has([1, 2])).toBe(true)
+    expect(m.has([1, 3])).toBe(false)
+    m[[3, 4]] = "other"
+    expect(m[[3, 4]]).toBe("other")
+    expect(len(m)).toBe(2)
+    m[[1, 2]] = "replaced"
+    expect(m[[1, 2]]).toBe("replaced")
+    expect(len(m)).toBe(2)
+    let a = m[[3, 4]]
+    expect(a).toBe("other")
+}
+
+test fn list_keys_order_sensitive() {
+    var m = {[1, 2]: "a", [2, 1]: "b"}
+    expect(m[[1, 2]]).toBe("a")
+    expect(m[[2, 1]]).toBe("b")
+    expect(len(m)).toBe(2)
+}
+
+test fn map_keys_are_order_insensitive() {
+    var m = {{"k": 1}: "nested"}
+    expect(m[{"k": 1}]).toBe("nested")
+    m[{"k": 2}] = "different"
+    expect(m[{"k": 2}]).toBe("different")
+    expect(m[{"k": 1}]).toBe("nested")
+    expect(len(m)).toBe(2)
+}
+
+test fn class_and_struct_keys() {
+    let p = Pt(5, 6)
+    let p2 = Pt(5, 6)
+    var byobj = {p: 10}
+    expect(byobj[p2]).toBe(10)
+    byobj[Pt(7, 8)] = 20
+    expect(byobj[Pt(7, 8)]).toBe(20)
+    expect(len(byobj)).toBe(2)
+    let v = Vec2(1, 2)
+    var byvec = {v: "v"}
+    expect(byvec[Vec2(1, 2)]).toBe("v")
+    expect(byvec[Vec2(9, 9)]).toBe("")
+}
+
+test fn enum_keys() {
+    var es = {Shape.Circle: "c", Shape.Rect(2, 3): "r"}
+    expect(es[Shape.Circle]).toBe("c")
+    expect(es[Shape.Square]).toBe("")
+    expect(es[Shape.Rect(2, 3)]).toBe("r")
+    expect(es.has(Shape.Rect(2, 3))).toBe(true)
+    expect(es.has(Shape.Rect(3, 2))).toBe(false)
+}
+
+test fn class_and_list_keys_are_independent() {
+    var ml = {[10, 20]: "list"}
+    var mc = {Pt(10, 20): "class"}
+    expect(ml[[10, 20]]).toBe("list")
+    expect(mc[Pt(10, 20)]).toBe("class")
+    expect(len(ml)).toBe(1)
+    expect(len(mc)).toBe(1)
+}
+
+test fn composite_keys_grow_and_rehash() {
+    var m = {[0, 0]: "seed"}
+    for (i in 1..150) {
+        m[[i, i * 2]] = "{i}"
+    }
+    expect(len(m)).toBe(150)
+    expect(m[[0, 0]]).toBe("seed")
+    expect(m[[75, 150]]).toBe("75")
+    var n = 0
+    for ((k, v) in m) {
+        if (m[k] == v) {
+            n += 1
+        }
+    }
+    expect(n).toBe(150)
+}
+
+test fn composite_remove() {
+    var m = {[1, 1]: "one", [2, 2]: "two"}
+    if (let some(r) = m.remove([1, 1])) {
+        expect(r).toBe("one")
+    } else {
+        expect("unexpected").toBe("composite_remove: remove returned none for a present key")
+    }
+    expect(m.has([1, 1])).toBe(false)
+    expect(m.has([2, 2])).toBe(true)
+    expect(len(m)).toBe(1)
+    expect(m.remove([9, 9])).toBe(none)
+}
+
+test fn for_in_over_composite_keyed_map() {
+    var ixs = {[10, 20]: [1, 2, 3], [30, 40]: [4, 5]}
+    var sum_k0 = 0
+    var sum_v = 0
+    var n = 0
+    for ((k, v) in ixs) {
+        n += 1
+        sum_k0 += k[0]
+        sum_v += len(v)
+    }
+    expect(n).toBe(2)
+    expect(sum_k0).toBe(40)
+    expect(sum_v).toBe(5)
+}

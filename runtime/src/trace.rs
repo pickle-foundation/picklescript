@@ -5,7 +5,7 @@
 //! use their known layouts; user objects use their registered class
 //! descriptor's managed-field bitmask.
 
-use crate::layout::{enum_field_count, list_data, list_len, map_entries, map_len};
+use crate::layout::{enum_field_count, list_data, list_len, map_cap, map_entries};
 use crate::object::{
     DescriptorTable, PickleObject, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
     PICKLE_CLASS_STRING,
@@ -92,11 +92,16 @@ fn trace_one(descriptors: &DescriptorTable, obj: *mut PickleObject, worklist: &m
             }
             PICKLE_CLASS_MAP => {
                 let entries = map_entries(obj);
-                let len = map_len(obj);
+                // Open addressing scatters live slots across the whole table,
+                // so scan the full capacity (skipping the tombstone sentinel);
+                // scanning only `len` slots would strand live entries.
+                let cap = map_cap(obj);
                 if !entries.is_null() {
-                    for i in 0..len {
+                    for i in 0..cap {
                         let e = entries.add(i);
-                        if !(*e).key.is_null() {
+                        if !(*e).key.is_null()
+                            && !std::ptr::eq((*e).key, crate::object::nil_sentinel())
+                        {
                             enqueue(worklist, (*e).key);
                         }
                         if !(*e).value.is_null() {

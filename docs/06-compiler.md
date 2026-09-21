@@ -145,8 +145,16 @@ One design note on `Map<K, V>`: to keep object reads cheap and GC-safe, an
 index read passes an explicit *default* value down to `pickle_map_get_boxed`
 (the value type's zero — `0`/`0.0`/`false`, an interned empty string, or
 null). The runtime returns it unchanged when the key is absent, so the
-emitter never unboxes a null pointer. v1 accepts `string` keys only; the
-type checker enforces this at literal, index, and method sites.
+emitter never unboxes a null pointer. Keys are managed objects: a `string`
+object, a boxed scalar (`int`/`float`/`bool`/`char`/`byte`), or a composite
+object (list, map, enum, class/struct instance). Scalar keys are boxed at the
+boundary (`pickle_box_*`); composite keys pass through as their object
+pointer. The runtime hashes and compares keys by class id plus payload:
+scalars as `(class_id, payload)`, strings over their bytes, and composites
+structurally (deep) with a cycle guard that falls back to root-identity
+semantics for cyclic structures (see `runtime/src/map.rs`). The type checker
+enforces key types at literal, index, and method sites; optional, tuple,
+reference, function, and pointer keys are not lowered.
 
 Enums follow the same extern path. An enum value is a managed object
 (`PEnum`) whose class id is `PICKLE_CLASS_ENUM` (6; user classes start at 7).

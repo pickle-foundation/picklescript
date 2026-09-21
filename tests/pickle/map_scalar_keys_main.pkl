@@ -1,0 +1,14 @@
+fn main() {
+    let m = {10: "ten", 20: "twenty", 30: "thirty"}
+    var tot = 0
+    for ((k, v) in m) {
+        tot += k
+        println("{k}:{v}")
+    }
+    println("tot={tot}")
+    m[40] = "forty"
+    println("has40={m.has(40)}")
+    println("miss=" + (m.get(99) ?? "-"))
+    let mc = {'a': 97, 'z': 122}
+    println("a={mc['a']} z={mc['z']}")
+}

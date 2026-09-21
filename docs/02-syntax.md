@@ -88,9 +88,9 @@ return [expr] | return          // bare return == return none, if option
 > against options; arms may carry `if` guards that fall through on `false`. A
 > catch-all is written `case _ -> body`, `else -> body`, or the historical
 > bare `case -> body`; a non-exhaustive chain faults with "pickle: match is
-> not exhaustive" at runtime. `Or` (`case a | b`) and tuple
-> patterns lower only for enums; matching over other composite types still bails
-> "not lowered yet".
+> not exhaustive" at runtime. Still bailing "not lowered yet": `Or`
+> (`case a | b`) patterns, tuple patterns, nested payload bindings, and
+> matching over composite (list/map/class/struct) scrutinees.
 
 ### Expression statements
 

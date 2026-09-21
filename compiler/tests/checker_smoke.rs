@@ -737,10 +737,78 @@ fn accepts_map_typing() {
 }
 
 #[test]
-fn rejects_non_string_map_keys() {
+fn rejects_unhashable_map_keys() {
+    // Strings, scalars, and composite objects (lists, maps, classes/structs,
+    // enums) are legal keys; tuples are not a runtime object so stay rejected.
     let d = check_str(
         r#"fn main() {
-            var m = {1: "one"}
+            var m = {(1, 2): "one"}
+        }"#,
+    );
+    assert!(
+        has_errors(&d),
+        "expected a map-key type error, got:\n{}",
+        error_msgs(&d)
+    );
+    let msgs = error_msgs(&d);
+    assert!(
+        msgs.contains("map keys must be"),
+        "expected a map-key diagnostics, got:\n{msgs}"
+    );
+}
+
+#[test]
+fn accepts_non_string_map_keys() {
+    let d = check_str(
+        r#"fn main() {
+            var m = {1: "one", 2: "two"}
+            var f = {1.5: true}
+            var b = {true: "y", false: "n"}
+            var c = {'a': 1, 'z': 2}
+            var g = {"s": 1}
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn accepts_composite_map_keys() {
+    let d = check_str(
+        r#"class Pt {
+            x: int
+            y: int
+        }
+        enum Shape {
+            Circle
+            Square
+        }
+        fn main() {
+            var li = {[1, 2]: "pair"}
+            let a = li[[1, 2]]
+            li[[3, 4]] = "other"
+            var mm = {{"k": 1}: "nested"}
+            let p = Pt(5, 6)
+            let p2 = Pt(5, 6)
+            var byobj = {p: 10}
+            let q = byobj[p2]
+            var es = {Shape.Circle: "c"}
+            let r = es[Shape.Circle]
+            var ixs = {[10, 20]: [1, 2, 3]}
+            for ((k, v) in ixs) {
+                let s = len(k)
+                let t = len(v)
+            }
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
+}
+
+#[test]
+fn rejects_optional_map_keys() {
+    let d = check_str(
+        r#"fn main() {
+            var o: int? = 2
+            var m = {o: 1}
         }"#,
     );
     assert!(
@@ -768,6 +836,20 @@ fn rejects_non_string_map_index() {
         msgs.contains("string"),
         "expected a `string` key diagnostic, got:\n{msgs}"
     );
+}
+
+#[test]
+fn accepts_int_map_index() {
+    let d = check_str(
+        r#"fn main() {
+            var m = {10: "ten"}
+            let x = m[10]
+            m[11] = "eleven"
+            let y = m.has(10)
+            let z = m.get(10)
+        }"#,
+    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
 }
 
 #[test]

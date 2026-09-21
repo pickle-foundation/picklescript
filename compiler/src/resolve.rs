@@ -677,11 +677,15 @@ impl<'a> Resolver<'a> {
                 Some(Ty::List(Box::new(elem)))
             }
             ExprKind::Map(pairs) => {
+                let k = pairs
+                    .first()
+                    .map(|(k, _)| self.init_expr_ty(k, generics).unwrap_or(Ty::Unknown))
+                    .unwrap_or(Ty::Unknown);
                 let v = pairs
                     .first()
                     .map(|(_, v)| self.init_expr_ty(v, generics).unwrap_or(Ty::Unknown))
                     .unwrap_or(Ty::Unknown);
-                Some(Ty::Map(Box::new(Ty::String), Box::new(v)))
+                Some(Ty::Map(Box::new(k), Box::new(v)))
             }
             ExprKind::Tuple(items) => Some(Ty::Tuple(
                 items

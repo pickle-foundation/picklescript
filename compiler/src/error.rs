@@ -272,9 +272,9 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     },
     CatalogueEntry {
         code: ErrorCode::MapKeyString,
-        title: "map keys must be string",
-        rule: "map literals and indexes use `string` keys only.",
-        example: "let m = { 1: \"a\" }",
+        title: "map keys must be a supported type",
+        rule: "map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), or a composite object (`List`, `Map`, class/struct instance, enum, interface). Keys are hashed and compared structurally. Optional, tuple, reference, function, and pointer keys are not supported.",
+        example: "(1, 2) as a map key — { (1, 2): \"a\" } is not lowered",
     },
     CatalogueEntry {
         code: ErrorCode::Index,

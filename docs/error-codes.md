@@ -197,12 +197,16 @@ if (1) {}
 for (x in 42) {}
 ```
 
-### E0342 · map keys must be string
+### E0342 · map keys must be a supported type
 
-Map literals and indexes use `string` keys only.
+Map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), or a
+composite object (`List`, `Map`, class/struct instance, enum, interface). Keys
+are hashed and compared structurally (deep), so a `List<int>` key `[1, 2]`
+matches any equal list. Optional, tuple, reference, function, and pointer keys
+are not supported.
 
 ```
-let m = { 1: "a" }
+let m = { (1, 2): "a" }   // tuple keys are rejected
 ```
 
 ### E0343 · index error
