@@ -6756,9 +6756,17 @@ fn build_lambda_body(
                     }
                     self.cur = guard_in;
                     self.push_scope();
-                    self.bind_enum_payloads(arm.span, &table, vi, payloads, s_slot)?;
+                    let payload_cond =
+                        self.bind_enum_payloads(arm.span, &table, vi, payloads, s_slot)?;
+                    let mut cf = payload_cond;
                     if let Some(g) = guard {
                         let cond = self.expr(g)?;
+                        cf = match cf {
+                            None => Some(cond),
+                            Some(prev) => Some(self.combine_cond(true, prev, cond)),
+                        };
+                    }
+                    if let Some(cond) = cf {
                         let fall = if chain_live { cur } else { join };
                         self.term(IrTerm::BranchIf {
                             cond,
@@ -7184,6 +7192,12 @@ fn build_lambda_body(
                 }
                 Ok(acc.expect("an or-pattern has at least one alternative"))
             }
+            // An enum variant pattern: the scrutinee (of enum type `st`) must
+            // carry this variant's tag; nested payload patterns add their own
+            // conditions, evaluated only once the tag matches.
+            Pattern::Variant { .. } if matches!(st, Ty::Enum(..)) => {
+                self.enum_variant_cond(p, st, a, span)
+            }
             Pattern::Literal(lit) if matches!(st, Ty::String) => {
                 let Lit::String(parts) = lit else {
                     return self.bad(span, "this match pattern is not lowered yet");
@@ -7388,14 +7402,61 @@ fn build_lambda_body(
                 self.declare_binding(name, ir, v);
                 Ok(())
             }
-            Pattern::Variant { path, payloads } if path == &["some"] && st.is_option() => {
-                // The match condition already proved the option present, so
-                // resolving is safe here.
-                let inner = st.inner_option().unwrap_or(Ty::Unknown);
-                let resolved = self.opt_resolve(v, &inner, span)?;
-                match payloads.first() {
-                    None => Ok(()),
-                    Some(pl) => self.bind_pattern_value(pl, &inner, resolved, span),
+            Pattern::Variant { path, payloads } => {
+                if path == &["some"] && st.is_option() {
+                    // The match condition already proved the option present, so
+                    // resolving is safe here.
+                    let inner = st.inner_option().unwrap_or(Ty::Unknown);
+                    let resolved = self.opt_resolve(v, &inner, span)?;
+                    match payloads.first() {
+                        None => Ok(()),
+                        Some(pl) => self.bind_pattern_value(pl, &inner, resolved, span),
+                    }
+                } else if matches!(st, Ty::Enum(..)) {
+                    // Bind the names an enum variant pattern introduces,
+                    // recursing into each payload.
+                    let Ty::Enum(ename, _) = st else { unreachable!() };
+                    let table = match self.resolved.types.get(ename) {
+                        Some(TypeTableEntry::Enum(t)) => t.clone(),
+                        _ => return self.bad(span, format!("unknown enum type `{ename}`")),
+                    };
+                    let vname = match path.len() {
+                        2 => &path[1],
+                        1 => &path[0],
+                        _ => return self.bad(span, "invalid enum variant pattern"),
+                    };
+                    let Some(vi) =
+                        table.variants.iter().position(|(n, ..)| n == vname)
+                    else {
+                        return self.bad(
+                            span,
+                            format!("enum `{ename}` has no variant `{vname}`"),
+                        );
+                    };
+                    let ftypes = table.variants[vi].1.clone();
+                    for (pi, p) in payloads.iter().enumerate() {
+                        let ft = ftypes.get(pi).cloned().unwrap_or(Ty::Unknown);
+                        let idx = self.const_temp(IrConst::Int(pi as i64));
+                        let raw = self.extern_call_t1(
+                            "pickle_enum_field",
+                            vec![IrTy::Ptr, IrTy::Int],
+                            IrTy::Ptr,
+                            vec![v, idx],
+                        )?;
+                        let pv = match self.elem_rep(&ft, span)? {
+                            ElemRep::Ptr => raw,
+                            ElemRep::Scalar(_, unbox_sym, unbox_ir) => self.extern_call_t1(
+                                unbox_sym,
+                                vec![IrTy::Ptr],
+                                unbox_ir,
+                                vec![raw],
+                            )?,
+                        };
+                        self.bind_pattern_value(p, &ft, pv, span)?;
+                    }
+                    Ok(())
+                } else {
+                    self.bad(span, "this match pattern is not lowered yet")
                 }
             }
             Pattern::Tuple(parts) => {
@@ -7429,7 +7490,6 @@ fn build_lambda_body(
                 Ok(())
             }
             Pattern::Or(_) => Ok(()),
-            _ => self.bad(span, "this match pattern is not lowered yet"),
         }
     }
 
@@ -7468,8 +7528,11 @@ fn build_lambda_body(
     }
 
     /// Bind the payload fields of variant `vi` of `table` into fresh slots for
-    /// `Color.Rgb(r, g, b)` patterns. Fields are boxed in the object, so each
-    /// is unboxed to its element IR type; `_` payloads bind nothing.
+    /// `Color.Rgb(r, g, b)` patterns, and return the folded match conditions
+    /// contributed by any nested (non-binding) payload patterns. Fields are
+    /// boxed in the object, so each is unboxed to its element IR type; `_`
+    /// payloads bind nothing. Nested patterns (e.g. `ExprKind.Lit(Lit.String(
+    /// parts))`) bind the names they introduce and contribute a condition.
     fn bind_enum_payloads(
         &mut self,
         span: Span,
@@ -7477,48 +7540,188 @@ fn build_lambda_body(
         vi: usize,
         payloads: &[Pattern],
         s_slot: Slot,
-    ) -> Result<(), ()> {
+    ) -> Result<Option<Temp>, ()> {
         let ftypes = table.variants[vi].1.clone();
+        let mut acc: Option<Temp> = None;
         for (pi, p) in payloads.iter().enumerate() {
+            let ft = ftypes.get(pi).cloned().unwrap_or(Ty::Unknown);
+            let rep = self.elem_rep(&ft, span)?;
+            let idx = self.temp();
+            self.instr(IrInstr::Const {
+                dst: idx,
+                c: IrConst::Int(pi as i64),
+            });
+            let raw = {
+                let sv = self.load(s_slot);
+                self.extern_call_t1(
+                    "pickle_enum_field",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![sv, idx],
+                )?
+            };
+            let (pv, ir) = match &rep {
+                ElemRep::Ptr => (raw, IrTy::Ptr),
+                ElemRep::Scalar(_, unbox_sym, unbox_ir) => (
+                    self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], *unbox_ir, vec![raw])?,
+                    *unbox_ir,
+                ),
+            };
             match p {
                 Pattern::Wildcard => {}
                 Pattern::Binding { name, .. } => {
-                    let ft = ftypes.get(pi).cloned().unwrap_or(Ty::Unknown);
-                    let rep = self.elem_rep(&ft, span)?;
-                    let idx = self.temp();
-                    self.instr(IrInstr::Const {
-                        dst: idx,
-                        c: IrConst::Int(pi as i64),
-                    });
-                    let raw = {
-                        let sv = self.load(s_slot);
-                        self.extern_call_t1(
-                            "pickle_enum_field",
-                            vec![IrTy::Ptr, IrTy::Int],
-                            IrTy::Ptr,
-                            vec![sv, idx],
-                        )?
-                    };
-                    let (v, ir) = match &rep {
-                        ElemRep::Ptr => (raw, IrTy::Ptr),
-                        ElemRep::Scalar(_, unbox_sym, unbox_ir) => (
-                            self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], *unbox_ir, vec![raw])?,
-                            *unbox_ir,
-                        ),
-                    };
                     let slot = self.new_slot(ir);
-                    self.instr(IrInstr::StoreSlot { slot, v });
+                    self.instr(IrInstr::StoreSlot { slot, v: pv });
                     self.declare(name, slot);
                 }
-                _ => {
-                    return self.bad(
-                        span,
-                        "enum payload patterns bind only names or `_`; nested patterns are not lowered yet",
-                    )
+                nested => {
+                    // Nested payload pattern: bind the names it introduces,
+                    // then fold in the condition it adds. Keep the nested
+                    // value rooted while it is examined.
+                    self.bind_pattern_value(nested, &ft, pv, span)?;
+                    let root = self.new_slot(IrTy::Ptr);
+                    self.instr(IrInstr::StoreSlot { slot: root, v: pv });
+                    let sv = self.load(root);
+                    let c = if matches!(ft, Ty::Enum(..))
+                        && matches!(nested, Pattern::Variant { .. })
+                    {
+                        self.enum_variant_cond(nested, &ft, sv, span)?
+                    } else {
+                        self.pattern_test_cond(nested, &ft, sv, span)?
+                    };
+                    acc = match acc {
+                        None => Some(c),
+                        Some(prev) => Some(self.combine_cond(true, prev, c)),
+                    };
                 }
             }
         }
-        Ok(())
+        Ok(acc)
+    }
+
+    /// The match condition for an enum variant pattern: the scrutinee value
+    /// `v` (of enum type `st`) must carry the variant's tag, and nested payload
+    /// conditions are folded in. Payload fields are read only inside a block
+    /// guarded by the tag equality, so a mismatched variant is never
+    /// dereferenced.
+    fn enum_variant_cond(
+        &mut self,
+        p: &Pattern,
+        st: &Ty,
+        v: Temp,
+        span: Span,
+    ) -> Result<Temp, ()> {
+        let Pattern::Variant { path, payloads } = p else {
+            unreachable!()
+        };
+        let Ty::Enum(ename, _) = st else {
+            return self.bad(span, "this match pattern is not lowered yet");
+        };
+        let table = match self.resolved.types.get(ename) {
+            Some(TypeTableEntry::Enum(t)) => t.clone(),
+            _ => return self.bad(span, format!("unknown enum type `{ename}`")),
+        };
+        let vname = match path.len() {
+            2 => &path[1],
+            1 => &path[0],
+            _ => return self.bad(span, "invalid enum variant pattern"),
+        };
+        let Some(vi) = table.variants.iter().position(|(n, ..)| n == vname) else {
+            return self.bad(span, format!("enum `{ename}` has no variant `{vname}`"));
+        };
+        let tag = self.extern_call_t1("pickle_enum_tag", vec![IrTy::Ptr], IrTy::Int, vec![v])?;
+        let vi_t = self.const_temp(IrConst::Int(vi as i64));
+        let eq = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: eq,
+            op: IrBinOp::Eq,
+            a: tag,
+            b: vi_t,
+        });
+        let testable = payloads
+            .iter()
+            .any(|p| !matches!(p, Pattern::Binding { .. } | Pattern::Wildcard));
+        if testable {
+            let root = self.new_slot(IrTy::Ptr);
+            self.instr(IrInstr::StoreSlot { slot: root, v });
+            let res_slot = self.new_slot(IrTy::Bool);
+            let on_match = self.new_block();
+            let on_other = self.new_block();
+            let join = self.new_block();
+            self.term(IrTerm::BranchIf {
+                cond: eq,
+                then: on_match,
+                else_: on_other,
+            });
+            self.cur = on_match;
+            let inner_conds = self.bind_enum_payload_cond(span, &table, vi, payloads, root)?;
+            let val = inner_conds.unwrap_or_else(|| self.const_temp(IrConst::Bool(true)));
+            self.instr(IrInstr::StoreSlot {
+                slot: res_slot,
+                v: val,
+            });
+            self.term(IrTerm::Branch { target: join });
+            self.cur = on_other;
+            let f = self.const_temp(IrConst::Bool(false));
+            self.instr(IrInstr::StoreSlot { slot: res_slot, v: f });
+            self.term(IrTerm::Branch { target: join });
+            self.cur = join;
+            Ok(self.load(res_slot))
+        } else {
+            Ok(eq)
+        }
+    }
+
+    /// Fold the extra match conditions contributed by the nested (non-binding)
+    /// payload patterns of enum variant `vi`, whose object pointer sits in the
+    /// rooted slot `v_slot`. Binding names are declared separately by
+    /// `bind_enum_payloads`; the returned condition is `None` when every
+    /// payload is a name or `_`.
+    fn bind_enum_payload_cond(
+        &mut self,
+        span: Span,
+        table: &EnumTable,
+        vi: usize,
+        payloads: &[Pattern],
+        v_slot: Slot,
+    ) -> Result<Option<Temp>, ()> {
+        let ftypes = table.variants[vi].1.clone();
+        let mut acc: Option<Temp> = None;
+        for (pi, p) in payloads.iter().enumerate() {
+            if matches!(p, Pattern::Binding { .. } | Pattern::Wildcard) {
+                continue;
+            }
+            let ft = ftypes.get(pi).cloned().unwrap_or(Ty::Unknown);
+            let idx = self.const_temp(IrConst::Int(pi as i64));
+            let raw = {
+                let sv = self.load(v_slot);
+                self.extern_call_t1(
+                    "pickle_enum_field",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![sv, idx],
+                )?
+            };
+            let pv = match self.elem_rep(&ft, span)? {
+                ElemRep::Ptr => raw,
+                ElemRep::Scalar(_, unbox_sym, unbox_ir) => {
+                    self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], unbox_ir, vec![raw])?
+                }
+            };
+            let root = self.new_slot(IrTy::Ptr);
+            self.instr(IrInstr::StoreSlot { slot: root, v: pv });
+            let sv = self.load(root);
+            let c = if matches!(ft, Ty::Enum(..)) && matches!(p, Pattern::Variant { .. }) {
+                self.enum_variant_cond(p, &ft, sv, span)?
+            } else {
+                self.pattern_test_cond(p, &ft, sv, span)?
+            };
+            acc = match acc {
+                None => Some(c),
+                Some(prev) => Some(self.combine_cond(true, prev, c)),
+            };
+        }
+        Ok(acc)
     }
 
     fn if_expr(
