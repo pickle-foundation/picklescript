@@ -2,7 +2,7 @@ Class 0:5
 Ident 6:10 text="User"
 LBrace 11:12
 Newline 12:13
-Use 17:20
+Ident 17:20 text="use"
 Colon 20:21
 Ident 22:28 text="string"
 Newline 28:29
@@ -71,7 +71,7 @@ RBrace 194:195
 Newline 195:196
 Newline 196:197
 Fn 197:199
-Use 200:203
+Ident 200:203 text="use"
 LParen 203:204
 Ident 204:205 text="x"
 Colon 205:206
@@ -161,7 +161,7 @@ RParen 426:427
 LBrace 428:429
 Newline 429:430
 Let 434:437
-Use 438:441
+Ident 438:441 text="use"
 Assign 442:443
 Number 444:445 text="1" suf="" isf=0 int=1
 Newline 445:446
@@ -192,7 +192,7 @@ Number 530:531 text="6" suf="" isf=0 int=6
 Newline 531:532
 Ident 536:542 text="expect"
 LParen 542:543
-Use 543:546
+Ident 543:546 text="use"
 Plus 547:548
 Get 549:552
 Plus 553:554
@@ -222,7 +222,7 @@ LBrace 641:642
 Newline 642:643
 Ident 647:653 text="expect"
 LParen 653:654
-Use 654:657
+Ident 654:657 text="use"
 LParen 657:658
 Number 658:659 text="1" suf="" isf=0 int=1
 RParen 659:660
@@ -320,7 +320,7 @@ Ident 886:892 text="expect"
 LParen 892:893
 Ident 893:894 text="u"
 Dot 894:895
-Use 895:898
+Ident 895:898 text="use"
 RParen 898:899
 Dot 899:900
 Ident 900:904 text="toBe"

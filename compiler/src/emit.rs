@@ -4857,6 +4857,10 @@ fn build_lambda_body(
         let lt = self.ty_of(&lhs.span);
         let rt = self.ty_of(&rhs.span);
         let both_str = matches!(lt, Some(Ty::String)) && matches!(rt, Some(Ty::String));
+        // Enums are managed pointers; a raw `icmp eq` would test address
+        // identity, so `==`/`!=` route through the runtime structural compare
+        // (`pickle_enum_eq`) which tests tag equality and payload fields.
+        let both_enum = matches!(lt, Some(Ty::Enum(..))) && matches!(rt, Some(Ty::Enum(..)));
         match op {
             AstBinOp::And | AstBinOp::Or => return self.logic(e, op, lhs, rhs),
             AstBinOp::NullCoalesce => return self.null_coalesce(e, lhs, rhs),
@@ -4894,6 +4898,27 @@ fn build_lambda_body(
                     op: if op == AstBinOp::Eq { IrBinOp::Eq } else { IrBinOp::Ne },
                     a: cmp,
                     b: zero,
+                });
+                return Ok(dst);
+            }
+            AstBinOp::Eq | AstBinOp::Ne if both_enum => {
+                let a = self.expr(lhs)?;
+                let b = self.expr(rhs)?;
+                let eq = self.extern_call_t1(
+                    "pickle_enum_eq",
+                    vec![IrTy::Ptr, IrTy::Ptr],
+                    IrTy::Bool,
+                    vec![a, b],
+                )?;
+                if op == AstBinOp::Eq {
+                    return Ok(eq);
+                }
+                // `!=` is the logical negation of the structural compare.
+                let dst = self.temp();
+                self.instr(IrInstr::UnOp {
+                    dst,
+                    op: IrUnOp::Not,
+                    v: eq,
                 });
                 return Ok(dst);
             }
@@ -7428,6 +7453,15 @@ fn build_lambda_body(
     fn match_arm_body(&mut self, body: &Expr, res_slot: Option<Slot>) -> Result<(), ()> {
         let bt = self.expr(body)?;
         if let Some(slot) = res_slot {
+            // A `Ptr` result slot holds an option: scalar arm values must be
+            // boxed first, or a later `some(x)`/`?` read dereferences the raw
+            // scalar as a pointer.
+            let bt = if matches!(self.fslots.get(slot.0 as usize), Some(IrTy::Ptr)) {
+                let bt_ty = self.ty_of(&body.span).unwrap_or(Ty::Unknown);
+                self.option_wrap(bt, &bt_ty, body.span)?
+            } else {
+                bt
+            };
             self.instr(IrInstr::StoreSlot { slot, v: bt });
         }
         Ok(())
@@ -7530,6 +7564,12 @@ fn build_lambda_body(
             match res_slot {
                 Some(slot) => {
                     let t = self.expr(e)?;
+                    let t = if matches!(self.fslots.get(slot.0 as usize), Some(IrTy::Ptr)) {
+                        let ty = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                        self.option_wrap(t, &ty, e.span)?
+                    } else {
+                        t
+                    };
                     self.instr(IrInstr::StoreSlot { slot, v: t });
                 }
                 None => {
@@ -7615,6 +7655,12 @@ fn build_lambda_body(
             match res_slot {
                 Some(slot) => {
                     let t = self.expr(e)?;
+                    let t = if matches!(self.fslots.get(slot.0 as usize), Some(IrTy::Ptr)) {
+                        let ty = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                        self.option_wrap(t, &ty, e.span)?
+                    } else {
+                        t
+                    };
                     self.instr(IrInstr::StoreSlot { slot, v: t });
                 }
                 None => {
@@ -7638,6 +7684,15 @@ fn build_lambda_body(
         if let Some(e) = &b.expr {
             let t = self.expr(e)?;
             if let Some(slot) = res_slot {
+                // Same option-boxing rule as match arms: a scalar tail into a
+                // `Ptr` result slot (an option-typed `if`/`if let`) must be
+                // lifted before storing.
+                let t = if matches!(self.fslots.get(slot.0 as usize), Some(IrTy::Ptr)) {
+                    let ty = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                    self.option_wrap(t, &ty, e.span)?
+                } else {
+                    t
+                };
                 self.instr(IrInstr::StoreSlot { slot, v: t });
             }
         }

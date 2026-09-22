@@ -10,7 +10,10 @@ use crate::gc::Gc;
 use crate::layout::{
     enum_field_count, enum_object_size, enum_set_tag, enum_tag, ENUM_FIELDS_OFF,
 };
-use crate::object::{PickleObject, PICKLE_CLASS_ENUM};
+use crate::object::{
+    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
+    PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_STRING,
+};
 
 /// Create an enum object holding `tag` and `field_count` null payload fields.
 pub fn enum_new(tag: i64, field_count: usize, gc: &mut Gc) -> *mut PickleObject {
@@ -63,6 +66,11 @@ pub fn enum_tag_of(obj: *const PickleObject) -> i64 {
     enum_tag(obj)
 }
 
+/// The runtime class id of an object (must be non-null).
+fn enum_class_of(obj: *const PickleObject) -> u32 {
+    unsafe { (*obj).class_id }
+}
+
 // ---- Exported ABI ----------------------------------------------------------
 // Thin `extern "C"` wrappers over the internal Rust APIs so compiled programs
 // can construct enum values and inspect their tag/fields. Payload fields must
@@ -98,6 +106,68 @@ pub extern "C" fn pickle_enum_field(
     index: usize,
 ) -> *mut PickleObject {
     enum_field(obj, index)
+}
+
+/// Structural equality of two enum objects: same tag and equal payload fields.
+/// Fields compare by their runtime class — boxed scalars by value (floats by
+/// `f64` value, not bit pattern, so `-0.0 == 0.0` and `NaN != NaN`), strings by
+/// content, nested enums recursively, and any other managed payload (class
+/// instances, lists, maps, tuples, options, ...) by pointer identity.
+#[no_mangle]
+pub extern "C" fn pickle_enum_eq(
+    a: *const PickleObject,
+    b: *const PickleObject,
+) -> bool {
+    if std::ptr::eq(a, b) {
+        return true;
+    }
+    if a.is_null() || b.is_null() {
+        return false;
+    }
+    if enum_class_of(a) != PICKLE_CLASS_ENUM || enum_class_of(b) != PICKLE_CLASS_ENUM {
+        return false;
+    }
+    if enum_tag(a) != enum_tag(b) {
+        return false;
+    }
+    let na = enum_field_count(a);
+    let nb = enum_field_count(b);
+    if na != nb {
+        return false;
+    }
+    for i in 0..na {
+        if !enum_field_eq(enum_field(a, i), enum_field(b, i)) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Equality of a single managed payload slot, used by `pickle_enum_eq`.
+fn enum_field_eq(a: *const PickleObject, b: *const PickleObject) -> bool {
+    if std::ptr::eq(a, b) {
+        return true;
+    }
+    if a.is_null() || b.is_null() {
+        return false;
+    }
+    let ca = enum_class_of(a);
+    let cb = enum_class_of(b);
+    if ca != cb {
+        return false;
+    }
+    match ca {
+        PICKLE_CLASS_BOX_INT | PICKLE_CLASS_BOX_BOOL | PICKLE_CLASS_BOX_CHAR => {
+            crate::boxscalar::box_bits(a) == crate::boxscalar::box_bits(b)
+        }
+        PICKLE_CLASS_BOX_FLOAT => {
+            f64::from_bits(crate::boxscalar::box_bits(a) as u64)
+                == f64::from_bits(crate::boxscalar::box_bits(b) as u64)
+        }
+        PICKLE_CLASS_STRING => crate::strings::string_cmp(a, b) == 0,
+        PICKLE_CLASS_ENUM => pickle_enum_eq(a, b),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +227,104 @@ mod tests {
         enum_set_field(e, 1, b);
         assert_eq!(crate::boxscalar::box_bits(enum_field(e, 0)), 10);
         assert_eq!(crate::boxscalar::box_bits(enum_field(e, 1)), 20);
+    }
+
+    #[test]
+    fn enum_eq_compares_tag_and_fields() {
+        let _guard = setup();
+        let gc = crate::gc::gc_mut();
+        unsafe {
+            // Same tag, no fields: equal regardless of address.
+            let a = enum_new(3, 0, gc);
+            let b = enum_new(3, 0, gc);
+            assert!(pickle_enum_eq(a, b));
+            // Different tag: unequal.
+            let c = enum_new(4, 0, gc);
+            assert!(!pickle_enum_eq(a, c));
+            // Payload fields compare by value.
+            let p1 = enum_new(1, 2, gc);
+            let p2 = enum_new(1, 2, gc);
+            enum_set_field(p1, 0, crate::boxscalar::pickle_box_i64(10));
+            enum_set_field(p1, 1, crate::strings::pickle_str_from_bytes("x".as_ptr(), 1));
+            enum_set_field(p2, 0, crate::boxscalar::pickle_box_i64(10));
+            enum_set_field(p2, 1, crate::strings::pickle_str_from_bytes("x".as_ptr(), 1));
+            assert!(pickle_enum_eq(p1, p2));
+            // Mismatched scalar payload: unequal.
+            let p3 = enum_new(1, 2, gc);
+            enum_set_field(p3, 0, crate::boxscalar::pickle_box_i64(11));
+            enum_set_field(p3, 1, crate::strings::pickle_str_from_bytes("x".as_ptr(), 1));
+            assert!(!pickle_enum_eq(p1, p3));
+            // Mismatched string payload: unequal.
+            let p4 = enum_new(1, 2, gc);
+            enum_set_field(p4, 0, crate::boxscalar::pickle_box_i64(10));
+            enum_set_field(p4, 1, crate::strings::pickle_str_from_bytes("y".as_ptr(), 1));
+            assert!(!pickle_enum_eq(p1, p4));
+            // Self-comparison short-circuits.
+            assert!(pickle_enum_eq(p1, p1));
+        }
+    }
+
+    #[test]
+    fn enum_eq_nested_enums_recurse() {
+        let _guard = setup();
+        let gc = crate::gc::gc_mut();
+        unsafe {
+            let inner_target = enum_new(7, 0, gc);
+            let outer1 = enum_new(9, 1, gc);
+            let outer2 = enum_new(9, 1, gc);
+            enum_set_field(outer1, 0, inner_target);
+            enum_set_field(outer2, 0, inner_target);
+            // Same inner pointer (or structurally equal) -> equal.
+            assert!(pickle_enum_eq(outer1, outer1));
+            let inner2 = enum_new(7, 0, gc);
+            let outer3 = enum_new(9, 1, gc);
+            enum_set_field(outer3, 0, inner2);
+            assert!(pickle_enum_eq(outer1, outer3));
+        }
+    }
+
+    #[test]
+    fn enum_eq_mismatched_payload_class_false() {
+        let _guard = setup();
+        let gc = crate::gc::gc_mut();
+        unsafe {
+            let e = enum_new(2, 1, gc);
+            let other = enum_new(2, 1, gc);
+            // One payload is a float box, the other an int box: unequal even
+            // though both happen to carry the same bit pattern.
+            let f = crate::boxscalar::pickle_box_f64(1.0);
+            let i = crate::boxscalar::pickle_box_i64(0x3FF0_0000_0000_0000);
+            enum_set_field(e, 0, f);
+            enum_set_field(other, 0, i);
+            assert!(!pickle_enum_eq(e, other));
+            // Float boxes compare by value: NaN != NaN, -0.0 == 0.0.
+            let nan1 = crate::boxscalar::pickle_box_f64(f64::NAN);
+            let nan2 = crate::boxscalar::pickle_box_f64(f64::NAN);
+            let e1 = enum_new(4, 1, gc);
+            let e2 = enum_new(4, 1, gc);
+            enum_set_field(e1, 0, nan1);
+            enum_set_field(e2, 0, nan2);
+            assert!(!pickle_enum_eq(e1, e2), "NaN != NaN under f64 value compare");
+            let nz1 = crate::boxscalar::pickle_box_f64(-0.0);
+            let nz2 = crate::boxscalar::pickle_box_f64(0.0);
+            let e3 = enum_new(5, 1, gc);
+            let e4 = enum_new(5, 1, gc);
+            enum_set_field(e3, 0, nz1);
+            enum_set_field(e4, 0, nz2);
+            assert!(pickle_enum_eq(e3, e4), "-0.0 == 0.0 under f64 value compare");
+        }
+    }
+
+    #[test]
+    fn enum_eq_null_or_mismatched_objects_false() {
+        let _guard = setup();
+        let gc = crate::gc::gc_mut();
+        let e = enum_new(0, 1, gc);
+        assert!(!pickle_enum_eq(e, std::ptr::null_mut()));
+        assert!(!pickle_enum_eq(std::ptr::null_mut(), e));
+        // A non-enum managed object is never equal to an enum.
+        let s = crate::strings::pickle_str_from_bytes("x".as_ptr(), 1) as *const PickleObject;
+        assert!(!pickle_enum_eq(e, s));
     }
 
     #[test]

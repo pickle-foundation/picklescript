@@ -1043,6 +1043,7 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_enum_set_field" => abi::pickle_enum_set_field as *const () as usize,
         "pickle_enum_tag" => abi::pickle_enum_tag as *const () as usize,
         "pickle_enum_field" => abi::pickle_enum_field as *const () as usize,
+        "pickle_enum_eq" => abi::pickle_enum_eq as *const () as usize,
         "pickle_tuple_new" => abi::pickle_tuple_new as *const () as usize,
         "pickle_tuple_set_field" => abi::pickle_tuple_set_field as *const () as usize,
         "pickle_tuple_field" => abi::pickle_tuple_field as *const () as usize,

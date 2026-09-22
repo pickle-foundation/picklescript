@@ -326,6 +326,7 @@ pub mod abi {
     pub use crate::map::pickle_map_set;
     pub use crate::map::pickle_map_values;
 
+    pub use crate::r#enum::pickle_enum_eq;
     pub use crate::r#enum::pickle_enum_field;
     pub use crate::r#enum::pickle_enum_new;
     pub use crate::r#enum::pickle_enum_set_field;
