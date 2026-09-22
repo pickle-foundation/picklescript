@@ -1125,6 +1125,11 @@ impl<'a> Emitter<'a> {
                     || self
                         .property_ids
                         .contains_key(&(cid as u32, name.to_string(), false))
+                    || self
+                        .method_ids
+                        .get(&(cid as u32, name.to_string()))
+                        .map(|&(_, is_static)| !is_static)
+                        .unwrap_or(false)
                 {
                     needs_this = true;
                     continue;
@@ -8640,6 +8645,32 @@ fn build_lambda_body(
                 if !info.generics.is_empty() {
                     let arg_tys = self.infer_generic_fn_args(e.span, &info, args)?;
                     return self.generic_fn_call(e, &info, arg_tys, args);
+                }
+            }
+        }
+        // A bare instance method of the enclosing class: call it on the
+        // implicit receiver (`this`), exactly like `this.name(...)`. Statics
+        // resolve by the declaring class alone. Overridden methods dispatch
+        // on the runtime class id just like an explicit receiver call.
+        if let Some(cid) = self.owner {
+            if let ExprKind::Ident(mname) = &callee.kind {
+                if let Some(&(fid, is_static)) =
+                    self.method_ids.get(&(cid as u32, mname.clone()))
+                {
+                    if is_static {
+                        return self.call_method(e, fid, args, None);
+                    }
+                    let this = self.this_value(e)?;
+                    let virtual_branches = self
+                        .virtual_dispatch
+                        .get(&(cid as u32, mname.clone()))
+                        .cloned();
+                    if let Some(branches) = virtual_branches {
+                        if !branches.is_empty() {
+                            return self.virtual_method_call(e, fid, args, this, &branches);
+                        }
+                    }
+                    return self.call_method(e, fid, args, Some(this));
                 }
             }
         }
