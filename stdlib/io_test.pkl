@@ -1,0 +1,15 @@
+module std.io_test
+
+import { write, writeln, writeErr, writelnErr } from std.io
+
+test fn io_writes_count_bytes() {
+    expect(write("abc")).toBe(3)
+    expect(writeln("ab")).toBe(3)
+    expect(writeErr("xy")).toBe(2)
+    expect(writelnErr("z")).toBe(2)
+}
+
+test fn io_empty_writes_are_noops() {
+    expect(write("")).toBe(0)
+    expect(writeErr("")).toBe(0)
+}

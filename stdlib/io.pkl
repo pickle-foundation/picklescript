@@ -1,0 +1,27 @@
+module std.io
+
+/// Write `text` bytes to the standard output stream; returns bytes written.
+fn write(text: string) -> int {
+    let s = stdout_stream()
+    let n = s.write(bytes(text))
+    s.flush()
+    n
+}
+
+/// `text` followed by a newline on the standard output stream.
+fn writeln(text: string) -> int {
+    write(text + "\n")
+}
+
+/// Write `text` bytes to the standard error stream; returns bytes written.
+fn writeErr(text: string) -> int {
+    let s = stderr_stream()
+    let n = s.write(bytes(text))
+    s.flush()
+    n
+}
+
+/// `text` followed by a newline on the standard error stream.
+fn writelnErr(text: string) -> int {
+    writeErr(text + "\n")
+}
