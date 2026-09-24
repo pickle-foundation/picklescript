@@ -1,0 +1,30 @@
+import * from std.test
+
+fn pass() -> string? {
+    none
+}
+
+fn failMsg() -> string? {
+    "nope"
+}
+
+fn failAssert() -> string? {
+    "assertion failed"
+}
+
+fn main() -> int {
+    let all = [TestCase("pass_a", pass), TestCase("pass_b", pass)]
+    var hooks = emptyHooks()
+    let code1 = runTests(all, hooks)
+    let mixed = [
+        TestCase("ok", pass),
+        TestCase("bad", failMsg),
+        TestCase("boom", failAssert),
+    ]
+    let code2 = runTests(mixed, hooks)
+    println("codes=" + str(code1) + "," + str(code2))
+    if (code1 == 0 && code2 == 1) {
+        return 0
+    }
+    return 1
+}

@@ -247,24 +247,38 @@ later. Math: transcendental + vector/repr helpers.
 
 ## Testing
 
-`test fn name()` or `test("desc", ...)`/`it` suites in any module; `describe`
-groups nest, and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks run
-per group (each group may declare its own; beforeAll root-first, afterAll
-leaf-first). Runs print a `describe <name>` header per opened group and
-`test <desc> ... ok|FAILED` lines per test, then a
-`test result: N passed; M failed` summary; test names are the desugared
-`group > group > desc` path so `--filter` matches describe and test names
-alike. `expect(value).matcher(...)` gives readable failure output; the
+`std.test` (landed in `stdlib/test.pkl`, workspace crate `std`) is the
+group-aware runner behind `describe`/hooks, now written in PickleScript and
+byte-identical to the original Rust runner (`runtime/src/test.rs`). It exports
+`TestCase` (a test `name` with a `body: fn () -> string?` that returns the
+failure detail or none), `Hook` (`group`, `kind`, `body: fn ()`), the hook
+constants `HOOK_BEFORE_ALL`/`BEFORE_EACH`/`AFTER_EACH`/`AFTER_ALL`, the name
+helpers `splitTestName`, `groupPrefixes`, `lastSeg`, and
+`runTests(tests, hooks) -> int` (0 = all pass, 1 = any failed). `group > desc`
+test names become `describe` headers; a `bool`-returning body is not a thing —
+return the failure `string?` or none.
+
+In a module:
+
+```
+test fn name() { ... }
+```
+or `test("desc", ...)`/`it` suites; `describe` groups nest, and
+`beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks run per group (each
+group may declare its own; beforeAll root-first, afterAll leaf-first). Runs
+print a `describe <name>` header per opened group and `test <desc> ... ok|FAILED`
+lines per test, then a `test result: N passed; M failed` summary; test names are
+the desugared `group > group > desc` path so `--filter` matches describe and
+test names alike. `expect(value).matcher(...)` gives readable failure output; the
 matchers are `.toBe` (deep/structural equality on managed values), `.toEqual`
 (same as `toBe`), `.toBeTruthy`, `.toBeFalsy`, `.toBeNull`, `.toExist`,
 `.toHaveLength(n)` (string, list, or map), `.toContain(x)` (string substring
 or list element), `.toBeGreaterThan(x)`, `.toBeLessThan(x)`, and any of them
 can be negated with a leading `.not()`. Assertions:
-`assert(cond, msg?)`; `std.test` provides asserts and timing for longer-term
-plans. `pickle test` discovers `*_test.pkl`/`*.test.pkl` files and runs them,
-reporting per-module, per-group results. `#[tag("name")]` on a test item
-attaches tags (repeatable) and `pickle test --tag name` runs only the tests
-carrying one.
+`assert(cond, msg?)`. `pickle test` discovers `*_test.pkl`/`*.test.pkl` files
+and runs them, reporting per-module, per-group results. `#[tag("name")]` on a
+test item attaches tags (repeatable) and `pickle test --tag name` runs only the
+tests carrying one.
 
 ## Release plan
 

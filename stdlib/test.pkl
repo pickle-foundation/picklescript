@@ -1,0 +1,255 @@
+module std.test
+
+const HOOK_BEFORE_ALL: int = 0
+const HOOK_BEFORE_EACH: int = 1
+const HOOK_AFTER_EACH: int = 2
+const HOOK_AFTER_ALL: int = 3
+
+class TestCase {
+    var name: string
+    var body: fn () -> string?
+
+    constructor(name: string, body: fn () -> string?) {
+        this.name = name
+        this.body = body
+    }
+}
+
+class Hook {
+    var group: string
+    var kind: int
+    var body: fn ()
+
+    constructor(group: string, kind: int, body: fn ()) {
+        this.group = group
+        this.kind = kind
+        this.body = body
+    }
+}
+
+class NameParts {
+    var group: string
+    var desc: string
+
+    constructor(group: string, desc: string) {
+        this.group = group
+        this.desc = desc
+    }
+}
+
+fn emptyStrs() -> List<string> {
+    var l = [""]
+    l.pop()
+    l
+}
+
+fn emptyTests() -> List<TestCase> {
+    var l = [TestCase("x", noopStr)]
+    l.pop()
+    l
+}
+
+fn noopStr() -> string? {
+    none
+}
+
+fn emptyHooks() -> List<Hook> {
+    var l = [Hook("", 0, noop)]
+    l.pop()
+    l
+}
+
+fn noop() {}
+
+fn splitStr(s: string, sep: string) -> List<string> {
+    let sb = bytes(s)
+    let pb = bytes(sep)
+    var out = emptyStrs()
+    var cur = bytes("")
+    var i = 0
+    let n = len(sb)
+    let m = len(pb)
+    while (i < n) {
+        var hit = true
+        var k = 0
+        while (k < m) {
+            if (i + k >= n || sb[i + k] != pb[k]) {
+                hit = false
+            }
+            k = k + 1
+        }
+        if (hit) {
+            out.push(str(cur))
+            cur = bytes("")
+            i = i + m
+        } else {
+            cur.push(sb[i])
+            i = i + 1
+        }
+    }
+    out.push(str(cur))
+    out
+}
+
+fn lastSeg(group: string) -> string {
+    let parts = splitStr(group, " > ")
+    if (len(parts) == 0) {
+        return group
+    }
+    let start = len(parts) - 1
+    let seg = parts[start]
+    parts.pop()
+    seg
+}
+
+/// Split a compiled test name `"g1 > g2 > desc"` into its (group path, test
+/// description). A name with no `" > "` lives in the root group.
+fn splitTestName(name: string) -> NameParts {
+    let parts = splitStr(name, " > ")
+    if (len(parts) == 1) {
+        return NameParts("", name)
+    }
+    var desc = ""
+    if (len(parts) > 0) {
+        desc = parts[len(parts) - 1]
+    }
+    parts.pop()
+    var acc = ""
+    var i = 0
+    while (i < len(parts)) {
+        if (i > 0) {
+            acc = acc + " > "
+        }
+        acc = acc + parts[i]
+        i = i + 1
+    }
+    NameParts(acc, desc)
+}
+
+/// Every proper ancestor group string of `group` (the prefixes of its path).
+/// `""` (root) yields `[]`; `"a > b"` yields `["a", "a > b"]`.
+fn groupPrefixes(group: string) -> List<string> {
+    if (group == "") {
+        return emptyStrs()
+    }
+    let segs = splitStr(group, " > ")
+    var out = emptyStrs()
+    var pref = ""
+    var i = 0
+    while (i < len(segs)) {
+        if (i > 0) {
+            pref = pref + " > "
+        }
+        pref = pref + segs[i]
+        out.push(pref)
+        i = i + 1
+    }
+    out
+}
+
+fn isNone(detail: string?) -> bool {
+    match (detail) {
+        case none -> true
+        case some(_) -> false
+    }
+}
+
+fn indent(depth: int) -> string {
+    var s = ""
+    var i = 0
+    while (i < depth) {
+        s = s + "  "
+        i = i + 1
+    }
+    s
+}
+
+fn runHooks(hooks: List<Hook>, group: string, kind: int) {
+    for (h in hooks) {
+        if (h.kind == kind && h.group == group) {
+            h.body()
+        }
+    }
+}
+
+fn groupHeader(group: string, depth: int) {
+    let name = lastSeg(group)
+    println(indent(depth) + "describe " + name)
+}
+
+fn report(desc: string, depth: int, ok: bool, detail: string?) {
+    var line = indent(depth) + "test " + desc + " ... "
+    if (ok) {
+        line = line + "ok"
+    } else {
+        line = line + "FAILED"
+        if (let some(d) = detail) {
+            line = line + " (" + d + ")"
+        }
+    }
+    println(line)
+}
+
+fn reportSummary(passed: int, failed: int) {
+    println("test result: " + str(passed) + " passed; " + str(failed) + " failed")
+}
+
+/// Run every registered test (group-aware: emits `describe` headers, runs the
+/// group's `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks around each
+/// test, and reports one line per test plus a summary). Returns 0 when all
+/// tests pass, 1 when any test recorded a failure. Mirrors
+/// `pickle_runtime_run_tests` in `runtime/src/test.rs`.
+fn runTests(tests: List<TestCase>, hooks: List<Hook>) -> int {
+    var passed = 0
+    var failed = 0
+    var open = emptyStrs()
+    if (len(tests) > 0) {
+        runHooks(hooks, "", HOOK_BEFORE_ALL)
+    }
+    for (t in tests) {
+        let parts = splitTestName(t.name)
+        let prefixes = groupPrefixes(parts.group)
+        var common = 0
+        while (common < len(open) && common < len(prefixes) && open[common] == prefixes[common]) {
+            common = common + 1
+        }
+        while (len(open) > common) {
+            let g = open.pop()
+            runHooks(hooks, g, HOOK_AFTER_ALL)
+        }
+        while (len(open) < len(prefixes)) {
+            let g = prefixes[len(open)]
+            runHooks(hooks, g, HOOK_BEFORE_ALL)
+            groupHeader(g, len(open))
+            open.push(g)
+        }
+        runHooks(hooks, "", HOOK_BEFORE_EACH)
+        for (p in prefixes) {
+            runHooks(hooks, p, HOOK_BEFORE_EACH)
+        }
+        let detail = t.body()
+        let ok = isNone(detail)
+        if (ok) {
+            passed = passed + 1
+        } else {
+            failed = failed + 1
+        }
+        var i = len(prefixes) - 1
+        while (i >= 0) {
+            runHooks(hooks, prefixes[i], HOOK_AFTER_EACH)
+            i = i - 1
+        }
+        runHooks(hooks, "", HOOK_AFTER_EACH)
+        report(parts.desc, len(open), ok, detail)
+    }
+    while (len(open) > 0) {
+        let g = open.pop()
+        runHooks(hooks, g, HOOK_AFTER_ALL)
+    }
+    runHooks(hooks, "", HOOK_AFTER_ALL)
+    reportSummary(passed, failed)
+    if (failed > 0) {
+        return 1
+    }
+    return 0
+}

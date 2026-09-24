@@ -16,6 +16,7 @@ members = [
     { name = "compiler", path = "compiler-selfhost" },
     { name = "cli", path = "cli-selfhost" },
     { name = "runtime", path = "runtime-selfhost" },
+    { name = "std", path = "stdlib" },
 ]
 
 # Where the package manager keeps its state.
