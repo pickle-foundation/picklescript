@@ -1,0 +1,174 @@
+module std.collections.deque_test
+
+import { Deque } from std.collections.deque
+
+test fn empty_behaviors() {
+    let d = Deque<int>(0)
+    expect(d.size()).toBe(0)
+    match (d.front()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (d.back()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (d.popFront()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (d.popBack()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn push_back_pop_front_fifo() {
+    let d = Deque<int>(0)
+    d.pushBack(1)
+    d.pushBack(2)
+    d.pushBack(3)
+    expect(d.size()).toBe(3)
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    expect(d.size()).toBe(1)
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    expect(d.size()).toBe(0)
+}
+
+test fn push_front_reverses_order() {
+    let d = Deque<int>(0)
+    d.pushFront(1)
+    d.pushFront(2)
+    d.pushFront(3)
+    match (d.front()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn pop_back_lifo_from_back() {
+    let d = Deque<int>(0)
+    d.pushBack(1)
+    d.pushBack(2)
+    d.pushBack(3)
+    match (d.back()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popBack()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popBack()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    expect(d.size()).toBe(1)
+    match (d.popBack()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn alternating_ends() {
+    let d = Deque<int>(0)
+    d.pushFront(10)
+    d.pushBack(20)
+    d.pushFront(5)
+    d.pushBack(30)
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(5)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popBack()) {
+        case some(v) -> expect(v).toBe(30)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(10)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(20)
+        case none -> expect(false).toBe(true)
+    }
+    expect(d.size()).toBe(0)
+}
+
+test fn clear_then_reuse() {
+    let d = Deque<int>(0)
+    d.pushBack(1)
+    d.pushBack(2)
+    d.clear()
+    expect(d.size()).toBe(0)
+    d.pushBack(3)
+    d.pushFront(4)
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe(4)
+        case none -> expect(false).toBe(true)
+    }
+    expect(d.size()).toBe(1)
+}
+
+test fn string_deque() {
+    let d = Deque<string>("")
+    d.pushBack("a")
+    d.pushFront("z")
+    match (d.popFront()) {
+        case some(v) -> expect(v).toBe("z")
+        case none -> expect(false).toBe(true)
+    }
+    match (d.popBack()) {
+        case some(v) -> expect(v).toBe("a")
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn compaction_keeps_order() {
+    let d = Deque<int>(0)
+    var i = 0
+    while (i < 300) {
+        d.pushBack(i)
+        i = i + 1
+    }
+    var i = 0
+    while (i < 250) {
+        match (d.popFront()) {
+            case some(v) -> expect(v).toBe(i)
+            case none -> expect(false).toBe(true)
+        }
+        i = i + 1
+    }
+    expect(d.size()).toBe(50)
+    d.pushBack(999)
+    match (d.back()) {
+        case some(v) -> expect(v).toBe(999)
+        case none -> expect(false).toBe(true)
+    }
+    match (d.front()) {
+        case some(v) -> expect(v).toBe(250)
+        case none -> expect(false).toBe(true)
+    }
+}

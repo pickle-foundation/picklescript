@@ -1,0 +1,91 @@
+module std.collections.deque
+
+/// A double-ended queue seed over `List<T>`. Live elements occupy
+/// `[head, len(items))`, so front pops are O(1) amortized with periodic
+/// compaction (`head > 64 && head * 2 > len`). Uses the typed proto-value
+/// staging from `std.collections.set` for an empty backing list
+/// (`Deque[int](0)`, `Deque[string]("")`).
+class Deque<T> {
+    var items: List<T>
+    var head: int
+
+    constructor(proto: T) {
+        this.items = [proto]
+        this.items.remove(0)
+        this.head = 0
+    }
+
+    /// Number of live elements.
+    fn size() -> int {
+        len(this.items) - this.head
+    }
+
+    /// Append `v` to the back.
+    fn pushBack(v: T) {
+        this.items.push(v)
+    }
+
+    /// Prepend `v` to the front.
+    fn pushFront(v: T) {
+        this.items.insert(this.head, v)
+    }
+
+    /// The front element; `none` when empty.
+    fn front() -> T? {
+        if (this.size() == 0) {
+            return none
+        }
+        this.items[this.head]
+    }
+
+    /// The back element; `none` when empty.
+    fn back() -> T? {
+        if (this.size() == 0) {
+            return none
+        }
+        this.items[len(this.items) - 1]
+    }
+
+    /// Remove and return the front element; `none` when empty.
+    fn popFront() -> T? {
+        if (this.size() == 0) {
+            return none
+        }
+        let v = this.items[this.head]
+        this.head = this.head + 1
+        this._compact()
+        v
+    }
+
+    /// Remove and return the back element; `none` when empty.
+    fn popBack() -> T? {
+        if (this.size() == 0) {
+            return none
+        }
+        let b = this.items[len(this.items) - 1]
+        this.items.remove(len(this.items) - 1)
+        this._compact()
+        b
+    }
+
+    /// Clear all elements (restages an empty backing list).
+    fn clear() {
+        this.items = [this.items[this.head]]
+        this.items.remove(0)
+        this.head = 0
+    }
+
+    /// Drop consumed front slots when they dominate the backing list.
+    fn _compact() {
+        if (this.head > 64 && this.head * 2 > len(this.items)) {
+            var out: List<T> = [this.items[this.head]]
+            var i = this.head + 1
+            while (i < len(this.items)) {
+                out.push(this.items[i])
+                i = i + 1
+            }
+            this.items = out
+            this.head = 0
+        }
+    }
+}
