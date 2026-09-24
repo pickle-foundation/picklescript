@@ -1,0 +1,514 @@
+module std.json
+
+import { StringBuilder } from std.text.stringbuilder
+import { hexVal } from std.text.utf8
+
+/// A JSON value tree (`std.json`): `null`, bool, number (as `float`),
+/// string, array, or object. `parse(text)` returns `none` on any syntax
+/// error; `stringify(v)` emits the canonical compact form. Numbers are held
+/// as `float` (`str(float)` renders `10.0` as `"10"`, `1.5` as `"1.5"`).
+enum Json {
+    JNull
+    JBool(b: bool)
+    JNum(n: float)
+    JStr(s: string)
+    JArr(items: List<Json>)
+    JObj(fields: Map<string, Json>)
+}
+
+/// A recursive-descent parser cursor over `text`'s bytes.
+class Parser {
+    var bs: List<byte>
+    var i: int
+
+    constructor(text: string) {
+        this.bs = bytes(text)
+        this.i = 0
+    }
+
+    /// Byte at the cursor as `int`, or -1 at end of input.
+    fn peek() -> int {
+        if (this.i >= len(this.bs)) {
+            return -1
+        }
+        this.bs[this.i] as int
+    }
+
+    /// Consume and return the byte at the cursor as `int`, or -1.
+    fn next() -> int {
+        let c = this.peek()
+        if (c >= 0) {
+            this.i = this.i + 1
+        }
+        c
+    }
+
+    /// Skip whitespace (space, tab, CR, LF).
+    fn skipWs() {
+        while (true) {
+            let c = this.peek()
+            if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) {
+                this.i = this.i + 1
+            } else {
+                return
+            }
+        }
+    }
+
+    /// Parse any JSON value; `none` on error.
+    fn parseValue() -> Json? {
+        this.skipWs()
+        let c = this.peek()
+        if (c == 0x22) {
+            match (this.parseString()) {
+                case some(s) -> {
+                    return Json.JStr(s)
+                }
+                case none -> {
+                    return none
+                }
+            }
+        }
+        if (c == 0x7B) {
+            return this.parseObject()
+        }
+        if (c == 0x5B) {
+            return this.parseArray()
+        }
+        if (c == 0x74) {
+            // t-r-u-e
+            if (this.next() == 0x74 && this.next() == 0x72 && this.next() == 0x75 && this.next() == 0x65) {
+                return Json.JBool(true)
+            }
+            return none
+        }
+        if (c == 0x66) {
+            // f-a-l-s-e
+            if (this.next() == 0x66 && this.next() == 0x61 && this.next() == 0x6C && this.next() == 0x73 && this.next() == 0x65) {
+                return Json.JBool(false)
+            }
+            return none
+        }
+        if (c == 0x6E) {
+            // n-u-l-l
+            if (this.next() == 0x6E && this.next() == 0x75 && this.next() == 0x6C && this.next() == 0x6C) {
+                return Json.JNull
+            }
+            return none
+        }
+        if (c == 0x2D || (c >= 0x30 && c <= 0x39)) {
+            return this.parseNumber()
+        }
+        none
+    }
+
+    /// Parse a double-quoted string (handles `\uXXXX` escapes and surrogate
+    /// pairs); `none` on error or unterminated input.
+    fn parseString() -> string? {
+        if (this.next() != 0x22) {
+            return none
+        }
+        let sb = StringBuilder()
+        while (true) {
+            let c = this.next()
+            if (c < 0) {
+                return none
+            }
+            if (c == 0x22) {
+                return sb.toString()
+            }
+            if (c != 0x5C) {
+                sb.appendByte(c as byte)
+                continue
+            }
+            let e = this.next()
+            if (e < 0) {
+                return none
+            }
+            if (e == 0x22) {
+                sb.appendByte(0x22 as byte)
+            } else if (e == 0x5C) {
+                sb.appendByte(0x5C as byte)
+            } else if (e == 0x2F) {
+                sb.appendByte(0x2F as byte)
+            } else if (e == 0x62) {
+                sb.appendByte(0x08 as byte)
+            } else if (e == 0x66) {
+                sb.appendByte(0x0C as byte)
+            } else if (e == 0x6E) {
+                sb.appendByte(0x0A as byte)
+            } else if (e == 0x72) {
+                sb.appendByte(0x0D as byte)
+            } else if (e == 0x74) {
+                sb.appendByte(0x09 as byte)
+            } else if (e == 0x75) {
+                // \uXXXX exactly 4 hex digits.
+                var cp = 0
+                var k = 0
+                while (k < 4) {
+                    let h = this.next()
+                    let hv = hexVal(h)
+                    if (hv < 0) {
+                        return none
+                    }
+                    cp = cp * 16 + hv
+                    k = k + 1
+                }
+                // Combine a high surrogate + following low surrogate.
+                if (cp >= 0xD800 && cp <= 0xDBFF && this.peek() == 0x5C) {
+                    let save = this.i
+                    this.next() // consume backslash
+                    if (this.next() != 0x75) {
+                        this.i = save
+                    } else {
+                        var lo = 0
+                        var j = 0
+                        var ok = true
+                        while (j < 4) {
+                            let h = this.next()
+                            let hv = hexVal(h)
+                            if (hv < 0) {
+                                ok = false
+                                break
+                            }
+                            lo = lo * 16 + hv
+                            j = j + 1
+                        }
+                        if (ok && lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) * 0x400) + (lo - 0xDC00)
+                        } else {
+                            this.i = save
+                        }
+                    }
+                }
+                sb.appendCp(cp)
+            } else {
+                return none
+            }
+        }
+    }
+
+    /// Parse an object; `none` on error. Entry order follows the host map.
+    fn parseObject() -> Json? {
+        if (this.next() != 0x7B) {
+            return none
+        }
+        let fields: Map<string, Json> = {"__proto": Json.JNull}
+        fields.remove("__proto")
+        this.skipWs()
+        let c = this.peek()
+        if (c == 0x7D) {
+            this.next()
+            return Json.JObj(fields)
+        }
+        while (true) {
+            this.skipWs()
+            match (this.parseString()) {
+                case some(k) -> {
+                    this.skipWs()
+                    if (this.next() != 0x3A) {
+                        return none
+                    }
+                    this.skipWs()
+                    match (this.parseValue()) {
+                        case some(v) -> fields[k] = v
+                        case none -> {
+                            return none
+                        }
+                    }
+                }
+                case none -> {
+                    return none
+                }
+            }
+            this.skipWs()
+            let d = this.next()
+            if (d == 0x2C) {
+                continue
+            }
+            if (d == 0x7D) {
+                return Json.JObj(fields)
+            }
+            return none
+        }
+    }
+
+    /// Parse an array; `none` on error.
+    fn parseArray() -> Json? {
+        if (this.next() != 0x5B) {
+            return none
+        }
+        let items: List<Json> = [Json.JNull]
+        items.remove(0)
+        this.skipWs()
+        let c = this.peek()
+        if (c == 0x5D) {
+            this.next()
+            return Json.JArr(items)
+        }
+        while (true) {
+            this.skipWs()
+            match (this.parseValue()) {
+                case some(v) -> items.push(v)
+                case none -> {
+                    return none
+                }
+            }
+            this.skipWs()
+            let d = this.next()
+            if (d == 0x2C) {
+                continue
+            }
+            if (d == 0x5D) {
+                return Json.JArr(items)
+            }
+            return none
+        }
+    }
+
+    /// Parse a number into `float`; `none` on malformed digits.
+    fn parseNumber() -> Json? {
+        var sign = 1.0
+        var v = 0.0
+        var c = this.peek()
+        if (c == 0x2D) {
+            sign = -1.0
+            this.next()
+        }
+        var hasInt = false
+        while (true) {
+            let d = this.peek()
+            if (d >= 0x30 && d <= 0x39) {
+                hasInt = true
+                v = v * 10.0 + (d - 0x30) as float
+                this.next()
+            } else {
+                break
+            }
+        }
+        if (!hasInt) {
+            return none
+        }
+        var k = 0
+        var frac = 0.0
+        if (this.peek() == 0x2E) {
+            this.next()
+            while (true) {
+                let d = this.peek()
+                if (d >= 0x30 && d <= 0x39) {
+                    k = k + 1
+                    var place = 1.0
+                    var m = 0
+                    while (m < k) {
+                        place = place * 0.1
+                        m = m + 1
+                    }
+                    frac = frac + (d - 0x30) as float * place
+                    this.next()
+                } else {
+                    break
+                }
+            }
+        }
+        c = this.peek()
+        var exp = 0
+        if (c == 0x65 || c == 0x45) {
+            this.next()
+            var esign = 1.0
+            c = this.peek()
+            if (c == 0x2B) {
+                this.next()
+            } else if (c == 0x2D) {
+                esign = -1.0
+                this.next()
+            }
+            var hasExp = false
+            while (true) {
+                let d = this.peek()
+                if (d >= 0x30 && d <= 0x39) {
+                    exp = exp * 10 + (d - 0x30)
+                    hasExp = true
+                    this.next()
+                } else {
+                    break
+                }
+            }
+            if (!hasExp) {
+                return none
+            }
+            exp = (exp as float * esign) as int
+        }
+        v = sign * (v + frac)
+        if (exp > 0) {
+            var m = 0
+            while (m < exp) {
+                v = v * 10.0
+                m = m + 1
+            }
+        } else if (exp < 0) {
+            var m = 0
+            while (m < -exp) {
+                v = v * 0.1
+                m = m + 1
+            }
+        }
+        Json.JNum(v)
+    }
+}
+
+/// Parse a JSON document (must consume the entire input); `none` on error.
+fn parse(text: string) -> Json? {
+    let p = Parser(text)
+    match (p.parseValue()) {
+        case some(v) -> {
+            p.skipWs()
+            if (p.peek() >= 0) {
+                return none
+            }
+            v
+        }
+        case none -> none
+    }
+}
+
+/// The canonical compact text of `v`.
+fn stringify(v: Json) -> string {
+    match (v) {
+        case Json.JNull -> "null"
+        case Json.JBool(b) -> {
+            if (b) {
+                return "true"
+            }
+            "false"
+        }
+        case Json.JNum(n) -> str(n)
+        case Json.JStr(s) -> _str(s)
+        case Json.JArr(items) -> {
+            let parts = elemStringify(items)
+            "[" + parts + "]"
+        }
+        case Json.JObj(fields) -> {
+            let keys = fields.keys()
+            let out = StringBuilder()
+            out.append("{{")
+            var first = true
+            for (k in keys) {
+                if (first) {
+                    out.append(_str(k) + ":")
+                    first = false
+                } else {
+                    out.append("," + _str(k) + ":")
+                }
+                match (fields.get(k)) {
+                    case some(val) -> out.append(stringify(val))
+                    case none -> {}
+                }
+            }
+            out.append("}")
+            out.toString()
+        }
+    }
+}
+
+/// Values joined by commas (no brackets).
+fn elemStringify(items: List<Json>) -> string {
+    let out = StringBuilder()
+    var first = true
+    for (v in items) {
+        if (first) {
+            out.append(stringify(v))
+            first = false
+        } else {
+            out.append("," + stringify(v))
+        }
+    }
+    out.toString()
+}
+
+/// A JSON string literal (quotes + escapes) from UTF-8 text.
+fn _str(s: string) -> string {
+    let out = StringBuilder()
+    out.appendByte(0x22 as byte)
+    for (b in bytes(s)) {
+        let c = b as int
+        if (c == 0x22) {
+            out.append("\\\"")
+        } else if (c == 0x5C) {
+            out.append("\\\\")
+        } else if (c == 0x08) {
+            out.append("\\b")
+        } else if (c == 0x0C) {
+            out.append("\\f")
+        } else if (c == 0x0A) {
+            out.append("\\n")
+        } else if (c == 0x0D) {
+            out.append("\\r")
+        } else if (c == 0x09) {
+            out.append("\\t")
+        } else if (c < 0x20) {
+            out.append("\\u")
+            out.append(hex4(c))
+        } else {
+            out.appendByte(b)
+        }
+    }
+    out.appendByte(0x22 as byte)
+    out.toString()
+}
+
+/// Four lowercase hex digits for `n`.
+fn hex4(n: int) -> string {
+    let digits = "0123456789abcdef"
+    let out = StringBuilder()
+    out.appendChar(digits[(n >> 12) % 16] as char)
+    out.appendChar(digits[(n >> 8) % 16] as char)
+    out.appendChar(digits[(n >> 4) % 16] as char)
+    out.appendChar(digits[n % 16] as char)
+    out.toString()
+}
+
+/// The value's JSON type name (`null`, `bool`, `number`, `string`,
+/// `array`, `object`).
+fn typeOf(v: Json) -> string {
+    match (v) {
+        case Json.JNull -> "null"
+        case Json.JBool(b) -> "bool"
+        case Json.JNum(n) -> "number"
+        case Json.JStr(s) -> "string"
+        case Json.JArr(items) -> "array"
+        case Json.JObj(fields) -> "object"
+    }
+}
+
+/// The value as `bool?`.
+fn asBool(v: Json) -> bool? {
+    match (v) {
+        case Json.JBool(b) -> b
+        case _ -> none
+    }
+}
+
+/// The value as `float?`.
+fn asNum(v: Json) -> float? {
+    match (v) {
+        case Json.JNum(n) -> n
+        case _ -> none
+    }
+}
+
+/// The value as `string?`.
+fn asStr(v: Json) -> string? {
+    match (v) {
+        case Json.JStr(s) -> s
+        case _ -> none
+    }
+}
+
+/// Look up `key` in an object value; `none` when it is not an object or the
+/// key is absent.
+fn field(v: Json, key: string) -> Json? {
+    match (v) {
+        case Json.JObj(fields) -> fields.get(key)
+        case _ -> none
+    }
+}

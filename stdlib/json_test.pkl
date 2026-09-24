@@ -1,0 +1,238 @@
+module std.json_test
+
+import { parse, stringify, typeOf, asBool, asNum, asStr, field } from std.json
+
+test fn parse_scalars() {
+    match (parse("null")) {
+        case some(j) -> {
+            expect(typeOf(j)).toBe("null")
+            expect(stringify(j)).toBe("null")
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("true")) {
+        case some(j) -> {
+            expect(typeOf(j)).toBe("bool")
+            match (asBool(j)) {
+                case some(b) -> expect(b).toBe(true)
+                case none -> expect(true).toBe(false)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("false")) {
+        case some(j) -> match (asBool(j)) {
+            case some(b) -> expect(b).toBe(false)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("\"hi\"")) {
+        case some(j) -> {
+            expect(typeOf(j)).toBe("string")
+            match (asStr(j)) {
+                case some(s) -> expect(s).toBe("hi")
+                case none -> expect(true).toBe(false)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn parse_numbers() {
+    match (parse("0")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> expect(n).toBe(0)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("-42")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> expect(n).toBe(-42)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("2.5")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> expect(n).toBe(2.5)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("1e2")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> expect(n).toBe(100)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("1.5e1")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> expect(n).toBe(15)
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("1e-2")) {
+        case some(j) -> match (asNum(j)) {
+            case some(n) -> {
+                expect(n > 0).toBe(true)
+                expect(n < 0.02).toBe(true)
+            }
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn stringify_scalars() {
+    match (parse("-12.5")) {
+        case some(j) -> expect(stringify(j)).toBe("-12.5")
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("3")) {
+        case some(j) -> expect(stringify(j)).toBe("3")
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn parse_arrays() {
+    match (parse("[1, 2, 3]")) {
+        case some(j) -> {
+            expect(typeOf(j)).toBe("array")
+            match (j) {
+                case Json.JArr(items) -> expect(len(items)).toBe(3)
+                case _ -> expect(true).toBe(false)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("[]")) {
+        case some(j) -> match (j) {
+            case Json.JArr(items) -> expect(len(items)).toBe(0)
+            case _ -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("[1, \"x\", true, null]")) {
+        case some(j) -> expect(stringify(j)).toBe("[1,\"x\",true,null]")
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn parse_objects() {
+    match (parse("{{\"a\": 1, \"b\": \"x\"}}")) {
+        case some(j) -> {
+            expect(typeOf(j)).toBe("object")
+            match (field(j, "a")) {
+                case some(a) -> match (asNum(a)) {
+                    case some(n) -> expect(n).toBe(1)
+                    case none -> expect(true).toBe(false)
+                }
+                case none -> expect(true).toBe(false)
+            }
+            match (field(j, "b")) {
+                case some(b) -> match (asStr(b)) {
+                    case some(s) -> expect(s).toBe("x")
+                    case none -> expect(true).toBe(false)
+                }
+                case none -> expect(true).toBe(false)
+            }
+            match (field(j, "missing")) {
+                case some(x) -> expect(true).toBe(false)
+                case none -> expect(true).toBe(true)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("{{\"a\":1}}")) {
+        case some(j) -> expect(stringify(j)).toBe("{{\"a\":1}}")
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn parse_escapes() {
+    match (parse("\"a\\nb\"")) {
+        case some(j) -> match (asStr(j)) {
+            case some(s) -> expect(s).toBe("a\nb")
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("\"tab\\tsep\"")) {
+        case some(j) -> match (asStr(j)) {
+            case some(s) -> expect(s).toBe("tab\tsep")
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("\"\\u0041\"")) {
+        case some(j) -> match (asStr(j)) {
+            case some(s) -> expect(s).toBe("A")
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+    match (parse("\"a\\\"b\"")) {
+        case some(j) -> match (asStr(j)) {
+            case some(s) -> expect(s).toBe("a\"b")
+            case none -> expect(true).toBe(false)
+        }
+        case none -> expect(true).toBe(false)
+    }
+}
+
+test fn parse_rejects_bad() {
+    match (parse("")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+    match (parse("nul")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+    match (parse("[1, 2")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+    match (parse("{{\"a\": 1")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+    match (parse("12x")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+    match (parse("[1, ]")) {
+        case some(j) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+}
+
+test fn parse_nested() {
+    match (parse("{{\"a\": {{\"b\": [1, {{\"c\": null}}]}} }}")) {
+        case some(j) -> {
+            match (field(j, "a")) {
+                case some(a) -> match (field(a, "b")) {
+                    case some(b) -> match (b) {
+                        case Json.JArr(items) -> {
+                            expect(len(items)).toBe(2)
+                            match (items[1]) {
+                                case x -> match (field(x, "c")) {
+                                    case some(c) -> expect(typeOf(c)).toBe("null")
+                                    case none -> expect(true).toBe(false)
+                                }
+                            }
+                        }
+                        case _ -> expect(true).toBe(false)
+                    }
+                    case none -> expect(true).toBe(false)
+                }
+                case none -> expect(true).toBe(false)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+}
