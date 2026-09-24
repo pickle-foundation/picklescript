@@ -1,0 +1,95 @@
+module std.text.stringbuilder
+
+import { cpLen, encodeCp, isScalar } from std.text.utf8
+
+/// A mutable string buffer over raw bytes (the `std.text` builder seed). Byte
+/// access is scalar-agnostic (`get`/`set` address single bytes; `set` mirrors
+/// the compiled `s[i] = v` byte write), and `.str()` materializes the buffer
+/// as a string (whose later index writes are copy-on-write at the language
+/// level). Configurations such as `StringBuilder("ab")` are chained from an
+/// empty builder then `append(...)`.
+class StringBuilder {
+    var bs: List<byte>
+
+    constructor() {
+        this.bs = bytes("")
+    }
+
+    /// Append a whole string's raw bytes.
+    fn append(s: string) {
+        for (b in bytes(s)) {
+            this.bs.push(b)
+        }
+    }
+
+    /// Append one raw byte (does not re-encode).
+    fn appendByte(b: byte) {
+        this.bs.push(b)
+    }
+
+    /// Append one scalar as its UTF-8 sequence.
+    fn appendCp(cp: int) {
+        if (isScalar(cp)) {
+            for (b in encodeCp(cp)) {
+                this.bs.push(b)
+            }
+        }
+    }
+
+    /// Append one `char` (a scalar) as its UTF-8 sequence.
+    fn appendChar(c: char) {
+        this.appendCp(c as int)
+    }
+
+    /// Append the decimal rendering of an integer.
+    fn appendInt(v: int) {
+        this.append(str(v))
+    }
+
+    /// The raw byte at index `i`.
+    fn get(i: int) -> byte {
+        this.bs[i]
+    }
+
+    /// Byte-exact write of raw byte `v` at index `i` (the builder analog of
+    /// the language's `s[i] = v`). No re-encoding; write at a sequence
+    /// boundary to keep scalar alignment.
+    fn set(i: int, v: byte) {
+        this.bs[i] = v
+    }
+
+    /// Buffer length in bytes.
+    fn length() -> int {
+        len(this.bs)
+    }
+
+    /// Number of scalars when the buffer contents are decoded (walks with
+    /// byte-exact offsets).
+    fn scalarCount() -> int {
+        var n = 0
+        var i = 0
+        while (i < len(this.bs)) {
+            i = i + cpLen(this.bs[i] as int)
+            n = n + 1
+        }
+        n
+    }
+
+    /// Clear the buffer (bytes only).
+    fn clear() {
+        this.bs = bytes("")
+    }
+
+    /// Materialize the buffer as a string (`str(List<byte>)` writes the raw
+    /// bytes verbatim).
+    fn toString() -> string {
+        str(this.bs)
+    }
+}
+
+/// Convenience constructor covering the `StringBuilder("seed")` shape.
+fn builder(seed: string) -> StringBuilder {
+    let sb = StringBuilder()
+    sb.append(seed)
+    sb
+}

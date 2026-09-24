@@ -1,0 +1,79 @@
+module std.text.stringbuilder_test
+
+import { StringBuilder, builder } from std.text.stringbuilder
+
+test fn empty_builder() {
+    let sb = StringBuilder()
+    expect(sb.length()).toBe(0)
+    expect(sb.toString()).toBe("")
+    expect(sb.scalarCount()).toBe(0)
+}
+
+test fn append_and_length() {
+    let sb = StringBuilder()
+    sb.append("hello")
+    expect(sb.length()).toBe(5)
+    expect(sb.toString()).toBe("hello")
+    sb.append(" world")
+    expect(sb.toString()).toBe("hello world")
+    expect(sb.length()).toBe(11)
+}
+
+test fn seed_via_builder() {
+    let sb = builder("ab")
+    sb.append("c")
+    expect(sb.toString()).toBe("abc")
+    expect(sb.scalarCount()).toBe(3)
+}
+
+test fn append_char_and_cp() {
+    let sb = StringBuilder()
+    sb.appendChar('¢')
+    sb.appendCp(0x20AC)
+    sb.appendCp(0x1F600)
+    expect(sb.length()).toBe(9)
+    expect(sb.scalarCount()).toBe(3)
+    expect(sb.toString()).toBe("¢€😀")
+}
+
+test fn byte_set_and_get() {
+    let sb = builder("abc")
+    expect(sb.get(0) as int).toBe(0x61)
+    expect(sb.get(2) as int).toBe(0x63)
+    sb.set(1, 0x42 as byte)
+    expect(sb.toString()).toBe("aBc")
+}
+
+test fn append_byte_raw() {
+    let sb = StringBuilder()
+    sb.appendByte(0x00 as byte)
+    sb.appendByte(0xFF as byte)
+    expect(sb.length()).toBe(2)
+    expect(len(bytes(sb.toString()))).toBe(2)
+    expect(sb.get(0) as int).toBe(0x00)
+    expect(sb.get(1) as int).toBe(0xFF)
+}
+
+test fn append_int() {
+    let sb = StringBuilder()
+    sb.append("count=")
+    sb.appendInt(7)
+    expect(sb.toString()).toBe("count=7")
+}
+
+test fn clear_then_reuse() {
+    let sb = builder("xyz")
+    sb.clear()
+    expect(sb.length()).toBe(0)
+    expect(sb.toString()).toBe("")
+    sb.append("ok")
+    expect(sb.toString()).toBe("ok")
+}
+
+test fn walk_after_set() {
+    let sb = builder("¢€")
+    expect(sb.scalarCount()).toBe(2)
+    sb.append("a")
+    expect(sb.scalarCount()).toBe(3)
+    expect(sb.toString()).toBe("¢€a")
+}

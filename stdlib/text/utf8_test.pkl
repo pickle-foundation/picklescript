@@ -1,0 +1,188 @@
+module std.text.utf8_test
+
+import { cpLen, isScalar, nextOffset, scalarCount, hexVal, isHex, parseUnicodeEscape, decodeCp, decodeStr, encodeCp, encodeCpStr, unicodeEscapeStr } from std.text.utf8
+
+test fn cp_len_from_leading_byte() {
+    expect(cpLen(0x41)).toBe(1)
+    expect(cpLen(0xC2)).toBe(2)
+    expect(cpLen(0xE0)).toBe(3)
+    expect(cpLen(0xF0)).toBe(4)
+    expect(cpLen(0x00)).toBe(1)
+}
+
+test fn scalar_validity() {
+    expect(isScalar(0)).toBe(true)
+    expect(isScalar(0x41)).toBe(true)
+    expect(isScalar(0xD7FF)).toBe(true)
+    expect(isScalar(0xE000)).toBe(true)
+    expect(isScalar(0x10FFFF)).toBe(true)
+    expect(isScalar(0xD800)).toBe(false)
+    expect(isScalar(0xDFFF)).toBe(false)
+    expect(isScalar(-1)).toBe(false)
+    expect(isScalar(0x110000)).toBe(false)
+}
+
+test fn ascii_encode_decode() {
+    let bs = encodeCp(0x41)
+    expect(len(bs)).toBe(1)
+    expect(bs[0] as int).toBe(0x41)
+    encode_decoded(bs, 0x41)
+    expect(encodeCpStr(0x41)).toBe("A")
+    expect(decodeStr("A", 0)).toExist()
+}
+
+test fn multi_byte_encodings() {
+    expect(encodeCpStr(0xA2)).toBe("¢")
+    expect(encodeCpStr(0x20AC)).toBe("€")
+    expect(encodeCpStr(0x1F600)).toBe("😀")
+    expect(encodeCpStr(0xFFFD)).toBe("�")
+}
+
+test fn decode_known_sequences() {
+    encode_decoded(bytes("¢"), 0xA2)
+    encode_decoded(bytes("€"), 0x20AC)
+    encode_decoded(bytes("😀"), 0x1F600)
+    encode_decoded(bytes("�"), 0xFFFD)
+}
+
+test fn byte_exact_offsets() {
+    let s = "a¢€😀"
+    expect(len(bytes(s))).toBe(10)
+    expect(scalarCount(bytes(s))).toBe(4)
+    expect(nextOffset(bytes(s), 0)).toBe(1)
+    expect(nextOffset(bytes(s), 1)).toBe(3)
+    expect(nextOffset(bytes(s), 3)).toBe(6)
+    expect(nextOffset(bytes(s), 6)).toBe(10)
+}
+
+test fn decode_by_offset() {
+    let bs = bytes("a¢€😀")
+    encode_decoded(bs, 0x61)
+    match (decodeCp(bs, 1)) {
+        case some(cp) -> expect(cp).toBe(0xA2)
+        case none -> expect(false).toBe(true)
+    }
+    match (decodeCp(bs, 3)) {
+        case some(cp) -> expect(cp).toBe(0x20AC)
+        case none -> expect(false).toBe(true)
+    }
+    match (decodeCp(bs, 6)) {
+        case some(cp) -> expect(cp).toBe(0x1F600)
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn decode_invalid_sequences() {
+    var lone = bytes("")
+    lone.push(0x80 as byte)
+    match (decodeCp(lone, 0)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    var overlong = bytes("")
+    overlong.push(0xC1 as byte)
+    overlong.push(0x81 as byte)
+    match (decodeCp(overlong, 0)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    var trunc = bytes("")
+    trunc.push(0xE2 as byte)
+    trunc.push(0x82 as byte)
+    match (decodeCp(trunc, 0)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    var surr = bytes("")
+    surr.push(0xED as byte)
+    surr.push(0xA0 as byte)
+    surr.push(0x80 as byte)
+    match (decodeCp(surr, 0)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (decodeCp(bytes("abc"), 99)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn hex_helpers() {
+    expect(isHex(0x41)).toBe(true)
+    expect(isHex(0x66)).toBe(true)
+    expect(isHex(0x47)).toBe(false)
+    expect(hexVal(0x30)).toBe(0)
+    expect(hexVal(0x41)).toBe(10)
+    expect(hexVal(0x66)).toBe(15)
+    expect(hexVal(0x7A)).toBe(-1)
+}
+
+test fn unicode_escape_parse() {
+    match (parseUnicodeEscape("41")) {
+        case some(cp) -> expect(cp).toBe(0x41)
+        case none -> expect(false).toBe(true)
+    }
+    match (parseUnicodeEscape("1F600")) {
+        case some(cp) -> expect(cp).toBe(0x1F600)
+        case none -> expect(false).toBe(true)
+    }
+    match (parseUnicodeEscape("D800")) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (parseUnicodeEscape("")) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (parseUnicodeEscape("11FFFF")) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    match (parseUnicodeEscape("GG")) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn unicode_escape_str_shape() {
+    expect(unicodeEscapeStr("41")).toBe("A")
+    expect(unicodeEscapeStr("1F600")).toBe("😀")
+    expect(unicodeEscapeStr("D800")).toBe(encodeCpStr(0xFFFD))
+}
+
+test fn encode_fallback_on_invalid_scalar() {
+    expect(encodeCpStr(-1)).toBe(encodeCpStr(0xFFFD))
+    expect(encodeCpStr(0xD800)).toBe(encodeCpStr(0xFFFD))
+    expect(encodeCpStr(0x110000)).toBe(encodeCpStr(0xFFFD))
+}
+
+test fn aligned_scalar_roundtrip_walk() {
+    let s = "héllo 😀 world"
+    let bs = bytes(s)
+    var i = 0
+    var expected = 0
+    while (i < len(bs)) {
+        match (decodeCp(bs, i)) {
+            case some(cp) -> {
+                match (decodeStr(s, i)) {
+                    case some(cp2) -> expect(cp).toBe(cp2)
+                    case none -> expect(false).toBe(true)
+                }
+                i = nextOffset(bs, i)
+                expected = expected + 1
+            }
+            case none -> {
+                expect(false).toBe(true)
+                i = len(bs)
+            }
+        }
+    }
+    expect(expected).toBe(scalarCount(bs))
+}
+
+fn encode_decoded(bs: List<byte>, want: int) {
+    match (decodeCp(bs, 0)) {
+        case some(cp) -> expect(cp).toBe(want)
+        case none -> expect(false).toBe(true)
+    }
+}

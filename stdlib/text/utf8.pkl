@@ -1,0 +1,199 @@
+module std.text.utf8
+
+/// Port-side UTF-8 encode/decode writers — byte math over `int` + `as byte`,
+/// with a scalar walk over byte-exact offsets. Mirrors the decode helpers in
+/// `stdlib/text/lexer.pkl` (the first `std.text` seed) and the scalar rules of
+/// the language (`char` is a Unicode scalar; strings are UTF-8).
+
+/// UTF-8 byte length of the scalar whose leading byte is `b0` (1..=4). The
+/// encoding length is a pure function of the leading byte's top bits.
+fn cpLen(b0: int) -> int {
+    if (b0 < 0x80) {
+        return 1
+    }
+    if (b0 <= 0xDF) {
+        return 2
+    }
+    if (b0 <= 0xEF) {
+        return 3
+    }
+    4
+}
+
+/// Whether `cp` is a valid Unicode scalar value (no surrogates, in range).
+fn isScalar(cp: int) -> bool {
+    if (cp >= 0 && cp <= 0x10FFFF) {
+        if (cp >= 0xD800 && cp <= 0xDFFF) {
+            return false
+        }
+        return true
+    }
+    false
+}
+
+/// Byte-exact offset of the scalar following the one at `i` (`i` is the start
+/// offset of a valid sequence in `bs`).
+fn nextOffset(bs: List<byte>, i: int) -> int {
+    i + cpLen(bs[i] as int)
+}
+
+/// Number of scalars in `bs` (walks with byte-exact offsets).
+fn scalarCount(bs: List<byte>) -> int {
+    var n = 0
+    var i = 0
+    while (i < len(bs)) {
+        i = nextOffset(bs, i)
+        n = n + 1
+    }
+    n
+}
+
+/// Hex digit value of `b`, or -1 when it is not a hex digit.
+fn hexVal(b: int) -> int {
+    if (b >= ('0' as int) && b <= ('9' as int)) {
+        return b - ('0' as int)
+    }
+    if (b >= ('a' as int) && b <= ('f' as int)) {
+        return b - ('a' as int) + 10
+    }
+    if (b >= ('A' as int) && b <= ('F' as int)) {
+        return b - ('A' as int) + 10
+    }
+    -1
+}
+
+/// Whether `b` is an ASCII hex digit.
+fn isHex(b: int) -> bool {
+    hexVal(b) >= 0
+}
+
+/// Parse a `\u{...}` escape body (the hex digits between the braces); `none`
+/// on invalid hex digits, overflow beyond `0x10FFFF`, or surrogate code
+/// points.
+fn parseUnicodeEscape(hex: string) -> int? {
+    if (len(hex) == 0) {
+        return none
+    }
+    var v = 0
+    for (b in bytes(hex)) {
+        let hv = hexVal(b as int)
+        if (0 > hv || v > (0x10FFFF - hv) / 16) {
+            return none
+        }
+        v = v * 16 + hv
+    }
+    if (v >= 0xD800 && v <= 0xDFFF) {
+        return none
+    }
+    v
+}
+
+/// Validate the continuation bytes of a multi-byte sequence: each must carry
+/// the `10xxxxxx` mask.
+fn validContBytes(bs: List<byte>, i: int, l: int) -> bool {
+    var k = 1
+    while (k < l) {
+        let b = bs[i + k] as int
+        if ((b & 0xC0) != 0x80) {
+            return false
+        }
+        k = k + 1
+    }
+    true
+}
+
+/// Decode the scalar starting at byte offset `i` of `bs`; `none` on a short,
+/// malformed (bad leading/continuation mask), overlong, or surrogate sequence.
+fn decodeCp(bs: List<byte>, i: int) -> int? {
+    let n = len(bs)
+    if (i >= n || i < 0) {
+        return none
+    }
+    let b0 = bs[i] as int
+    let l = cpLen(b0)
+    if (i + l > n || !validContBytes(bs, i, l)) {
+        return none
+    }
+    var cp = 0
+    if (l == 1) {
+        cp = b0
+    } else if (l == 2) {
+        if ((b0 & 0xE0) != 0xC0) {
+            return none
+        }
+        cp = ((b0 & 0x1F) << 6) | ((bs[i + 1] as int) & 0x3F)
+    } else if (l == 3) {
+        if ((b0 & 0xF0) != 0xE0) {
+            return none
+        }
+        cp = ((b0 & 0x0F) << 12) | (((bs[i + 1] as int) & 0x3F) << 6) | ((bs[i + 2] as int) & 0x3F)
+    } else {
+        if ((b0 & 0xF8) != 0xF0) {
+            return none
+        }
+        cp = ((b0 & 0x07) << 18) | (((bs[i + 1] as int) & 0x3F) << 12) | (((bs[i + 2] as int) & 0x3F) << 6) | ((bs[i + 3] as int) & 0x3F)
+    }
+    if (!isScalar(cp)) {
+        return none
+    }
+    if (l == 2 && cp < 0x80) {
+        return none
+    }
+    if (l == 3 && cp < 0x800) {
+        return none
+    }
+    if (l == 4 && cp < 0x10000) {
+        return none
+    }
+    cp
+}
+
+/// Decode the scalar starting at byte offset `i` of string `s` (bytes of the
+/// string); `none` on an invalid sequence or out-of-range offset.
+fn decodeStr(s: string, i: int) -> int? {
+    decodeCp(bytes(s), i)
+}
+
+/// The UTF-8 byte sequence for a scalar code point. Values outside the scalar
+/// range (including surrogates) encode as the three-byte replacement-marker
+/// sequence `EF BF BD` (U+FFFD), mirroring the runtime's re-encoding of
+/// non-ASCII characters.
+fn encodeCp(cp: int) -> List<byte> {
+    var out = bytes("")
+    if (cp >= 0 && cp < 0x80) {
+        out.push(cp as byte)
+    } else if (cp >= 0x80 && cp < 0x800) {
+        out.push((0xC0 | (cp >> 6)) as byte)
+        out.push((0x80 | (cp & 0x3F)) as byte)
+    } else if (cp >= 0x800 && cp < 0x10000 && isScalar(cp)) {
+        out.push((0xE0 | (cp >> 12)) as byte)
+        out.push((0x80 | ((cp >> 6) & 0x3F)) as byte)
+        out.push((0x80 | (cp & 0x3F)) as byte)
+    } else if (cp >= 0x10000 && cp <= 0x10FFFF && isScalar(cp)) {
+        out.push((0xF0 | (cp >> 18)) as byte)
+        out.push((0x80 | ((cp >> 12) & 0x3F)) as byte)
+        out.push((0x80 | ((cp >> 6) & 0x3F)) as byte)
+        out.push((0x80 | (cp & 0x3F)) as byte)
+    } else {
+        out.push(0xEF as byte)
+        out.push(0xBF as byte)
+        out.push(0xBD as byte)
+    }
+    out
+}
+
+/// The string containing the UTF-8 encoding of one scalar (empty string side
+/// effects avoided: `str(List<byte>)` writes the raw bytes).
+fn encodeCpStr(cp: int) -> string {
+    str(encodeCp(cp))
+}
+
+/// The string shape of a `\u{...}`-style escape body (the hex digits between
+/// the braces): the encoded scalar string, or the replacement character when
+/// the body is invalid.
+fn unicodeEscapeStr(hex: string) -> string {
+    if (let some(cp) = parseUnicodeEscape(hex)) {
+        return encodeCpStr(cp)
+    }
+    str(encodeCp(0xFFFD))
+}
