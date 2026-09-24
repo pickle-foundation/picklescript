@@ -191,7 +191,10 @@ static SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::ne
 
 /// Format and print the most recent crash from the given sequence number with
 /// full headroom. Frames are resolved symbolically where possible; the raw
-/// walk from `rsp` names every in-range return address.
+/// walk from `rsp` names every in-range return address. Runs on the
+/// Windows-only reporter thread, so its `windows::*` helpers are gated with
+/// it.
+#[cfg(windows)]
 fn report_crash(seq: usize) {
     let rip = CRASH_RIP.load(std::sync::atomic::Ordering::SeqCst);
     let rsp = CRASH_RSP.load(std::sync::atomic::Ordering::SeqCst);

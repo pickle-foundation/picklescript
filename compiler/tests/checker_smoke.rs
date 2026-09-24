@@ -749,10 +749,12 @@ fn accepts_map_typing() {
 #[test]
 fn rejects_unhashable_map_keys() {
     // Strings, scalars, and composite objects (lists, maps, classes/structs,
-    // enums) are legal keys; tuples are not a runtime object so stay rejected.
+    // enums, options, tuples) are legal keys; function values are not a
+    // runtime object so stay rejected.
     let d = check_str(
         r#"fn main() {
-            var m = {(1, 2): "one"}
+            var f = (n: int) => n + 1
+            var m = {f: "one"}
         }"#,
     );
     assert!(
@@ -814,11 +816,11 @@ fn accepts_composite_map_keys() {
 }
 
 #[test]
-fn rejects_optional_map_keys() {
+fn rejects_function_value_map_keys() {
     let d = check_str(
         r#"fn main() {
-            var o: int? = 2
-            var m = {o: 1}
+            var f = (n: int) => n
+            var m = {f: 1}
         }"#,
     );
     assert!(
