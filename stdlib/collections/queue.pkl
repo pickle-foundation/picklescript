@@ -1,0 +1,38 @@
+module std.collections.queue
+
+import { Deque } from std.collections.deque
+
+/// A FIFO queue seed over `Deque<T>` (typed proto-value staging:
+/// `Queue[int](0)`).
+class Queue<T> {
+    var d: Deque<T>
+
+    constructor(proto: T) {
+        this.d = Deque<T>(proto)
+    }
+
+    /// Enqueue `v` at the back.
+    fn push(v: T) {
+        this.d.pushBack(v)
+    }
+
+    /// Dequeue and return the front; `none` when empty.
+    fn pop() -> T? {
+        this.d.popFront()
+    }
+
+    /// The front element; `none` when empty.
+    fn peek() -> T? {
+        this.d.front()
+    }
+
+    /// Number of elements.
+    fn size() -> int {
+        this.d.size()
+    }
+
+    /// Clear all elements.
+    fn clear() {
+        this.d.clear()
+    }
+}

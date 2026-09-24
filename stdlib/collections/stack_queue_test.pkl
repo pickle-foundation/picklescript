@@ -1,0 +1,78 @@
+module std.collections.stack_queue_test
+
+import { Stack } from std.collections.stack
+import { Queue } from std.collections.queue
+
+test fn stack_lifo() {
+    let s = Stack<int>(0)
+    expect(s.size()).toBe(0)
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    expect(s.size()).toBe(3)
+    match (s.peek()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (s.pop()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (s.pop()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    match (s.pop()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    expect(s.size()).toBe(0)
+    match (s.pop()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn queue_fifo() {
+    let q = Queue<int>(0)
+    q.push(1)
+    q.push(2)
+    q.push(3)
+    match (q.peek()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    match (q.pop()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    match (q.pop()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    q.push(4)
+    match (q.pop()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (q.pop()) {
+        case some(v) -> expect(v).toBe(4)
+        case none -> expect(false).toBe(true)
+    }
+    match (q.pop()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn stack_clear_queue_clear() {
+    let s = Stack<string>("")
+    s.push("a")
+    s.push("b")
+    s.clear()
+    expect(s.size()).toBe(0)
+    let q = Queue<string>("")
+    q.push("x")
+    q.clear()
+    expect(q.size()).toBe(0)
+}

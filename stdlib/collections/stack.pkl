@@ -1,0 +1,38 @@
+module std.collections.stack
+
+import { Deque } from std.collections.deque
+
+/// A LIFO stack seed over `Deque<T>` (typed proto-value staging:
+/// `Stack[int](0)`).
+class Stack<T> {
+    var d: Deque<T>
+
+    constructor(proto: T) {
+        this.d = Deque<T>(proto)
+    }
+
+    /// Push `v` onto the top.
+    fn push(v: T) {
+        this.d.pushBack(v)
+    }
+
+    /// Remove and return the top; `none` when empty.
+    fn pop() -> T? {
+        this.d.popBack()
+    }
+
+    /// The top element; `none` when empty.
+    fn peek() -> T? {
+        this.d.back()
+    }
+
+    /// Number of elements.
+    fn size() -> int {
+        this.d.size()
+    }
+
+    /// Clear all elements.
+    fn clear() {
+        this.d.clear()
+    }
+}
