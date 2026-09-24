@@ -249,8 +249,17 @@ later. Math: transcendental + vector/repr helpers.
 
 `test fn name()` or `test("desc", ...)`/`it` suites in any module; `describe`
 groups nest, and `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks run
-per group. `expect(value).matcher(...)` (e.g. `.toBe`, `.toEqual`,
-`.toContain`, `.toBeGreaterThan`) gives readable failure output. Assertions:
+per group (each group may declare its own; beforeAll root-first, afterAll
+leaf-first). Runs print a `describe <name>` header per opened group and
+`test <desc> ... ok|FAILED` lines per test, then a
+`test result: N passed; M failed` summary; test names are the desugared
+`group > group > desc` path so `--filter` matches describe and test names
+alike. `expect(value).matcher(...)` gives readable failure output; the
+matchers are `.toBe` (deep/structural equality on managed values), `.toEqual`
+(same as `toBe`), `.toBeTruthy`, `.toBeFalsy`, `.toBeNull`, `.toExist`,
+`.toHaveLength(n)` (string, list, or map), `.toContain(x)` (string substring
+or list element), `.toBeGreaterThan(x)`, `.toBeLessThan(x)`, and any of them
+can be negated with a leading `.not()`. Assertions:
 `assert(cond, msg?)`; `std.test` provides asserts and timing for longer-term
 plans. `pickle test` discovers `*_test.pkl`/`*.test.pkl` files and runs them,
 reporting per-module, per-group results. `#[tag("name")]` on a test item
