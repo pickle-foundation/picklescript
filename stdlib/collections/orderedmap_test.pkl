@@ -1,0 +1,105 @@
+module std.collections.orderedmap_test
+
+import { OrderedMap } from std.collections.orderedmap
+
+test fn empty_behaviors() {
+    let m = OrderedMap<int, string>(0, "")
+    expect(m.size()).toBe(0)
+    expect(m.has(1)).toBe(false)
+    match (m.get(1)) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+    expect(m.remove(1)).toBe(false)
+    m.clear()
+    expect(m.size()).toBe(0)
+}
+
+test fn set_get_overwrite() {
+    let m = OrderedMap<int, string>(0, "")
+    expect(m.set(1, "one")).toBe(true)
+    expect(m.set(2, "two")).toBe(true)
+    expect(m.set(1, "UNO")).toBe(false)
+    expect(m.size()).toBe(2)
+    expect(m.has(1)).toBe(true)
+    match (m.get(1)) {
+        case some(v) -> expect(v).toBe("UNO")
+        case none -> expect(false).toBe(true)
+    }
+    match (m.get(2)) {
+        case some(v) -> expect(v).toBe("two")
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn order_preserved() {
+    let m = OrderedMap<int, int>(0, 0)
+    m.set(3, 30)
+    m.set(1, 10)
+    m.set(2, 20)
+    let ks = m.keyList()
+    let vs = m.valueList()
+    expect(len(ks)).toBe(3)
+    expect(ks[0]).toBe(3)
+    expect(ks[1]).toBe(1)
+    expect(ks[2]).toBe(2)
+    expect(vs[0]).toBe(30)
+    m.set(1, 50)
+    let ks2 = m.keyList()
+    expect(ks2[0]).toBe(3)
+    expect(ks2[1]).toBe(1)
+    expect(ks2[2]).toBe(2)
+}
+
+test fn remove_preserves_order() {
+    let m = OrderedMap<int, int>(0, 0)
+    m.set(1, 10)
+    m.set(2, 20)
+    m.set(3, 30)
+    expect(m.remove(2)).toBe(true)
+    expect(m.size()).toBe(2)
+    expect(m.has(2)).toBe(false)
+    let ks = m.keyList()
+    expect(ks[0]).toBe(1)
+    expect(ks[1]).toBe(3)
+}
+
+test fn clear_then_reuse() {
+    let m = OrderedMap<int, string>(0, "")
+    m.set(1, "a")
+    m.set(2, "b")
+    m.clear()
+    expect(m.size()).toBe(0)
+    expect(m.has(1)).toBe(false)
+    m.set(3, "c")
+    match (m.get(3)) {
+        case some(v) -> expect(v).toBe("c")
+        case none -> expect(false).toBe(true)
+    }
+}
+
+test fn string_keys_mixed_values() {
+    let m = OrderedMap<string, int>("", 0)
+    m.set("x", 1)
+    m.set("y", 2)
+    m.set("x", 9)
+    expect(m.size()).toBe(2)
+    match (m.get("x")) {
+        case some(v) -> expect(v).toBe(9)
+        case none -> expect(false).toBe(true)
+    }
+    match (m.get("z")) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn key_list_is_a_copy() {
+    let m = OrderedMap<int, int>(0, 0)
+    m.set(1, 10)
+    m.set(2, 20)
+    let copy = m.keyList()
+    copy.push(99)
+    expect(m.size()).toBe(2)
+    expect(m.has(99)).toBe(false)
+}

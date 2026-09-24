@@ -1,0 +1,110 @@
+module std.collections.orderedmap
+
+/// An insertion-ordered key/value seed over two parallel lists (key equality
+/// via `==`; linear lookup). Distinct from the native `Map` in that iteration
+/// order is the insertion order. Uses the typed proto-value staging for the
+/// empty backing lists (`OrderedMap<int, string>(0, "")`).
+class OrderedMap<K, V> {
+    var keys: List<K>
+    var values: List<V>
+
+    constructor(keyProto: K, valueProto: V) {
+        this.keys = [keyProto]
+        this.keys.remove(0)
+        this.values = [valueProto]
+        this.values.remove(0)
+    }
+
+    /// Number of entries.
+    fn size() -> int {
+        len(this.keys)
+    }
+
+    /// Index of `k`, or -1 when absent.
+    fn _indexOf(k: K) -> int {
+        var i = 0
+        while (i < len(this.keys)) {
+            if (this.keys[i] == k) {
+                return i
+            }
+            i = i + 1
+        }
+        -1
+    }
+
+    /// Whether `k` is a key.
+    fn has(k: K) -> bool {
+        this._indexOf(k) >= 0
+    }
+
+    /// The value for `k`; `none` when `k` is absent.
+    fn get(k: K) -> V? {
+        let i = this._indexOf(k)
+        if (i < 0) {
+            return none
+        }
+        this.values[i]
+    }
+
+    /// Set the value for `k`, appending when `k` is new; `true` when inserted.
+    fn set(k: K, v: V) -> bool {
+        let i = this._indexOf(k)
+        if (i >= 0) {
+            this.values[i] = v
+            return false
+        }
+        this.keys.push(k)
+        this.values.push(v)
+        true
+    }
+
+    /// Remove `k`; `false` when absent. Keeps the remaining order.
+    fn remove(k: K) -> bool {
+        let i = this._indexOf(k)
+        if (i < 0) {
+            return false
+        }
+        this.keys.remove(i)
+        this.values.remove(i)
+        true
+    }
+
+    /// The keys in insertion order (fresh copy).
+    fn keyList() -> List<K> {
+        if (len(this.keys) == 0) {
+            return this.keys
+        }
+        var out: List<K> = [this.keys[0]]
+        var i = 1
+        while (i < len(this.keys)) {
+            out.push(this.keys[i])
+            i = i + 1
+        }
+        out
+    }
+
+    /// The values in insertion order (fresh copy).
+    fn valueList() -> List<V> {
+        if (len(this.values) == 0) {
+            return this.values
+        }
+        var out: List<V> = [this.values[0]]
+        var i = 1
+        while (i < len(this.values)) {
+            out.push(this.values[i])
+            i = i + 1
+        }
+        out
+    }
+
+    /// Clear all entries (restages empty backing lists).
+    fn clear() {
+        if (this.size() == 0) {
+            return
+        }
+        this.keys = [this.keys[0]]
+        this.keys.remove(0)
+        this.values = [this.values[0]]
+        this.values.remove(0)
+    }
+}
