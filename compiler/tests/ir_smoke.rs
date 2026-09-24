@@ -1246,6 +1246,105 @@ fn emits_property_accessors_and_dispatches() {
 }
 
 #[test]
+fn emits_compound_assignment_across_targets() {
+    // `op=` must lower for every target: scalar and string fields/statics,
+    // instance and static properties, string list elements, string map values,
+    // and scalars through a raw pointer. String concatenation goes through
+    // `pickle_str_concat`; string-typed statics/lists that are still their
+    // null default rely on the runtime's null-safe concat.
+    let m = emit_str(
+        r#"class Bag {
+            var name: string
+            static var counter: int
+            static var label: string
+            property doubled: int {
+                get => Bag.counter * 2
+                set { Bag.counter = value / 2 }
+            }
+            static property dp: int {
+                get => Bag.counter * 2
+                set { Bag.counter = value / 2 }
+            }
+            constructor() {
+                this.name = "a"
+            }
+        }
+
+        fn main() {
+            var b = Bag()
+            b.name += "b"
+            Bag.counter += 1
+            Bag.label += "s"
+            b.doubled += 4
+            Bag.dp += 2
+            var xs: List<string> = ["p"]
+            xs[0] += "q"
+            var m: Map<string, string> = { "k": "v" }
+            m["k"] += "w"
+            unsafe {
+                var n = 1
+                let p: *int = &n
+                (*p) += 5
+                println(n)
+            }
+        }"#,
+    );
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    let calls: Vec<&str> = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call {
+                callee: Callee::Extern(idx),
+                ..
+            } = i
+            {
+                Some(m.externs.get(idx.0).map(|e| e.symbol.as_str()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+    assert!(
+        calls.contains(&"pickle_str_concat"),
+        "string field op= concatenates: {calls:?}"
+    );
+    for sym in [
+        "pkl_Bag_doubled_get",
+        "pkl_Bag_doubled_set",
+        "pkl_Bag_sm_dp_get",
+        "pkl_Bag_sm_dp_set",
+    ] {
+        assert!(
+            main.blocks
+                .iter()
+                .flat_map(|b| b.instrs.iter())
+                .filter_map(|i| match i {
+                    IrInstr::Call {
+                        callee: Callee::Func(fid),
+                        ..
+                    } => Some(m.funcs.get(fid.0).map(|f| f.symbol.as_str())),
+                    _ => None,
+                })
+                .flatten()
+                .any(|s| s == sym),
+            "main must call {sym}"
+        );
+    }
+    assert!(calls.contains(&"pickle_static_get"), "static get: {calls:?}");
+    assert!(calls.contains(&"pickle_list_get"), "list get: {calls:?}");
+    assert!(calls.contains(&"pickle_map_get_boxed"), "map get: {calls:?}");
+    let loadraw = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::LoadRaw { .. } | IrInstr::StoreRaw { .. }));
+    assert!(loadraw, "raw-pointer op= loads and stores raw");
+}
+
+#[test]
 fn emits_static_property_accessors_receiverless() {
     // Static property accessors lower as receiver-less functions
     // (`pkl_<T>_sm_<p>_get`/`_set`), dispatch via `Type.prop`, and can

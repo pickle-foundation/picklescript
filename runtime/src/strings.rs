@@ -39,10 +39,12 @@ pub fn string_bytes_len(obj: *const PickleObject) -> usize {
     str_len(obj)
 }
 
-/// Concatenate two strings into a fresh third.
+/// Concatenate two strings into a fresh third. A null operand (an
+/// uninitialized string) is treated as the empty string, mirroring the
+/// compiled code's `""` default for absent string values.
 pub fn string_concat(a: *const PickleObject, b: *const PickleObject) -> *mut PickleObject {
-    let la = string_bytes_len(a);
-    let lb = string_bytes_len(b);
+    let la = if a.is_null() { 0 } else { string_bytes_len(a) };
+    let lb = if b.is_null() { 0 } else { string_bytes_len(b) };
     let total = la + lb;
     let gc = crate::gc::gc_mut();
     let obj = gc.alloc(builtin_string_total(total) as u32, PICKLE_CLASS_STRING);

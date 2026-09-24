@@ -1600,4 +1600,57 @@ mod tests {
             .count();
         assert_eq!(tramps, 1, "one fn-value trampoline for `base`:\n{dump}");
     }
+
+    /// `op=` every target end-to-end: string plural fields/statics/lists/maps
+    /// concatenate (exercising the runtime's null-safe `pickle_str_concat` for
+    /// still-null statics), instance/static properties round through their
+    /// getters and setters, and a scalar raw-pointer deref read-modify-writes.
+    #[test]
+    fn run_compound_assignment_across_targets() {
+        run_source(
+            r#"class Bag {
+                var name: string
+                static var counter: int
+                static var label: string
+                property doubled: int {
+                    get => Bag.counter * 2
+                    set { Bag.counter = value / 2 }
+                }
+                static property dp: int {
+                    get => Bag.counter * 2
+                    set { Bag.counter = value / 2 }
+                }
+                constructor() {
+                    this.name = "a"
+                }
+            }
+
+            fn main() {
+                var b = Bag()
+                b.name += "b"
+                println(b.name)
+                Bag.counter += 1
+                Bag.label += "s"
+                println(Bag.label)
+                b.doubled += 4
+                println(Bag.counter)
+                Bag.dp += 2
+                println(Bag.counter)
+                var xs: List<string> = ["p"]
+                xs[0] += "q"
+                println(xs[0])
+                var m: Map<string, string> = { "k": "v" }
+                m["k"] += "w"
+                m["u"] += "v"
+                println(m["k"])
+                println(m["u"])
+                unsafe {
+                    var n = 1
+                    let p: *int = &n
+                    (*p) += 5
+                    println(n)
+                }
+            }"#,
+        );
+    }
 }

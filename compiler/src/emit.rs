@@ -5718,20 +5718,35 @@ impl<'a> Emitter<'a> {
             operand,
         } = &target.kind
         {
+            let pt = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
+            if let Ty::Ptr(inner) = &pt {
+                if let Some(ty) = Self::scalar_ir(inner) {
+                    let addr = self.expr(operand)?;
+                    if op == AssignOp::Assign {
+                        let v = self.expr(value)?;
+                        self.instr(IrInstr::StoreRaw { addr, v, ty });
+                        return Ok(v);
+                    }
+                    // `*p op= v`: read-modify-write on the dereferenced cell.
+                    let cur = self.temp();
+                    self.instr(IrInstr::LoadRaw { dst: cur, addr, ty });
+                    let v = self.expr(value)?;
+                    let dst = self.temp();
+                    self.instr(IrInstr::BinOp {
+                        dst,
+                        op: assign_opcode(op),
+                        a: cur,
+                        b: v,
+                    });
+                    self.instr(IrInstr::StoreRaw { addr, v: dst, ty });
+                    return Ok(dst);
+                }
+            }
             if op != AssignOp::Assign {
                 return self.bad(
                     span,
                     "compound assignment through a raw pointer is not lowered yet",
                 );
-            }
-            let pt = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
-            if let Ty::Ptr(inner) = &pt {
-                if let Some(ty) = Self::scalar_ir(inner) {
-                    let addr = self.expr(operand)?;
-                    let v = self.expr(value)?;
-                    self.instr(IrInstr::StoreRaw { addr, v, ty });
-                    return Ok(v);
-                }
             }
             return match pt {
                 Ty::Class(..) | Ty::Struct(..) | Ty::Ptr(..) => self.assign(e, operand, op, value),
@@ -5827,10 +5842,37 @@ impl<'a> Emitter<'a> {
             if let Some(&cid) = self.class_by_name.get(tname) {
                 if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), true)) {
                     if op != AssignOp::Assign {
-                        return self.bad(
-                            e.span,
-                            "compound assignment to a static property is not lowered yet",
-                        );
+                        // `Type.prop op= value`: read through the getter, combine,
+                        // call the setter with the result.
+                        let Some(&get_fid) = self
+                            .static_property_ids
+                            .get(&(cid, name.to_string(), false))
+                        else {
+                            return self.bad(
+                                e.span,
+                                format!("static property `{name}` has no getter"),
+                            );
+                        };
+                        let pty = self.property_ty_of(tname, name);
+                        let cur = self.call_method(e, get_fid, &[], None)?;
+                        let v = self.expr(value)?;
+                        let dst =
+                            self.combine_compound(e.span, op, &pty, cur, v, "static property")?;
+                        let packed = if matches!(
+                            self.module.funcs[fid.0].params.first().map(|p| p.ty),
+                            Some(IrTy::Ptr)
+                        ) {
+                            self.option_wrap(dst, &pty, value.span)?
+                        } else {
+                            dst
+                        };
+                        let dsti = self.temp();
+                        self.instr(IrInstr::Call {
+                            dst: Some(dsti),
+                            callee: Callee::Func(fid),
+                            args: vec![packed],
+                        });
+                        return Ok(dst);
                     }
                     let v = self.expr(value)?;
                     let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
@@ -5886,10 +5928,33 @@ impl<'a> Emitter<'a> {
             // `obj.prop = value` dispatches the property's setter.
             if let Some(&fid) = self.property_ids.get(&(cid, name.to_string(), true)) {
                 if op != AssignOp::Assign {
-                    return self.bad(
-                        e.span,
-                        "compound assignment to a property is not lowered yet",
-                    );
+                    // `obj.prop op= value`: read through the getter, combine,
+                    // call the setter with the result.
+                    let Some(&get_fid) =
+                        self.property_ids.get(&(cid, name.to_string(), false))
+                    else {
+                        return self.bad(e.span, format!("property `{name}` has no getter"));
+                    };
+                    let obj = self.expr(object)?;
+                    let pty = self.property_ty_of(&self.class_name_of(cid), name);
+                    let cur = self.call_method(e, get_fid, &[], Some(obj))?;
+                    let v = self.expr(value)?;
+                    let dst = self.combine_compound(e.span, op, &pty, cur, v, "property")?;
+                    let packed = if matches!(
+                        self.module.funcs[fid.0].params.get(1).map(|p| p.ty),
+                        Some(IrTy::Ptr)
+                    ) {
+                        self.option_wrap(dst, &pty, value.span)?
+                    } else {
+                        dst
+                    };
+                    let dsti = self.temp();
+                    self.instr(IrInstr::Call {
+                        dst: Some(dsti),
+                        callee: Callee::Func(fid),
+                        args: vec![obj, packed],
+                    });
+                    return Ok(dst);
                 }
                 let obj = self.expr(object)?;
                 let v = self.expr(value)?;
@@ -5968,10 +6033,24 @@ impl<'a> Emitter<'a> {
             return Ok(v);
         }
         if matches!(rep, ElemRep::Ptr) {
-            return self.bad(
-                span,
-                "compound assignment to a non-scalar field is not lowered yet",
-            );
+            if field_ty != &Ty::String {
+                return self.bad(
+                    span,
+                    "compound assignment to a non-scalar field is not lowered yet",
+                );
+            }
+            // String field: read the current string, concatenate, store back.
+            let idx = self.int_const(slot as i64);
+            let cur = self.extern_call_t1(
+                "pickle_obj_slot_get",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![obj, idx],
+            )?;
+            let dst = self.combine_compound(span, op, field_ty, cur, v, "field")?;
+            let boxed = self.box_for_store(&rep, dst, elem_ir(field_ty))?;
+            self.field_store(obj, slot as i64, field_ty, boxed);
+            return Ok(dst);
         }
         let obj_c = obj;
         // Read the current value (unboxed), combine, write back.
@@ -5998,6 +6077,56 @@ impl<'a> Emitter<'a> {
         let boxed = self.box_for_store(&rep, dst, elem_ir(field_ty))?;
         self.field_store(obj_c, slot as i64, field_ty, boxed);
         Ok(dst)
+    }
+
+    /// Combine the current value `cur` of a compound-assignment target with the
+    /// RHS `v` for operator `op`, where the target's declared type is `ty`.
+    /// Scalar targets use the arithmetic binary op; `string` targets
+    /// concatenate (`pickle_str_concat`), gated on `+=` because the checker
+    /// does not validate compound operators, so any other operator on a string
+    /// bails instead of being silently interpreted as concatenation. Other
+    /// pointer-shape targets (`Option`, `List`, class instances, ...) have no
+    /// compound operator and keep bailing. `what` names the target for the
+    /// not-lowered diagnostic.
+    fn combine_compound(
+        &mut self,
+        span: Span,
+        op: AssignOp,
+        ty: &Ty,
+        cur: Temp,
+        v: Temp,
+        what: &str,
+    ) -> Result<Temp, ()> {
+        match ty {
+            Ty::String => {
+                if op != AssignOp::Add {
+                    return self.bad(
+                        span,
+                        format!("compound assignment on this string only supports `+=`"),
+                    );
+                }
+                self.extern_call_t1(
+                    "pickle_str_concat",
+                    vec![IrTy::Str, IrTy::Str],
+                    IrTy::Str,
+                    vec![cur, v],
+                )
+            }
+            scalar if Self::scalar_ir(scalar).is_some() => {
+                let dst = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst,
+                    op: assign_opcode(op),
+                    a: cur,
+                    b: v,
+                });
+                Ok(dst)
+            }
+            _ => self.bad(
+                span,
+                format!("compound assignment to a non-scalar {what} is not lowered yet"),
+            ),
+        }
     }
 
     /// Emit `pickle_obj_slot_set(obj, slot, boxed_value)`.
@@ -6077,10 +6206,25 @@ impl<'a> Emitter<'a> {
             return Ok(v);
         }
         if matches!(rep, ElemRep::Ptr) {
-            return self.bad(
-                span,
-                "compound assignment to a non-scalar static field is not lowered yet",
-            );
+            if field_ty != &Ty::String {
+                return self.bad(
+                    span,
+                    "compound assignment to a non-scalar static field is not lowered yet",
+                );
+            }
+            // String static field: read the current string, concatenate, store back.
+            let c = self.int_const(cid as i64);
+            let s = self.int_const(slot as i64);
+            let cur = self.extern_call_t1(
+                "pickle_static_get",
+                vec![IrTy::Int, IrTy::Int],
+                IrTy::Ptr,
+                vec![c, s],
+            )?;
+            let dst = self.combine_compound(span, op, field_ty, cur, v, "static field")?;
+            let boxed = self.box_for_store(&rep, dst, elem_ir(field_ty))?;
+            self.static_store(cid, slot, boxed);
+            return Ok(dst);
         }
         let c = self.int_const(cid as i64);
         let s = self.int_const(slot as i64);
@@ -6208,10 +6352,23 @@ impl<'a> Emitter<'a> {
             return Ok(v);
         }
         if matches!(rep, ElemRep::Ptr) {
-            return self.bad(
-                e.span,
-                "compound assignment to a non-scalar list element is not lowered yet",
-            );
+            if elem != Ty::String {
+                return self.bad(
+                    e.span,
+                    "compound assignment to a non-scalar list element is not lowered yet",
+                );
+            }
+            // String element: read the current string, concatenate, store back.
+            let cur = self.extern_call_t1(
+                "pickle_list_get",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![obj, idx],
+            )?;
+            let v = self.expr(value)?;
+            let dst = self.combine_compound(e.span, op, &elem, cur, v, "list element")?;
+            self.list_store(obj, idx, &rep, &elem, dst)?;
+            return Ok(dst);
         }
         let cur = self.extern_call_t1(
             "pickle_list_get",
@@ -6625,10 +6782,29 @@ impl<'a> Emitter<'a> {
         let (box_sym, unbox_sym, ir) = match vrep {
             ElemRep::Scalar(box_sym, unbox_sym, ir) => (box_sym, unbox_sym, ir),
             ElemRep::Ptr => {
-                return self.bad(
-                    object.span,
-                    "compound assignment to a non-scalar map value is not lowered yet",
-                )
+                if vty != Ty::String {
+                    return self.bad(
+                        object.span,
+                        "compound assignment to a non-scalar map value is not lowered yet",
+                    );
+                }
+                // String value: an absent key reads as `""`, then the current
+                // string is concatenated with the RHS and stored back.
+                let default = self.string_literal(&[])?;
+                let cur = self.extern_call_t1(
+                    "pickle_map_get_boxed",
+                    vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
+                    IrTy::Ptr,
+                    vec![obj, key, default],
+                )?;
+                let v = self.expr(value)?;
+                let dst = self.combine_compound(object.span, op, &vty, cur, v, "map value")?;
+                self.extern_call_void(
+                    "pickle_map_set",
+                    vec![IrTy::Ptr, IrTy::Ptr, IrTy::Ptr],
+                    vec![obj, key, dst],
+                );
+                return Ok(dst);
             }
         };
         let zero = self.zero_scalar(ir, object.span)?;
