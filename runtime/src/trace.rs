@@ -113,6 +113,7 @@ fn trace_one(
                         let e = entries.add(i);
                         if !(*e).key.is_null()
                             && !std::ptr::eq((*e).key, crate::object::nil_sentinel())
+                            && !std::ptr::eq((*e).key, crate::object::none_key())
                         {
                             enqueue(worklist, (*e).key);
                         }

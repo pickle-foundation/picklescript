@@ -233,7 +233,7 @@ pub extern "C" fn pickle_str_from_char(v: u32) -> *mut PickleObject {
 
 /// Format a `byte` as a one-byte string (string-interpolation helper). The
 /// value is written raw: the checker keeps a `byte` in 0..=255, and a re-encode
-/// would corrupt multi-byte UTF-8 text ("é" must copy back as "é", not "Ã©").
+/// would corrupt multi-byte UTF-8 text ("é" must copy back as "é", not "é").
 #[no_mangle]
 pub extern "C" fn pickle_str_from_byte(v: i64) -> *mut PickleObject {
     let b = v as u8;

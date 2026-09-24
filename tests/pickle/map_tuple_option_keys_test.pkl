@@ -1,0 +1,148 @@
+test fn tuple_keys() {
+    var m = {(1, 2): "pair"}
+    expect(m[(1, 2)]).toBe("pair")
+    expect(m.has((1, 2))).toBe(true)
+    expect(m.has((1, 3))).toBe(false)
+    expect(m[(1, 3)]).toBe("")
+    m[(3, 4)] = "other"
+    expect(m[(3, 4)]).toBe("other")
+    expect(len(m)).toBe(2)
+    m[(1, 2)] = "replaced"
+    expect(m[(1, 2)]).toBe("replaced")
+    expect(len(m)).toBe(2)
+}
+
+test fn tuple_keys_order_sensitive() {
+    var m = {(1, 2): "a", (2, 1): "b"}
+    expect(m[(1, 2)]).toBe("a")
+    expect(m[(2, 1)]).toBe("b")
+    expect(len(m)).toBe(2)
+}
+
+test fn mixed_string_int_tuple_keys() {
+    var m = {(1, "a"): "int-str"}
+    expect(m[(1, "a")]).toBe("int-str")
+    expect(m.has((1, "b"))).toBe(false)
+    expect(m.has((2, "a"))).toBe(false)
+    m[(2, "b")] = "second"
+    expect(len(m)).toBe(2)
+}
+
+test fn tuple_keys_structurally_equal() {
+    let a = (5, 6)
+    let b = (5, 6)
+    var m = {a: "v"}
+    expect(m[b]).toBe("v")
+    expect(m[(5, 6)]).toBe("v")
+    m[(7, 8)] = "w"
+    expect(len(m)).toBe(2)
+}
+
+test fn tuple_keys_grow() {
+    var m = {(0, 0): "seed"}
+    for (i in 1..100) {
+        m[(i, i)] = "{i}"
+    }
+    expect(len(m)).toBe(100)
+    expect(m[(0, 0)]).toBe("seed")
+    expect(m[(75, 75)]).toBe("75")
+    var n = 0
+    for ((k, v) in m) {
+        if (m[k] == v) {
+            n += 1
+        }
+    }
+    expect(n).toBe(100)
+}
+
+test fn tuple_key_remove() {
+    var m = {(1, 2): "one", (3, 4): "two"}
+    if (let some(r) = m.remove((1, 2))) {
+        expect(r).toBe("one")
+    } else {
+        expect("unexpected").toBe("tuple_key_remove: remove returned none for a present key")
+    }
+    expect(m.has((1, 2))).toBe(false)
+    expect(m.has((3, 4))).toBe(true)
+    expect(len(m)).toBe(1)
+    expect(m.remove((9, 9))).toBe(none)
+}
+
+test fn tuple_and_list_keys_are_independent() {
+    var mt: Map<(int, int), string> = {(1, 2): "tuple"}
+    var ml: Map<List<int>, string> = {[1, 2]: "list"}
+    expect(mt[(1, 2)]).toBe("tuple")
+    expect(ml[[1, 2]]).toBe("list")
+    expect(mt[(9, 9)]).toBe("")
+    expect(ml[[9, 9]]).toBe("")
+    expect(mt.has((1, 2))).toBe(true)
+    expect(ml.has([1, 2])).toBe(true)
+    expect(len(mt)).toBe(1)
+    expect(len(ml)).toBe(1)
+}
+
+test fn option_keys() {
+    var m: Map<int?, string> = {1: "one"}
+    expect(m[1]).toBe("one")
+    expect(m.has(1)).toBe(true)
+    expect(m.has(2)).toBe(false)
+    m[2] = "two"
+    expect(m[2]).toBe("two")
+    m[1] = "uno"
+    expect(m[1]).toBe("uno")
+    expect(len(m)).toBe(2)
+}
+
+test fn option_none_key() {
+    var m: Map<string?, int> = {"a": 1}
+    m[none] = 0
+    expect(m[none]).toBe(0)
+    expect(m.has(none)).toBe(true)
+    expect(m["a"]).toBe(1)
+    expect(len(m)).toBe(2)
+    m[none] = -1
+    expect(m[none]).toBe(-1)
+    expect(len(m)).toBe(2)
+}
+
+test fn option_keys_iterate() {
+    var m: Map<int?, string> = {1: "one", 2: "two"}
+    m[none] = "none-key"
+    var n = 0
+    var sum = 0
+    var none_keys = 0
+    for ((k, v) in m) {
+        n += 1
+        if (let some(x) = k) {
+            sum += x
+        } else {
+            none_keys += 1
+        }
+        expect(v).toBe(m[k])
+    }
+    expect(n).toBe(3)
+    expect(none_keys).toBe(1)
+}
+
+test fn option_remove() {
+    var m: Map<int?, string> = {1: "one"}
+    m[none] = "nada"
+    if (let some(r) = m.remove(none)) {
+        expect(r).toBe("nada")
+    } else {
+        expect("unexpected").toBe("option_remove: remove returned none for a present key")
+    }
+    expect(m.has(none)).toBe(false)
+    expect(m.has(1)).toBe(true)
+    expect(len(m)).toBe(1)
+}
+
+test fn option_key_none_vs_present_are_distinct() {
+    var m: Map<int?, string> = {1: "one"}
+    expect(m.has(1)).toBe(true)
+    expect(m.has(2)).toBe(false)
+    m[none] = "nothing"
+    expect(m.has(none)).toBe(true)
+    expect(m.has(1)).toBe(true)
+    expect(len(m)).toBe(2)
+}

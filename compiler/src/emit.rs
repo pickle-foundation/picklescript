@@ -6559,8 +6559,8 @@ impl<'a> Emitter<'a> {
         let vrep = self.elem_rep(&vty, e.span)?;
         let obj = self.expr(object)?;
         let k = self.expr(index)?;
-        let k_ir = self.irty(index.span)?;
-        let key = self.box_for_store(&krep, k, k_ir)?;
+        let k_ty = self.ty_of(&index.span).unwrap_or(kty.clone());
+        let key = self.pack_map_key(&krep, k, &k_ty, index.span)?;
         let default: Temp = match vrep {
             ElemRep::Scalar(box_sym, _, ir) => {
                 let zero = self.zero_scalar(ir, index.span)?;
@@ -6609,8 +6609,8 @@ impl<'a> Emitter<'a> {
         let vrep = self.elem_rep(&vty, object.span)?;
         let obj = self.expr(object)?;
         let k = self.expr(index)?;
-        let k_ir = self.irty(index.span)?;
-        let key = self.box_for_store(&krep, k, k_ir)?;
+        let k_ty = self.ty_of(&index.span).unwrap_or(kty.clone());
+        let key = self.pack_map_key(&krep, k, &k_ty, index.span)?;
         if op == AssignOp::Assign {
             let v = self.expr(value)?;
             let v_ty = self.irty(value.span)?;
@@ -6757,8 +6757,8 @@ impl<'a> Emitter<'a> {
         let map = self.extern_call_t1("pickle_map_new", vec![IrTy::Int], IrTy::Ptr, vec![cap])?;
         for (k, v) in pairs {
             let kt = self.expr(k)?;
-            let k_ir = self.irty(k.span)?;
-            let key = self.box_for_store(&krep, kt, k_ir)?;
+            let k_ty = self.ty_of(&k.span).unwrap_or(Ty::Unknown);
+            let key = self.pack_map_key(&krep, kt, &k_ty, k.span)?;
             let vt = self.expr(v)?;
             let boxed = match vrep {
                 ElemRep::Scalar(box_sym, _, _) => {
@@ -6784,6 +6784,20 @@ impl<'a> Emitter<'a> {
                 self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![v])
             }
             ElemRep::Ptr => Ok(v),
+        }
+    }
+
+    /// The `key` operand for a map op. Scalar keys are boxed; `Ptr` keys
+    /// (option/tuple/composite/string) pass through as the managed pointer,
+    /// except a raw scalar operand that must be lifted to its canonical
+    /// `Option<T>` pointer form first (e.g. `m[5]` on a `Map<int?, V>`).
+    fn pack_map_key(&mut self, rep: &ElemRep, v: Temp, vt: &Ty, span: Span) -> Result<Temp, ()> {
+        match rep {
+            ElemRep::Scalar(box_sym, _, _) => {
+                let v_ir = self.map_ty(vt, span)?;
+                self.extern_call_t1(box_sym, vec![v_ir], IrTy::Ptr, vec![v])
+            }
+            ElemRep::Ptr => self.option_wrap(v, vt, span),
         }
     }
 
@@ -10370,7 +10384,8 @@ impl<'a> Emitter<'a> {
                 self.interface_method_call(e, otv, object, name, args)
             }
             Some(Ty::Map(k, v)) => {
-                let krep = self.key_rep(&k, object.span)?;
+                let ktype = k.clone();
+                let krep = self.key_rep(&ktype, object.span)?;
                 let obj = self.expr(object)?;
                 let vrep = self.elem_rep(&v, e.span)?;
                 match name {
@@ -10379,8 +10394,8 @@ impl<'a> Emitter<'a> {
                             return self.bad(e.span, "`has` takes one argument");
                         }
                         let kt = self.expr(&args[0].value)?;
-                        let a_ir = self.irty(args[0].value.span)?;
-                        let key = self.box_for_store(&krep, kt, a_ir)?;
+                        let a_ty = self.ty_of(&args[0].value.span).unwrap_or_else(|| (*ktype).clone());
+                        let key = self.pack_map_key(&krep, kt, &a_ty, args[0].value.span)?;
                         self.extern_call_t1(
                             "pickle_map_has",
                             vec![IrTy::Ptr, IrTy::Ptr],
@@ -10393,8 +10408,8 @@ impl<'a> Emitter<'a> {
                             return self.bad(e.span, "`get` takes one argument (a key)");
                         }
                         let k = self.expr(&args[0].value)?;
-                        let a_ir = self.irty(args[0].value.span)?;
-                        let key = self.box_for_store(&krep, k, a_ir)?;
+                        let a_ty = self.ty_of(&args[0].value.span).unwrap_or_else(|| (*ktype).clone());
+                        let key = self.pack_map_key(&krep, k, &a_ty, args[0].value.span)?;
                         // Null when absent, else the stored boxed-scalar or
                         // managed pointer — exactly the `T?` representation,
                         // so the raw result is the option.
@@ -10410,8 +10425,8 @@ impl<'a> Emitter<'a> {
                             return self.bad(e.span, "`remove` takes one argument (a key)");
                         }
                         let k = self.expr(&args[0].value)?;
-                        let a_ir = self.irty(args[0].value.span)?;
-                        let key = self.box_for_store(&krep, k, a_ir)?;
+                        let a_ty = self.ty_of(&args[0].value.span).unwrap_or_else(|| (*ktype).clone());
+                        let key = self.pack_map_key(&krep, k, &a_ty, args[0].value.span)?;
                         // The runtime returns the stored pointer (a boxed
                         // scalar or managed value) or null — exactly the `T?`
                         // representation, so the raw result is the option.
@@ -11032,19 +11047,19 @@ impl<'a> Emitter<'a> {
             Ty::Byte => Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int)),
             Ty::Char => Ok(Scalar("pickle_box_char", "pickle_unbox_char", IrTy::Char)),
             // Composite keys are their own managed objects: the runtime hashes
-            // and compares them structurally by class id + payload.
+            // and compares them structurally by class id + payload. `Option`
+            // passes through as-is (`none` = null, normalized to the canonical
+            // sentinel inside the runtime; `some` = the boxed/object pointer);
+            // `Tuple` is a single managed object whose fields are boxed.
             Ty::List(..)
             | Ty::Map(..)
             | Ty::Class(..)
             | Ty::Struct(..)
             | Ty::Enum(..)
             | Ty::Interface(..)
-            | Ty::Range(..) => Ok(Ptr),
-            Ty::Option(..) => self.bad(
-                span,
-                "optional map keys are not lowered yet (a `T?` key has no boxed identity)",
-            ),
-            Ty::Tuple(..) => self.bad(span, "tuple map keys are not lowered yet"),
+            | Ty::Range(..)
+            | Ty::Option(..)
+            | Ty::Tuple(..) => Ok(Ptr),
             Ty::Stream => self.bad(span, "`Stream` map keys are not lowered yet"),
             Ty::Ref(..) => self.bad(span, "`&T` map keys are not lowered yet"),
             Ty::None | Ty::Empty => self.bad(span, "a map key of type `none` is impossible"),

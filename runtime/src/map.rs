@@ -17,12 +17,12 @@ use crate::boxscalar::box_bits;
 use crate::gc::Gc;
 use crate::layout::{
     enum_field_count, enum_tag, list_data, list_len, map_cap, map_entries, map_len, map_set_cap,
-    map_set_entries, map_set_len, MapEntry, MAP_OBJECT_SIZE,
+    map_set_entries, map_set_len, tuple_field_count, MapEntry, MAP_OBJECT_SIZE,
 };
 use crate::object::{
-    PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
-    PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
-    PICKLE_CLASS_STRING,
+    nil_sentinel, none_key, PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR,
+    PICKLE_CLASS_BOX_FLOAT, PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST,
+    PICKLE_CLASS_MAP, PICKLE_CLASS_STRING, PICKLE_CLASS_TUPLE,
 };
 use crate::strings::{string_bytes_len, string_bytes_ptr, string_cmp};
 
@@ -51,6 +51,13 @@ fn fnv1a(bytes: *const u8, len: usize) -> u64 {
 /// semantics for cyclic structures.
 fn key_hash(key: *const PickleObject) -> u64 {
     unsafe {
+        // A `none` key (null to the outside, the canonical sentinel to the
+        // table) is one distinguished identity: its hash matches the fixed
+        // constant `deep_hash` already uses for a null slot, so none-as-key
+        // and none-nested are interchangeable.
+        if key.is_null() || std::ptr::eq(key, none_key()) {
+            return 0x9e37_79b9_7f4a_7c15;
+        }
         let class_id = (*key).class_id;
         match class_id {
             PICKLE_CLASS_STRING => fnv1a(string_bytes_ptr(key), string_bytes_len(key)),
@@ -92,6 +99,10 @@ fn key_eq(a: *const PickleObject, b: *const PickleObject) -> bool {
     if std::ptr::eq(a, b) {
         return true;
     }
+    // A `none` key equals only itself (its identity is null/sentinel).
+    if a.is_null() || std::ptr::eq(a, none_key()) || b.is_null() || std::ptr::eq(b, none_key()) {
+        return false;
+    }
     let mut path: Vec<(*const PickleObject, *const PickleObject)> = Vec::new();
     match deep_eq(a, b, &mut path) {
         Cmp::Equal => true,
@@ -105,7 +116,7 @@ fn key_eq(a: *const PickleObject, b: *const PickleObject) -> bool {
 /// acyclic structures always produce the same hash.
 fn deep_hash(obj: *const PickleObject, path: &mut Vec<*const PickleObject>) -> (u64, bool) {
     unsafe {
-        if obj.is_null() {
+        if obj.is_null() || std::ptr::eq(obj, none_key()) {
             return (0x9e37_79b9_7f4a_7c15, false);
         }
         if path.contains(&obj) {
@@ -181,6 +192,19 @@ fn deep_hash(obj: *const PickleObject, path: &mut Vec<*const PickleObject>) -> (
                     i += 1;
                 }
             }
+            PICKLE_CLASS_TUPLE => {
+                // Ordered: arity and element order participate.
+                mix(&mut h, class_id as u64);
+                let n = tuple_field_count(obj);
+                mix(&mut h, n as u64);
+                let mut i = 0usize;
+                while i < n {
+                    let (eh, ec) = deep_hash((*obj).slot(1 + i), path);
+                    mix(&mut h, eh);
+                    cyclic |= ec;
+                    i += 1;
+                }
+            }
             _ => {
                 // User class/struct/interface instance: class identity + slots.
                 mix(&mut h, class_id as u64);
@@ -223,12 +247,16 @@ fn deep_eq(
         if std::ptr::eq(a, b) {
             return Cmp::Equal;
         }
-        if a.is_null() || b.is_null() {
-            return if a.is_null() && b.is_null() {
+        // A `none` (null or sentinel) equals only itself.
+        if a.is_null() || std::ptr::eq(a, none_key()) {
+            return if b.is_null() || std::ptr::eq(b, none_key()) {
                 Cmp::Equal
             } else {
                 Cmp::Diff
             };
+        }
+        if b.is_null() || std::ptr::eq(b, none_key()) {
+            return Cmp::Diff;
         }
         let pair = (a, b);
         if path.contains(&pair) {
@@ -360,6 +388,24 @@ fn deep_eq(
                         }
                     }
                 }
+                PICKLE_CLASS_TUPLE => {
+                    let na = tuple_field_count(a);
+                    let nb = tuple_field_count(b);
+                    if na != nb {
+                        Cmp::Diff
+                    } else {
+                        let mut r = Cmp::Equal;
+                        let mut i = 0usize;
+                        while i < na {
+                            r = deep_eq((*a).slot(1 + i), (*b).slot(1 + i), path);
+                            if r != Cmp::Equal {
+                                break;
+                            }
+                            i += 1;
+                        }
+                        r
+                    }
+                }
                 _ => {
                     // User class/struct/interface instance.
                     let sa = (*a).size as usize;
@@ -488,6 +534,8 @@ pub fn map_set(
 ) -> *mut PickleObject {
     let gc = crate::gc::gc_mut();
     unsafe {
+        // `none` is null at the boundary; the table needs a non-null marker.
+        let key = if key.is_null() { none_key() } else { key };
         let key_hash = key_hash(key);
         if needs_grow(map_entries(map), map_cap(map), map_len(map)) {
             let new_cap = map_cap(map) * 2;
@@ -509,6 +557,7 @@ pub fn map_set(
 /// Look up `key`; returns null when absent.
 pub fn map_get(map: *const PickleObject, key: *const PickleObject) -> *mut PickleObject {
     unsafe {
+        let key = if key.is_null() { none_key() } else { key };
         let key_hash = key_hash(key);
         // Probe with a small guard: always within cap steps.
         let cap = map_cap(map);
@@ -532,6 +581,7 @@ pub fn map_get(map: *const PickleObject, key: *const PickleObject) -> *mut Pickl
 /// Remove `key`. Returns the value if present, else null.
 pub fn map_remove(map: *mut PickleObject, key: *const PickleObject) -> *mut PickleObject {
     unsafe {
+        let key = if key.is_null() { none_key() } else { key };
         let key_hash = key_hash(key);
         let cap = map_cap(map);
         let mask = cap - 1;
@@ -569,10 +619,18 @@ fn map_snapshot(map: *const PickleObject, want_keys: bool) -> *mut PickleObject 
     unsafe {
         for i in 0..cap {
             let e = &*entries.add(i);
-            if e.key.is_null() || std::ptr::eq(e.key, crate::object::nil_sentinel()) {
+            if e.key.is_null() || std::ptr::eq(e.key, nil_sentinel()) {
                 continue;
             }
-            let val = if want_keys { e.key } else { e.value };
+            // A stored `none` key is the sentinel; surface it as null, the
+            // runtime representation the compiler expects for `T?`.
+            let val = if want_keys && std::ptr::eq(e.key, none_key()) {
+                std::ptr::null_mut()
+            } else if want_keys {
+                e.key
+            } else {
+                e.value
+            };
             crate::list::list_push(l, val);
         }
     }

@@ -59,12 +59,54 @@ Two module imports resolve to the same alias in this module.
 import a as util  import b as util
 ```
 
+### E0206 · module not found
+
+An import path does not resolve to a file: it is searched relative to the
+importing file's directory, then under `<cwd>/src/` (or `<cwd>/src/<path>.pkl`
+when the path maps to a nested folder).
+
+```
+import nowhere.utility
+```
+
+### E0207 · item not exported by module
+
+An `import { item }` references a name the referenced module does not declare
+at top level.
+
+```
+import { Missing } from text.lexer
+```
+
+### E0208 · module path mismatch
+
+A file declares a `module` path that differs from the path used to load it:
+resolving the import locates the file under a different module name than the
+one it declares.
+
+```
+import b.tool  // b/tool.pkl declares `module a.tool`
+```
+
+### E0209 · ambiguous imported name
+
+Two loaded modules both export the same top-level function or const, and a bare
+reference in this file cannot tell them apart. Disambiguate with
+`import <item> from <mod> as <alias>` first.
+
+```
+import helper from a.utils  import helper from b.utils  fn main() { helper() }
+```
+
 ### E0203 · duplicate member
 
 A class or struct declares two members with the same name.
 
 ```
-class P { val x: int  val x: string }
+class P {
+    var x: int
+    var x: string
+}
 ```
 
 ### E0204 · duplicate constructor
@@ -110,7 +152,8 @@ A generic instantiation supplies fewer or more type arguments than the type
 declares.
 
 ```
-let xs: List = [1]  // List needs one argument
+class Box<T> {}
+let b: Box<int, string> = Box<int>()
 ```
 
 ### E0213 · list of references
@@ -154,6 +197,16 @@ A method is marked `override` but no parent in the class chain declares it.
 
 ```
 class B extends A { override fn n() {} }  // A has no n
+```
+
+### E0224 · mixed method kind
+
+A class cannot redeclare an inherited method under the opposite kind: a `static`
+method cannot shadow an inherited instance method, and an instance method cannot
+shadow an inherited `static` method.
+
+```
+class B extends A { static fn m() {} }  // A.m is an instance method
 ```
 
 ## E03xx — type checking and expressions
@@ -202,14 +255,15 @@ for (x in 42) {}
 
 ### E0342 · map keys must be a supported type
 
-Map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), or a
-composite object (`List`, `Map`, class/struct instance, enum, interface). Keys
-are hashed and compared structurally (deep), so a `List<int>` key `[1, 2]`
-matches any equal list. Optional, tuple, reference, function, and pointer keys
-are not supported.
+Map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), a
+composite object (`List`, `Map`, class/struct instance, enum, interface), an
+option, or a tuple. Keys are hashed and compared structurally (deep), so a
+`List<int>` key `[1, 2]` matches any equal list, and a `(int, string)` tuple
+key matches any equal tuple. Reference, function, and pointer keys are not
+supported.
 
 ```
-let m = { (1, 2): "a" }   // tuple keys are rejected
+let m = { (new cls(), 2): "a" }   // class methods/references are not keys
 ```
 
 ### E0343 · index error
@@ -236,7 +290,8 @@ A field, property, or method name does not exist on the receiver class,
 struct, or List/Map built-ins.
 
 ```
-class P { val x: int }  p: P -> p.y
+class P { var x: int }
+let p = P()  p.y
 ```
 
 ### E0353 · enum variant error
@@ -245,7 +300,8 @@ A variant name does not exist on the enum, or a bare variant name is used
 where a payload constructor is required.
 
 ```
-Color.Purple  // Color has no Purple, or it carries fields
+enum Color { Red  Green }
+case Color.Purple -> {}
 ```
 
 ### E0354 · cannot construct this type
@@ -311,7 +367,7 @@ let n = 5 as bool
 An attribute name is unknown, repeated, or given arguments it does not take.
 
 ```
-let #[wat] x = 1
+#[wat] let x = 1
 ```
 
 ### E0401 · manualAlloc misuse
@@ -349,7 +405,7 @@ let n = 5  n()
 members.
 
 ```
-class U { }  u: U? -> u.name   n: int -> n.length
+let n = 5  n.name
 ```
 
 ### E0430 · operator operand error

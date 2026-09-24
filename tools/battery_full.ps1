@@ -16,12 +16,12 @@ function ByteEq([string]$a, [string]$b) {
 
 $cli = (Resolve-Path "target\debug\pickle-cli.exe").Path
 
-# ---- Battery targets: 12 self targets (11 compiler-selfhost + cli-selfhost/main) ----
-# Genuine oracles already regenerated for all 12 (tools/diff/oracle/<t>.pkl_gen.{ir,irx}).
+# ---- Battery targets: 13 self targets (12 compiler-selfhost + cli-selfhost/main) ----
+# Genuine oracles already regenerated for all 13 (tools/diff/oracle/<t>.pkl_gen.{ir,irx}).
 
 # ---- GATE 1: port parity (root: port/<t>_self.{ir,irx} vs oracle) ----
 # Port artifacts were regenerated in a prior flawless run; battery re-verifies byte parity.
-$Targets = @("ast","check","diag","emit","front","ir","lexer","parser","resolve","token","ty","main")
+$Targets = @("ast","check","diag","emit","error","front","ir","lexer","parser","resolve","token","ty","main")
 $gate1ok = 0; $gate1fail = 0
 foreach ($t in $Targets) {
     if ($t -eq "main") {
@@ -39,7 +39,7 @@ foreach ($t in $Targets) {
     $irx = ByteEq $selfIrx $orIrx
     if ($ir -and $irx) { $gate1ok++ } else { $gate1fail++; Write-Output "GATE1 DIFF ${t}: ir=$ir irx=$irx" }
 }
-Write-Output "GATE1 PORT PARITY (12x2): PASS=$gate1ok FAIL=$gate1fail"
+Write-Output "GATE1 PORT PARITY (13x2): PASS=$gate1ok FAIL=$gate1fail"
 
 # ---- GATE 2: gen2 parity (driver regen each target now, byte-compare vs oracle) ----
 $gate2ok = 0; $gate2fail = 0
@@ -59,7 +59,7 @@ foreach ($t in $Targets) {
     $irx = ByteEq $gen2Irx $orIrx
     if ($ir -and $irx) { $gate2ok++ } else { $gate2fail++; Write-Output "GATE2 DIFF ${t}: ir=$ir irx=$irx" }
 }
-Write-Output "GATE2 GEN2 PARITY (12x2): PASS=$gate2ok FAIL=$gate2fail"
+Write-Output "GATE2 GEN2 PARITY (13x2): PASS=$gate2ok FAIL=$gate2fail"
 
 # ---- GATE 3: gen2_run_one driver artifact parity (port/<gen2_run_one>_self vs oracle) ----
 $g3ir  = ByteEq "tools\diff\port\gen2_run_one_self.ir"  "tools\diff\oracle\gen2_run_one.pkl.ir"
@@ -89,13 +89,13 @@ if (-not (Test-Path -LiteralPath $pklc)) {
         } elseif (ByteEq $portLex $oracleLex) { $gate4ok++ }
         else { $gate4fail++; Write-Output "GATE4 DIFF ${n}: lex mismatch" }
     }
-    Write-Output "GATE4 AOT DRIVER (lex parity on 45, skip=$gate4skip): PASS=$gate4ok FAIL=$gate4fail"
+    Write-Output "GATE4 AOT DRIVER (lex parity on 47, skip=$gate4skip): PASS=$gate4ok FAIL=$gate4fail"
 }
 
 # ---- GATE 5: AOT gen2 loop — the ported compiler, AOT-built, recompiles all 12 self sources ----
 # Deepest Stage-4 proof: gen2_run_one.pkl is AOT-linked to a native exe (Rust used only to
 # bootstrap-link), then with no JIT anywhere it recompiles every self source and emits
-# byte-identical IR/IRX to the Rust oracles (the same 24/24 GATE2 checks, driven purely
+# byte-identical IR/IRX to the Rust oracles (the same 26/26 GATE2 checks, driven purely
 # through the compiled driver).
 $pklc2 = "tools\diff\port\pklc_gen2.exe"
 & $cli build "cli-selfhost\gen2_run_one.pkl" -o $pklc2 2>&1 | Out-Null
@@ -119,7 +119,7 @@ if (-not (Test-Path -LiteralPath $pklc2)) {
         $irx = ByteEq $gen2Irx $orIrx
         if ($ir -and $irx) { $gate5ok++ } else { $gate5fail++; Write-Output "GATE5 DIFF ${t}: ir=$ir irx=$irx" }
     }
-    Write-Output "GATE5 AOT GEN2 (12x2): PASS=$gate5ok FAIL=$gate5fail"
+    Write-Output "GATE5 AOT GEN2 (13x2): PASS=$gate5ok FAIL=$gate5fail"
 }
 
 # ---- GATE 6: behavior differential — port-compiled IRX behaves identically to Rust JIT ----

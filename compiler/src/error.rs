@@ -185,14 +185,14 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     CatalogueEntry {
         code: ErrorCode::NotExported,
         title: "item not exported by module",
-        rule: "a `use` references a name the referenced module does not declare at top level.",
-        example: "use text.lexer.Missing",
+        rule: "an `import { item }` references a name the referenced module does not declare at top level.",
+        example: "import { Missing } from text.lexer",
     },
     CatalogueEntry {
         code: ErrorCode::ModuleMismatch,
         title: "module path mismatch",
-        rule: "a file declares a `module` path that differs from the path used to load it, or two imports inside the same file bind the same alias.",
-        example: "module a.tool  import b.tool",
+        rule: "a file declares a `module` path that differs from the path used to load it; resolving the import locates the file under a different module name than the one it declares.",
+        example: "import b.tool  // b/tool.pkl declares `module a.tool`",
     },
     CatalogueEntry {
         code: ErrorCode::AmbiguousImport,
@@ -204,7 +204,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: ErrorCode::DuplicateMember,
         title: "duplicate member",
         rule: "a class or struct declares two members with the same name.",
-        example: "class P { val x: int  val x: string }",
+        example: "class P {\n    var x: int\n    var x: string\n}",
     },
     CatalogueEntry {
         code: ErrorCode::DuplicateConstructor,
@@ -234,7 +234,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: ErrorCode::WrongTypeArgs,
         title: "wrong number of type arguments",
         rule: "a generic instantiation supplies fewer or more type arguments than the type declares.",
-        example: "let xs: List = [1]  // List needs one argument",
+        example: "class Box<T> {}\nlet b: Box<int, string> = Box<int>()",
     },
     CatalogueEntry {
         code: ErrorCode::ListOfRefs,
@@ -305,7 +305,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     CatalogueEntry {
         code: ErrorCode::MapKeyString,
         title: "map keys must be a supported type",
-        rule: "map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), or a composite object (`List`, `Map`, class/struct instance, enum, interface). Keys are hashed and compared structurally. Optional, tuple, reference, function, and pointer keys are not supported.",
+        rule: "map keys may be `string`, a scalar (`int`, `float`, `bool`, `char`, `byte`), a composite object (`List`, `Map`, class/struct instance, enum, interface), an option, or a tuple. Keys are hashed and compared structurally. Reference, function, and pointer keys are not supported.",
         example: "(1, 2) as a map key — { (1, 2): \"a\" } is not lowered",
     },
     CatalogueEntry {
@@ -324,13 +324,13 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: ErrorCode::NoMember,
         title: "no such member",
         rule: "a field, property, or method name does not exist on the receiver class, struct, or List/Map built-ins.",
-        example: "class P { val x: int }  p: P -> p.y",
+        example: "class P { var x: int }\nlet p = P()  p.y",
     },
     CatalogueEntry {
         code: ErrorCode::EnumVariant,
         title: "enum variant error",
         rule: "a variant name does not exist on the enum, or a bare variant name is used where a payload constructor is required.",
-        example: "Color.Purple  // Color has no Purple, or it carries fields",
+        example: "enum Color { Red  Green }\ncase Color.Purple -> {}",
     },
     CatalogueEntry {
         code: ErrorCode::CannotConstruct,
@@ -372,7 +372,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: ErrorCode::Attribute,
         title: "attribute error",
         rule: "an attribute name is unknown, repeated, or given arguments it does not take.",
-        example: "let #[wat] x = 1",
+        example: "#[wat] let x = 1",
     },
     CatalogueEntry {
         code: ErrorCode::ManualAlloc,
@@ -396,7 +396,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: ErrorCode::MemberOnNonClass,
         title: "member access on non-class value",
         rule: "`.member` requires a class, struct, enum, or interface receiver; an option (`T?`) must be unwrapped or accessed with `?.` first, and scalars have no members.",
-        example: "class U { }  u: U? -> u.name   n: int -> n.length",
+        example: "let n = 5  n.name",
     },
     CatalogueEntry {
         code: ErrorCode::Operator,

@@ -631,6 +631,16 @@ impl<'a> Checker<'a> {
             let inner = want.inner_option().unwrap();
             return self.ok_types(&inner, got);
         }
+        // A `Map` widens when its key or value types widen through the same
+        // option rules (e.g. a `Map<int, V>` literal satisfies a
+        // `Map<int?, V>` binding). Container covariance is otherwise rejected.
+        if let (Ty::Map(kw, vw), Ty::Map(kg, vg)) = (want, got) {
+            let key_opt = matches!(kw.as_ref(), Ty::Option(_)) || matches!(kg.as_ref(), Ty::Option(_));
+            let val_opt = matches!(vw.as_ref(), Ty::Option(_)) || matches!(vg.as_ref(), Ty::Option(_));
+            if (key_opt || val_opt) && self.ok_types(kw, kg) && self.ok_types(vw, vg) {
+                return true;
+            }
+        }
         // class implements interface?
         if let (Some(gotn), Some(wantn)) = (got.named(), want.named()) {
             if gotn != wantn {
@@ -2120,12 +2130,14 @@ impl<'a> Checker<'a> {
                                 | Ty::Enum(..)
                                 | Ty::Interface(..)
                                 | Ty::Range(..)
+                                | Ty::Option(..)
+                                | Ty::Tuple(..)
                         )
                     {
                         self.err(
                             pairs[0].0.span,
                             format!(
-                                "map keys must be `string`, `int`, `float`, `bool`, `char`, `byte`, a list, a map, a class/struct, or an enum, found `{k}`"
+                                "map keys must be `string`, `int`, `float`, `bool`, `char`, `byte`, a list, a map, a class/struct, an enum, an option, or a tuple, found `{k}`"
                             ),
                         );
                     }

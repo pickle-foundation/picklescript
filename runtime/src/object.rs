@@ -88,6 +88,25 @@ pub const fn nil_sentinel() -> *const PickleObjectHeader {
     &NIL_SENTINEL
 }
 
+/// Canonical `none` map key. An `Option<T>` key's `none` value is the null
+/// pointer at the runtime boundary, but null is the map table's empty-slot
+/// marker, so a `none` key cannot be stored as-is. Map operations therefore
+/// normalize a null key to this sentinel before hashing/comparing/storing
+/// (and hash/equality treat the sentinel exactly like null). Never
+/// heap-allocated and never swept.
+pub static NONE_KEY: PickleObjectHeader = PickleObjectHeader {
+    next: std::ptr::null_mut(),
+    class_id: PICKLE_CLASS_STRING,
+    flags: 0,
+    size: 0,
+    _pad: 0,
+};
+
+/// Address of the canonical `none`-key sentinel.
+pub const fn none_key() -> *const PickleObjectHeader {
+    &NONE_KEY
+}
+
 /// Byte offset of the payload within an object.
 pub const fn pickle_header_size() -> usize {
     HEADER_BYTES
