@@ -90,7 +90,9 @@ impl SourceFile {
         } else {
             self.text.len()
         };
-        self.text[start..end].trim_end_matches(['\n', '\r']).trim_end()
+        self.text[start..end]
+            .trim_end_matches(['\n', '\r'])
+            .trim_end()
     }
 }
 
@@ -239,7 +241,8 @@ impl DiagnosticSink {
     pub fn render_all_grouped(&self, map: &SourceMap, colored: bool) -> String {
         use std::collections::BTreeMap;
         let diags = self.diagnostics.borrow();
-        let mut groups: BTreeMap<Option<crate::error::ErrorCode>, Vec<Diagnostic>> = BTreeMap::new();
+        let mut groups: BTreeMap<Option<crate::error::ErrorCode>, Vec<Diagnostic>> =
+            BTreeMap::new();
         for d in diags.iter() {
             groups.entry(d.code).or_default().push(d.clone());
         }
@@ -291,10 +294,14 @@ impl DiagnosticSink {
                     Severity::Warning => "warning",
                 })
             );
-            let _ = writeln!(out, "    \"code\": {},", match d.code {
-                Some(code) => json_string(code.id()),
-                None => "null".to_string(),
-            });
+            let _ = writeln!(
+                out,
+                "    \"code\": {},",
+                match d.code {
+                    Some(code) => json_string(code.id()),
+                    None => "null".to_string(),
+                }
+            );
             match d.span {
                 Some(span) => {
                     let line = map.get(span.file).line_of(span.start);
@@ -403,10 +410,7 @@ fn render_diagnostic(d: &Diagnostic, map: &SourceMap, colored: bool, out: &mut S
             for _ in 0..col {
                 out.push(' ');
             }
-            let width = span
-                .end
-                .saturating_sub(span.start)
-                .clamp(1, 80);
+            let width = span.end.saturating_sub(span.start).clamp(1, 80);
             for _ in 0..width {
                 out.push('^');
             }

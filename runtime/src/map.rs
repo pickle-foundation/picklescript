@@ -16,8 +16,8 @@
 use crate::boxscalar::box_bits;
 use crate::gc::Gc;
 use crate::layout::{
-    enum_field_count, enum_tag, list_data, list_len, map_cap, map_entries, map_len,
-    map_set_cap, map_set_entries, map_set_len, MapEntry, MAP_OBJECT_SIZE,
+    enum_field_count, enum_tag, list_data, list_len, map_cap, map_entries, map_len, map_set_cap,
+    map_set_entries, map_set_len, MapEntry, MAP_OBJECT_SIZE,
 };
 use crate::object::{
     PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
@@ -405,7 +405,11 @@ fn find_slot(
             let k = key_str(slot);
             if k.is_null() {
                 // Empty: probe `first_tomb` if we passed any.
-                let target = if first_tomb.is_null() { slot } else { first_tomb };
+                let target = if first_tomb.is_null() {
+                    slot
+                } else {
+                    first_tomb
+                };
                 return (target, false);
             }
             // Tombstone check (key == the unique tombstone sentinel).
@@ -439,7 +443,12 @@ fn entries_count(entries: *mut MapEntry, cap: usize) -> usize {
     }
 }
 
-fn rehash(old_entries: *mut MapEntry, old_cap: usize, new_cap: usize, gc: &mut Gc) -> *mut MapEntry {
+fn rehash(
+    old_entries: *mut MapEntry,
+    old_cap: usize,
+    new_cap: usize,
+    gc: &mut Gc,
+) -> *mut MapEntry {
     unsafe {
         let fresh = gc.heap.raw_alloc(new_cap * std::mem::size_of::<MapEntry>());
         std::ptr::write_bytes(fresh, 0, new_cap * std::mem::size_of::<MapEntry>());
@@ -465,18 +474,18 @@ pub fn map_new(cap: usize, gc: &mut Gc) -> *mut PickleObject {
         map_set_len(obj, 0);
         map_set_cap(obj, cap);
         let entries = gc.heap.raw_alloc(cap * std::mem::size_of::<MapEntry>());
-        std::ptr::write_bytes(
-            entries,
-            0,
-            cap * std::mem::size_of::<MapEntry>(),
-        );
+        std::ptr::write_bytes(entries, 0, cap * std::mem::size_of::<MapEntry>());
         map_set_entries(obj, entries as *mut MapEntry);
     }
     obj
 }
 
 /// Insert `key -> value`. Returns the previous value, if any.
-pub fn map_set(map: *mut PickleObject, key: *const PickleObject, value: *mut PickleObject) -> *mut PickleObject {
+pub fn map_set(
+    map: *mut PickleObject,
+    key: *const PickleObject,
+    value: *mut PickleObject,
+) -> *mut PickleObject {
     let gc = crate::gc::gc_mut();
     unsafe {
         let key_hash = key_hash(key);
@@ -727,7 +736,9 @@ mod tests {
         assert_eq!(crate::boxscalar::pickle_unbox_i64(v1), 7);
         let missing = crate::strings::string_from_bytes(b"gamma".as_ptr(), 5, crate::gc::gc_mut());
         assert_eq!(
-            crate::boxscalar::pickle_unbox_i64(crate::map::pickle_map_get_boxed(m, missing, default)),
+            crate::boxscalar::pickle_unbox_i64(crate::map::pickle_map_get_boxed(
+                m, missing, default
+            )),
             0
         );
         let keys = crate::map::pickle_map_keys(m);
@@ -816,17 +827,26 @@ mod tests {
             1
         );
         assert_eq!(
-            crate::boxscalar::pickle_unbox_i64(map_get(m, crate::boxscalar::pickle_box_bool(false))),
+            crate::boxscalar::pickle_unbox_i64(map_get(
+                m,
+                crate::boxscalar::pickle_box_bool(false)
+            )),
             0
         );
         // true != 1: bool box is a distinct class from int box.
         assert!(map_get(m, crate::boxscalar::pickle_box_i64(1)).is_null());
         assert_eq!(
-            crate::boxscalar::pickle_unbox_i64(map_get(m, crate::boxscalar::pickle_box_char(b'a' as i32))),
+            crate::boxscalar::pickle_unbox_i64(map_get(
+                m,
+                crate::boxscalar::pickle_box_char(b'a' as i32)
+            )),
             65
         );
         assert_eq!(
-            crate::boxscalar::pickle_unbox_i64(map_get(m, crate::boxscalar::pickle_box_char(b'z' as i32))),
+            crate::boxscalar::pickle_unbox_i64(map_get(
+                m,
+                crate::boxscalar::pickle_box_char(b'z' as i32)
+            )),
             90
         );
         // 'a' box != int 65.
@@ -902,7 +922,11 @@ mod tests {
         let c = make_obj(crate::object::PICKLE_CLASS_USER_BASE as u64, &[1, 3], gc);
         assert!(map_get(m, c).is_null());
         // A different class id never matches.
-        let d = make_obj((crate::object::PICKLE_CLASS_USER_BASE + 1) as u64, &[1, 2], gc);
+        let d = make_obj(
+            (crate::object::PICKLE_CLASS_USER_BASE + 1) as u64,
+            &[1, 2],
+            gc,
+        );
         assert!(map_get(m, d).is_null());
         // Enum keys: tag + payload fields.
         let e1 = crate::r#enum::enum_new(0, 2, gc);
@@ -949,11 +973,27 @@ mod tests {
         // A map used as a key: equal contents match regardless of insertion
         // order inside the inner map.
         let inner = crate::map::map_new(0, gc);
-        crate::map::map_set(inner, crate::strings::int64_to_string(1), crate::boxscalar::pickle_box_i64(1));
-        crate::map::map_set(inner, crate::strings::int64_to_string(2), crate::boxscalar::pickle_box_i64(2));
+        crate::map::map_set(
+            inner,
+            crate::strings::int64_to_string(1),
+            crate::boxscalar::pickle_box_i64(1),
+        );
+        crate::map::map_set(
+            inner,
+            crate::strings::int64_to_string(2),
+            crate::boxscalar::pickle_box_i64(2),
+        );
         let inner_b = crate::map::map_new(0, gc);
-        crate::map::map_set(inner_b, crate::strings::int64_to_string(2), crate::boxscalar::pickle_box_i64(2));
-        crate::map::map_set(inner_b, crate::strings::int64_to_string(1), crate::boxscalar::pickle_box_i64(1));
+        crate::map::map_set(
+            inner_b,
+            crate::strings::int64_to_string(2),
+            crate::boxscalar::pickle_box_i64(2),
+        );
+        crate::map::map_set(
+            inner_b,
+            crate::strings::int64_to_string(1),
+            crate::boxscalar::pickle_box_i64(1),
+        );
         map_set(m, inner, crate::boxscalar::pickle_box_i64(321));
         assert_eq!(crate::boxscalar::pickle_unbox_i64(map_get(m, inner_b)), 321);
     }
@@ -978,10 +1018,7 @@ mod tests {
         assert!(map_get(m, l2).is_null());
         assert_eq!(map_len_of(m), 1);
         // remove by the same root works; by the other root is a miss.
-        assert_eq!(
-            crate::boxscalar::pickle_unbox_i64(map_remove(m, l)),
-            42
-        );
+        assert_eq!(crate::boxscalar::pickle_unbox_i64(map_remove(m, l)), 42);
         assert!(map_get(m, l).is_null());
     }
 }

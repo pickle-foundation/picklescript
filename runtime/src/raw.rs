@@ -83,7 +83,13 @@ mod tests {
     fn raw_double_free_is_rejected() {
         let p = pickle_raw_alloc(16);
         assert!(raw_try_free(p));
-        assert!(!raw_try_free(p), "the live registry must reject a second free");
-        assert!(!raw_try_free(0xdeadbeef), "foreign pointers must be rejected");
+        assert!(
+            !raw_try_free(p),
+            "the live registry must reject a second free"
+        );
+        assert!(
+            !raw_try_free(0xdeadbeef),
+            "foreign pointers must be rejected"
+        );
     }
 }

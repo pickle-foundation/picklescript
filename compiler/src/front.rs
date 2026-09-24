@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -270,10 +270,7 @@ fn array_is_closed(s: &str) -> bool {
 /// from an array body, writing each `name -> path` into `out`.
 fn parse_members_array(array: &str, out: &mut HashMap<String, String>) {
     let mut rest = array;
-    loop {
-        let Some(start) = rest.find(['{', '"', '\'']) else {
-            break;
-        };
+    while let Some(start) = rest.find(['{', '"', '\'']) {
         let Some(c) = rest.chars().nth(start) else {
             break;
         };
@@ -283,7 +280,8 @@ fn parse_members_array(array: &str, out: &mut HashMap<String, String>) {
                 break;
             };
             let table = &after[..close];
-            if let (Some(name), Some(path)) = (extract_kv(table, "name"), extract_kv(table, "path")) {
+            if let (Some(name), Some(path)) = (extract_kv(table, "name"), extract_kv(table, "path"))
+            {
                 out.insert(name, path);
             }
             rest = &after[close + 1..];
@@ -336,7 +334,10 @@ fn extract_kv(table: &str, want: &str) -> Option<String> {
     let mut rest = table;
     loop {
         let idx = rest.find(want)?;
-        let before = idx.checked_sub(1).and_then(|i| rest.as_bytes().get(i)).copied();
+        let before = idx
+            .checked_sub(1)
+            .and_then(|i| rest.as_bytes().get(i))
+            .copied();
         if matches!(before, Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
             rest = &rest[idx + want.len()..];
             continue;
@@ -354,7 +355,11 @@ fn extract_kv(table: &str, want: &str) -> Option<String> {
         }
         let end = value.find([',', '}']).unwrap_or(value.len());
         let bare = value[..end].trim();
-        return if bare.is_empty() { None } else { Some(bare.to_string()) };
+        return if bare.is_empty() {
+            None
+        } else {
+            Some(bare.to_string())
+        };
     }
 }
 
@@ -483,7 +488,7 @@ impl<'a> Loader<'a> {
                 exports.insert(n.to_string());
             }
         }
-let root_path = PathBuf::from(file_name);
+        let root_path = PathBuf::from(file_name);
         self.workspace = Workspace::discover(root_path.parent().unwrap_or_else(|| Path::new(".")));
         self.files.push(ModuleFile {
             file_path: root_path.clone(),
@@ -497,7 +502,9 @@ let root_path = PathBuf::from(file_name);
             program,
         });
         self.loaded.insert(
-            root_path.canonicalize().unwrap_or_else(|_| root_path.clone()),
+            root_path
+                .canonicalize()
+                .unwrap_or_else(|_| root_path.clone()),
             0,
         );
         if !self.files[0].module_path.is_empty() {
@@ -540,10 +547,7 @@ let root_path = PathBuf::from(file_name);
 
     fn parse_file(&mut self, fid: FileId, source: &str) -> Option<Program> {
         let tokens = crate::lexer::lex(fid, source, self.diags);
-        match parse(tokens, self.diags) {
-            Ok(program) => Some(program),
-            Err(()) => None,
-        }
+        parse(tokens, self.diags).ok()
     }
 
     /// Where a module path points: a single module file, or a package
@@ -647,9 +651,8 @@ let root_path = PathBuf::from(file_name);
             Some(ModuleLoc::File(file)) => self.load_file(&file, Some((segments, span))),
             Some(ModuleLoc::Package(dir)) => self.load_package(&dir, Some((segments, span))),
             None => {
-                let mut note =
-                    "searched up the importing file's directory tree, then `<cwd>/src/`"
-                        .to_string();
+                let mut note = "searched up the importing file's directory tree, then `<cwd>/src/`"
+                    .to_string();
                 if let Some(dir) = self.workspace.crate_dir(&segments[0]) {
                     note.push_str(&format!(
                         "; then inside workspace crate `{}` at `{}`",
@@ -707,7 +710,7 @@ let root_path = PathBuf::from(file_name);
                 exports.insert(n.to_string());
             }
         }
-let idx = self.files.len();
+        let idx = self.files.len();
         self.files.push(ModuleFile {
             file_path: path.to_path_buf(),
             fid,
@@ -743,14 +746,18 @@ let idx = self.files.len();
             .iter()
             .map(|(n, _)| n.clone())
             .collect();
-        self.files[idx].exports.extend(ns.into_iter());
-        self.files[idx].exports.extend(items.into_iter());
+        self.files[idx].exports.extend(ns);
+        self.files[idx].exports.extend(items);
     }
 
     /// Materialize a package directory as a module node: load every member
     /// module file (`*.pkl`, non-recursive) as its own module and expose the
     /// union of their exports as the package's exports.
-    fn load_package(&mut self, dir: &Path, imported_as: Option<(&[String], Span)>) -> Option<usize> {
+    fn load_package(
+        &mut self,
+        dir: &Path,
+        imported_as: Option<(&[String], Span)>,
+    ) -> Option<usize> {
         let segments = imported_as.map(|(s, _)| s.to_vec()).unwrap_or_default();
         let span = imported_as.map(|(_, s)| s);
         let mut exports = HashSet::new();
@@ -770,7 +777,7 @@ let idx = self.files.len();
             }
         }
         let fid = self.map.add(dir.display().to_string(), String::new());
-let idx = self.files.len();
+        let idx = self.files.len();
         self.files.push(ModuleFile {
             file_path: dir.to_path_buf(),
             fid,
@@ -792,7 +799,10 @@ let idx = self.files.len();
         if !segments.is_empty() {
             let own_provider = segments.join(".");
             for name in self.files[idx].exports.clone() {
-                fi.bindings.entry(name).or_default().push(own_provider.clone());
+                fi.bindings
+                    .entry(name)
+                    .or_default()
+                    .push(own_provider.clone());
             }
             fi.own_module = Some(own_provider);
         }
@@ -855,10 +865,7 @@ let idx = self.files.len();
                     for item in items {
                         match self.load_item(&importer, &imp.source, item) {
                             None => {}
-                            Some(ItemTarget::ModuleFile {
-                                idx: tid,
-                                local,
-                            }) => {
+                            Some(ItemTarget::ModuleFile { idx: tid, local }) => {
                                 if !bound_aliases.insert(local.clone())
                                     || fi.aliases.contains_key(&local)
                                 {
@@ -898,12 +905,10 @@ let idx = self.files.len();
                                 if imp.is_public {
                                     self.files[idx].pub_items.push((name.clone(), tid));
                                 }
-                                fi.modules
-                                    .entry(provider.clone())
-                                    .or_insert(ModuleBinding {
-                                        exports: Rc::new(self.files[tid].exports.clone()),
-                                        provider: None,
-                                    });
+                                fi.modules.entry(provider.clone()).or_insert(ModuleBinding {
+                                    exports: Rc::new(self.files[tid].exports.clone()),
+                                    provider: None,
+                                });
                                 match &item.alias {
                                     Some(_) => {
                                         if fi.renames.contains_key(&local)
@@ -951,10 +956,7 @@ let idx = self.files.len();
                             Some(d) => render_path(&self.files[d].module_path),
                             None => render_path(&imp.source),
                         };
-                        fi.bindings
-                            .entry(name.clone())
-                            .or_default()
-                            .push(provider);
+                        fi.bindings.entry(name.clone()).or_default().push(provider);
                         if imp.is_public {
                             if let Some(t) = target {
                                 self.files[idx]
@@ -979,12 +981,14 @@ let idx = self.files.len();
         if !own.is_empty() {
             let own_provider = own.join(".");
             for name in self.files[idx].exports.clone() {
-                fi.bindings.entry(name).or_default().push(own_provider.clone());
+                fi.bindings
+                    .entry(name)
+                    .or_default()
+                    .push(own_provider.clone());
             }
             fi.own_module = Some(own_provider);
         }
-        self.imports_for
-            .insert(self.files[idx].fid, Rc::new(fi));
+        self.imports_for.insert(self.files[idx].fid, Rc::new(fi));
     }
 
     /// Resolve one `from`-import item inside its source module.
@@ -995,7 +999,12 @@ let idx = self.files.len();
     /// `import math.Vector.add from engine` (when `engine/math/Vector.pkl`
     /// exists) binds the final export `add`. Otherwise the path is looked up
     /// as a direct exported symbol of the source module itself.
-    fn load_item(&mut self, importer: &Path, source: &[String], item: &ImportItem) -> Option<ItemTarget> {
+    fn load_item(
+        &mut self,
+        importer: &Path,
+        source: &[String],
+        item: &ImportItem,
+    ) -> Option<ItemTarget> {
         let n = item.path.len();
         if n == 0 {
             self.diags.emit(
@@ -1052,8 +1061,7 @@ let idx = self.files.len();
                 if self.files[idx].exports.contains(name) {
                     // A re-exported symbol resolves to its defining module so
                     // ambiguity/canonicalization sees the real provider.
-                    let def = self
-                        .files[idx]
+                    let def = self.files[idx]
                         .pub_items
                         .iter()
                         .find(|(n, _)| n == name)
@@ -1156,21 +1164,13 @@ impl<'a> Rewriter<'a> {
 
     /// Resolve a bare in-scope name. A single provider canonicalizes; two or
     /// more is the ambiguity the aliasing syntax exists to resolve.
-    fn canonical_or_ambiguous(
-        &self,
-        name: &str,
-        providers: &[String],
-        span: Span,
-    ) -> Option<Expr> {
+    fn canonical_or_ambiguous(&self, name: &str, providers: &[String], span: Span) -> Option<Expr> {
         let mut uniq: Vec<&String> = providers.iter().collect();
         uniq.sort_unstable();
         uniq.dedup();
         match uniq.len() {
             0 => None,
-            1 => Some(qualified_expr(
-                span,
-                &[self.canon(name, uniq[0])],
-            )),
+            1 => Some(qualified_expr(span, &[self.canon(name, uniq[0])])),
             _ => {
                 let mut diag =
                     Diagnostic::error_at(span, format!("ambiguous imported name `{name}`"))
@@ -1273,10 +1273,7 @@ impl<'a> Rewriter<'a> {
     fn rewrite_class_member(&self, m: &mut ClassMember) {
         match m {
             ClassMember::Field {
-                ty,
-                init,
-                attrs,
-                ..
+                ty, init, attrs, ..
             } => {
                 if let Some(ty) = ty {
                     self.rewrite_type(ty);
@@ -1409,11 +1406,10 @@ impl<'a> Rewriter<'a> {
                 }
                 self.rewrite_expr(value);
             }
-            Stmt::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.rewrite_expr(v);
-                }
+            Stmt::Return { value: Some(v), .. } => {
+                self.rewrite_expr(v);
             }
+            Stmt::Return { value: None, .. } => {}
             Stmt::While { cond, body, .. } => {
                 self.rewrite_expr(cond);
                 self.rewrite_block(body);
@@ -1464,9 +1460,7 @@ impl<'a> Rewriter<'a> {
                 self.rewrite_expr(rhs);
             }
             ExprKind::Unary { operand, .. } => self.rewrite_expr(operand),
-            ExprKind::Assign {
-                target, value, ..
-            } => {
+            ExprKind::Assign { target, value, .. } => {
                 self.rewrite_expr(target);
                 self.rewrite_expr(value);
             }
@@ -1587,11 +1581,10 @@ impl<'a> Rewriter<'a> {
     fn rewrite_pattern(&self, p: &mut Pattern, fid: FileId) {
         let ctx = self.ctx_for(fid);
         match p {
-            Pattern::Binding { ty, .. } => {
-                if let Some(ty) = ty {
-                    self.rewrite_type(ty);
-                }
+            Pattern::Binding { ty: Some(ty), .. } => {
+                self.rewrite_type(ty);
             }
+            Pattern::Binding { ty: None, .. } => {}
             Pattern::Tuple(ps) => {
                 for q in ps {
                     self.rewrite_pattern(q, fid);
@@ -1606,7 +1599,7 @@ impl<'a> Rewriter<'a> {
                             *path = path[1..].to_vec();
                         }
                     }
-                    if path.len() >= 1 {
+                    if !path.is_empty() {
                         if let Some(item) = c.renames.get(&path[0]) {
                             path[0] = item.0.clone();
                         }
@@ -1661,16 +1654,14 @@ impl<'a> Rewriter<'a> {
         }
         if let Some(mod_path) = ctx.aliases.get(&segs[0]) {
             let remaining = &segs[1..];
-            if !remaining.is_empty() {
-                if ctx.exports_of(mod_path)?.contains(&remaining[0]) {
-                    if remaining.len() == 1 && self.collided.contains(&remaining[0]) {
-                        return Some(qualified_expr(
-                            span,
-                            &[self.canon(&remaining[0], &render_path(&ctx.provider_of(mod_path)))],
-                        ));
-                    }
-                    return Some(qualified_expr(span, remaining));
+            if !remaining.is_empty() && ctx.exports_of(mod_path)?.contains(&remaining[0]) {
+                if remaining.len() == 1 && self.collided.contains(&remaining[0]) {
+                    return Some(qualified_expr(
+                        span,
+                        &[self.canon(&remaining[0], &render_path(&ctx.provider_of(mod_path)))],
+                    ));
                 }
+                return Some(qualified_expr(span, remaining));
             }
             return None;
         }
@@ -1758,7 +1749,10 @@ members = [
 members = [{ name = \"compiler\", path = \"compiler-selfhost\" }]
 ";
         let m = parse_workspace_members(toml);
-        assert_eq!(m.get("compiler").map(|s| s.as_str()), Some("compiler-selfhost"));
+        assert_eq!(
+            m.get("compiler").map(|s| s.as_str()),
+            Some("compiler-selfhost")
+        );
     }
 
     #[test]
@@ -1781,7 +1775,10 @@ members = [{ name = \"compiler\", path = \"compiler-selfhost\" }]
 default = \"pickle\"
 ";
         let m = parse_workspace_members(toml);
-        assert_eq!(m.get("compiler").map(|s| s.as_str()), Some("compiler-selfhost"));
+        assert_eq!(
+            m.get("compiler").map(|s| s.as_str()),
+            Some("compiler-selfhost")
+        );
         assert_eq!(m.len(), 1);
     }
 }

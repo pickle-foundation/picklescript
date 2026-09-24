@@ -11,9 +11,9 @@
 #![allow(dead_code)]
 #![allow(clippy::manual_c_str_literals)]
 
-pub(crate) mod console;
 mod boxscalar;
 mod class;
+pub(crate) mod console;
 mod r#enum;
 mod fs;
 mod gc;
@@ -22,6 +22,7 @@ mod layout;
 mod list;
 mod map;
 mod object;
+mod os;
 mod panic;
 mod raw;
 pub(crate) mod shadow;
@@ -232,6 +233,7 @@ pub extern "C" fn pickle_runtime_reset() {
     test::pickle_test_clear();
     statics::reset();
     gc::reset();
+    os::reset();
     let g = gc::gc_mut();
     if g.descriptors.len() < BUILTIN_DESCRIPTORS.len() {
         for d in BUILTIN_DESCRIPTORS {
@@ -249,8 +251,12 @@ unsafe extern "C" {
 // Process entry point: bootstrap the runtime, run the program, flush output.
 #[cfg(all(feature = "entry", not(test)))]
 #[no_mangle]
-pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
+/// # Safety
+/// `argc`/`argv` are the process entry vector (must be valid for the whole
+/// duration of `main`), forwarded to `os::pickle_args_set`, which copies them.
+pub unsafe extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
     unsafe {
+        os::pickle_args_set(argc as usize, argv);
         pickle_runtime_init();
         pickle_main();
         console::pickle_flush();
@@ -267,15 +273,15 @@ pub mod abi {
     pub use crate::pickle_runtime_reset;
     pub use crate::pickle_runtime_shutdown;
 
+    pub use crate::class::pickle_class_add_iface_method;
+    pub use crate::class::pickle_class_add_interface;
+    pub use crate::class::pickle_class_cast;
+    pub use crate::class::pickle_class_implements;
+    pub use crate::class::pickle_class_is;
     pub use crate::class::pickle_class_new;
     pub use crate::class::pickle_class_register;
-    pub use crate::class::pickle_class_is;
-    pub use crate::class::pickle_class_cast;
-    pub use crate::class::pickle_class_add_interface;
-    pub use crate::class::pickle_class_add_iface_method;
-    pub use crate::class::pickle_class_implements;
-    pub use crate::class::pickle_iface_method;
     pub use crate::class::pickle_iface_cast;
+    pub use crate::class::pickle_iface_method;
     pub use crate::class::pickle_obj_slot_get;
     pub use crate::class::pickle_obj_slot_set;
 
@@ -285,9 +291,9 @@ pub mod abi {
     pub use crate::statics::pickle_static_get;
     pub use crate::statics::pickle_static_set;
 
+    pub use crate::console::pickle_print_bool;
     pub use crate::console::pickle_print_byte;
     pub use crate::console::pickle_print_bytes;
-    pub use crate::console::pickle_print_bool;
     pub use crate::console::pickle_print_char;
     pub use crate::console::pickle_print_cstr;
     pub use crate::console::pickle_print_f64;
@@ -344,6 +350,10 @@ pub mod abi {
     pub use crate::fs::pickle_read_file;
     pub use crate::fs::pickle_write_file;
 
+    pub use crate::os::pickle_args;
+    pub use crate::os::pickle_args_set;
+    pub use crate::os::pickle_exit;
+
     pub use crate::stream::pickle_stderr_stream;
     pub use crate::stream::pickle_stdout_stream;
     pub use crate::stream::pickle_stream_close;
@@ -354,9 +364,9 @@ pub mod abi {
     pub use crate::stream::pickle_stream_read;
     pub use crate::stream::pickle_stream_write;
 
+    pub use crate::panic::pickle_panic_no_iface_method;
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;
-    pub use crate::panic::pickle_panic_no_iface_method;
 
     pub use crate::raw::pickle_raw_alloc;
     pub use crate::raw::pickle_raw_free;
@@ -369,21 +379,21 @@ pub mod abi {
     pub use crate::strings::pickle_str_cmp;
     pub use crate::strings::pickle_str_concat;
     pub use crate::strings::pickle_str_from_bool;
-    pub use crate::strings::pickle_str_from_bytes;
     pub use crate::strings::pickle_str_from_byte;
+    pub use crate::strings::pickle_str_from_bytes;
     pub use crate::strings::pickle_str_from_char;
     pub use crate::strings::pickle_str_from_f64;
     pub use crate::strings::pickle_str_from_i64;
     pub use crate::strings::pickle_str_from_list;
     pub use crate::strings::pickle_str_get;
-    pub use crate::strings::pickle_str_set;
     pub use crate::strings::pickle_str_len;
+    pub use crate::strings::pickle_str_set;
     pub use crate::strings::pickle_str_to_bytes;
 
     pub use crate::test::pickle_expect_display;
+    pub use crate::test::pickle_expect_list_contains;
     pub use crate::test::pickle_expect_obj_eq;
     pub use crate::test::pickle_expect_str_contains;
-    pub use crate::test::pickle_expect_list_contains;
     pub use crate::test::pickle_runtime_run_tests;
     pub use crate::test::pickle_test_clear;
     pub use crate::test::pickle_test_fail_obj;
@@ -483,8 +493,14 @@ mod tests {
         let start = pickle_runtime_register_class_table(&D as *const _, 1);
         assert!(start >= 3, "user classes come after the builtins");
         let g = gc::gc_mut();
-        assert_eq!(g.class_name(0).map(|b| b.to_vec()), Some(b"string".to_vec()));
-        assert_eq!(g.class_name(start - 1).map(|b| b.to_vec()), Some(b"State".to_vec()));
+        assert_eq!(
+            g.class_name(0).map(|b| b.to_vec()),
+            Some(b"string".to_vec())
+        );
+        assert_eq!(
+            g.class_name(start - 1).map(|b| b.to_vec()),
+            Some(b"State".to_vec())
+        );
     }
 
     #[test]
@@ -519,7 +535,10 @@ mod tests {
         // The next file may compile even more classes before its own registry
         // assignments; a second registration must get a fresh id sequence.
         let second_id = pickle_runtime_register_class_table(&D as *const _, 1);
-        assert!(second_id > first_id, "ids accumulate across files pre-reset");
+        assert!(
+            second_id > first_id,
+            "ids accumulate across files pre-reset"
+        );
 
         // Reset exactly like `pickle test` does between files.
         pickle_runtime_reset();

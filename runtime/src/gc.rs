@@ -8,8 +8,8 @@
 use crate::heap::{raw_free, Heap};
 use crate::layout::{list_data, map_entries};
 use crate::object::{
-    DescriptorTable, PickleObject, RootCell, PICKLE_CLASS_FLAG_FINALIZER, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
-    PICKLE_CLASS_STRING, PICKLE_FLAG_MANUAL,
+    DescriptorTable, PickleObject, RootCell, PICKLE_CLASS_FLAG_FINALIZER, PICKLE_CLASS_LIST,
+    PICKLE_CLASS_MAP, PICKLE_CLASS_STRING, PICKLE_FLAG_MANUAL,
 };
 use crate::shadow;
 use crate::trace;
@@ -138,7 +138,10 @@ impl Gc {
 
     /// Owned-field mask of `class_id` (0 for builtins / no owned fields).
     pub fn class_owned_mask(&self, class_id: u32) -> u64 {
-        self.class_owned_mask.get(class_id as usize).copied().unwrap_or(0)
+        self.class_owned_mask
+            .get(class_id as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Non-null owned children of `obj`, in slot order.
@@ -189,7 +192,10 @@ impl Gc {
 
     /// Superclass id of `class_id` (0 = none / builtin).
     pub fn class_parent(&self, class_id: u32) -> u32 {
-        self.class_parents.get(class_id as usize).copied().unwrap_or(0)
+        self.class_parents
+            .get(class_id as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Ensure `class_id`'s interface bucket records interface `iface_id` (with
@@ -237,15 +243,18 @@ impl Gc {
 
     /// Implementation fn ptr of interface `iface_id`'s method `method_index`
     /// on `class_id`, when recorded.
-    pub fn class_iface_method(&self, class_id: usize, iface_id: u32, method_index: u32) -> Option<usize> {
+    pub fn class_iface_method(
+        &self,
+        class_id: usize,
+        iface_id: u32,
+        method_index: u32,
+    ) -> Option<usize> {
         self.class_iface_buckets.get(class_id).and_then(|b| {
-            b.iter()
-                .find(|(i, _)| *i == iface_id)
-                .and_then(|(_, m)| {
-                    m.iter()
-                        .find(|(mi, _)| *mi == method_index)
-                        .map(|(_, fp)| *fp)
-                })
+            b.iter().find(|(i, _)| *i == iface_id).and_then(|(_, m)| {
+                m.iter()
+                    .find(|(mi, _)| *mi == method_index)
+                    .map(|(_, fp)| *fp)
+            })
         })
     }
 
@@ -278,26 +287,24 @@ impl Gc {
         let owned_masks = &self.class_owned_mask;
         let mut live: u32 = 0;
         let deferred = heap.sweep(
-            |obj| {
-                unsafe {
-                    let class_id = (*obj).class_id;
-                    match class_id {
-                        PICKLE_CLASS_LIST => {
-                            let data = list_data(obj);
-                            if !data.is_null() {
-                                raw_free(data as *mut u8);
-                            }
+            |obj| unsafe {
+                let class_id = (*obj).class_id;
+                match class_id {
+                    PICKLE_CLASS_LIST => {
+                        let data = list_data(obj);
+                        if !data.is_null() {
+                            raw_free(data as *mut u8);
                         }
-                        PICKLE_CLASS_MAP => {
-                            let entries = map_entries(obj);
-                            if !entries.is_null() {
-                                raw_free(entries as *mut u8);
-                            }
-                        }
-                        _ => {}
                     }
-                    live += (*obj).size;
+                    PICKLE_CLASS_MAP => {
+                        let entries = map_entries(obj);
+                        if !entries.is_null() {
+                            raw_free(entries as *mut u8);
+                        }
+                    }
+                    _ => {}
                 }
+                live += (*obj).size;
             },
             |obj| unsafe {
                 let class_id = (*obj).class_id;
@@ -342,7 +349,9 @@ impl Gc {
 
     /// Maybe collect if the allocation threshold has been crossed.
     pub fn maybe_collect(&mut self) {
-        if BYTES_SINCE_GC.load(Ordering::Relaxed) >= AUTO_THRESHOLD.load(Ordering::Relaxed) {
+        if std::env::var_os("PKL_NO_AUTO_GC").is_none()
+            && BYTES_SINCE_GC.load(Ordering::Relaxed) >= AUTO_THRESHOLD.load(Ordering::Relaxed)
+        {
             self.collect();
         }
     }
@@ -584,7 +593,10 @@ pub(crate) fn reset() {
     COLLECTIONS.store(0, Ordering::Relaxed);
     // Drop roots left behind by the previous module (e.g. leaked static-field
     // cells) so they can never trace objects from a destroyed heap.
-    STATIC_ROOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    STATIC_ROOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
     unsafe {
         if !GLOBAL_GC.is_null() {
             let mut gc = Box::from_raw(GLOBAL_GC);
@@ -601,7 +613,9 @@ pub(crate) fn reset() {
 #[cfg(test)]
 pub(crate) fn test_begin() -> std::sync::MutexGuard<'static, ()> {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
-    let guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     reset();
     guard
 }
@@ -832,7 +846,11 @@ mod tests {
             0,
             "a manual object must not be finalized by the collector"
         );
-        assert_eq!(unsafe { (*obj).class_id }, cls, "manual object must survive the sweep");
+        assert_eq!(
+            unsafe { (*obj).class_id },
+            cls,
+            "manual object must survive the sweep"
+        );
         assert_eq!(gc.manual_objects.len(), 1);
         // Explicit free finalizes exactly once, deregisters, and recycles.
         gc.manual_free(obj);
@@ -841,9 +859,15 @@ mod tests {
             1,
             "`free` must run the finalizer exactly once"
         );
-        assert!(gc.manual_objects.is_empty(), "`free` must deregister the object");
+        assert!(
+            gc.manual_objects.is_empty(),
+            "`free` must deregister the object"
+        );
         let recycled = gc.alloc(64, cls);
-        assert_eq!(recycled as usize, addr, "the freed manual block must be reusable");
+        assert_eq!(
+            recycled as usize, addr,
+            "the freed manual block must be reusable"
+        );
     }
 
     #[test]
@@ -855,7 +879,11 @@ mod tests {
         let obj = gc.alloc(48, cls);
         gc.manual_adopt(obj);
         gc.manual_adopt(obj);
-        assert_eq!(gc.manual_objects.len(), 1, "adopting twice must register once");
+        assert_eq!(
+            gc.manual_objects.len(),
+            1,
+            "adopting twice must register once"
+        );
         gc.manual_free(obj);
         assert!(gc.manual_objects.is_empty());
     }

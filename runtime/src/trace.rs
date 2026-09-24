@@ -5,7 +5,9 @@
 //! use their known layouts; user objects use their registered class
 //! descriptor's managed-field bitmask.
 
-use crate::layout::{enum_field_count, list_data, list_len, map_cap, map_entries, tuple_field_count};
+use crate::layout::{
+    enum_field_count, list_data, list_len, map_cap, map_entries, tuple_field_count,
+};
 use crate::object::{
     DescriptorTable, PickleObject, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
     PICKLE_CLASS_STRING, PICKLE_CLASS_TUPLE,
@@ -79,7 +81,11 @@ fn enqueue(worklist: &mut Vec<*mut PickleObject>, obj: *mut PickleObject) {
 }
 
 #[inline]
-fn trace_one(descriptors: &DescriptorTable, obj: *mut PickleObject, worklist: &mut Vec<*mut PickleObject>) {
+fn trace_one(
+    descriptors: &DescriptorTable,
+    obj: *mut PickleObject,
+    worklist: &mut Vec<*mut PickleObject>,
+) {
     unsafe {
         let class_id = (*obj).class_id;
         match class_id {
@@ -196,7 +202,8 @@ mod tests {
             assert!(!(*elem).is_marked());
 
             let root: *mut PickleObject = list;
-            let roots: Vec<*mut *mut PickleObject> = vec![(&root as *const *mut PickleObject) as *mut _];
+            let roots: Vec<*mut *mut PickleObject> =
+                vec![(&root as *const *mut PickleObject) as *mut _];
             trace_from_roots(&desc, &roots, &[], &[]);
 
             assert!((*list).is_marked());

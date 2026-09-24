@@ -202,11 +202,8 @@ impl<'a> Resolver<'a> {
                     .unwrap_or_else(|| imp.source.last().cloned().unwrap_or_default());
                 if self.import_aliases.contains_key(&alias) {
                     self.diags.emit(
-                        Diagnostic::error_at(
-                            imp.span,
-                            format!("duplicate import alias `{alias}`"),
-                        )
-                        .with_code(crate::error::ErrorCode::DuplicateImportAlias),
+                        Diagnostic::error_at(imp.span, format!("duplicate import alias `{alias}`"))
+                            .with_code(crate::error::ErrorCode::DuplicateImportAlias),
                     );
                 }
                 self.import_aliases.insert(alias, imp.source.clone());
@@ -228,9 +225,7 @@ impl<'a> Resolver<'a> {
                 ItemKind::Class(c) => (c.name.clone(), Some(ItemKindDecl::Class(c))),
                 ItemKind::Struct(s) => (s.name.clone(), Some(ItemKindDecl::Struct(s))),
                 ItemKind::Enum(e) => (e.name.clone(), Some(ItemKindDecl::Enum(e))),
-                ItemKind::Interface(i) => {
-                    (i.name.clone(), Some(ItemKindDecl::Interface(i)))
-                }
+                ItemKind::Interface(i) => (i.name.clone(), Some(ItemKindDecl::Interface(i))),
                 ItemKind::Const(c) => (c.name.clone(), None),
                 ItemKind::Test(f) => (f.name.clone(), None),
             };
@@ -242,14 +237,15 @@ impl<'a> Resolver<'a> {
                 let mod_b = self.file_roots.get(&item.span.file);
                 if let (Some(a), Some(b)) = (mod_a, mod_b) {
                     if a != b {
-                        diag = diag.note(format!(
-                            "`{name}` is provided by module `{a}` and module `{b}`"
-                        ))
-                        .note(format!(
-                            "import {name} from `{a}` as {name}A / \
+                        diag = diag
+                            .note(format!(
+                                "`{name}` is provided by module `{a}` and module `{b}`"
+                            ))
+                            .note(format!(
+                                "import {name} from `{a}` as {name}A / \
                              import {name} from `{b}` as {name}B \
                              to import them under different names"
-                        ));
+                            ));
                     }
                 }
                 self.diags.emit(diag.note_at(first, "first declared here"));
@@ -325,19 +321,22 @@ impl<'a> Resolver<'a> {
         let generics: Vec<String> = f.generics.iter().map(|g| g.name.clone()).collect();
         let params = self.resolve_params(&f.params, &generics);
         let ret = self.resolve_ret(&f.return_ty, &generics);
-        self.fns.entry(f.name.clone()).or_default().push(CallableInfo {
-            name: f.name.clone(),
-            span: f.span,
-            visibility: f.visibility,
-            is_async: f.is_async,
-            is_static: true,
-            is_override: false,
-            is_abstract: false,
-            operator: None,
-            generics,
-            params,
-            ret,
-        });
+        self.fns
+            .entry(f.name.clone())
+            .or_default()
+            .push(CallableInfo {
+                name: f.name.clone(),
+                span: f.span,
+                visibility: f.visibility,
+                is_async: f.is_async,
+                is_static: true,
+                is_override: false,
+                is_abstract: false,
+                operator: None,
+                generics,
+                params,
+                ret,
+            });
         let _ = is_test;
     }
 
@@ -345,11 +344,7 @@ impl<'a> Resolver<'a> {
     /// User declarations with the same name win over these defaults.
     fn declare_builtins(&mut self) {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 0, 0);
-        let mk = |name: &str,
-                  params: Vec<ParamInfo>,
-                  ret: Ty,
-                  rest: bool|
-         -> CallableInfo {
+        let mk = |name: &str, params: Vec<ParamInfo>, ret: Ty, rest: bool| -> CallableInfo {
             CallableInfo {
                 name: name.to_string(),
                 span,
@@ -425,12 +420,7 @@ impl<'a> Resolver<'a> {
             ),
             // `bytes(s)`: snapshot a string's raw bytes as a `List<byte>`
             // (checked strictly by a dedicated rule; `str(xs)` inverts it).
-            mk(
-                "bytes",
-                vec![any("s")],
-                Ty::List(Box::new(Ty::Byte)),
-                true,
-            ),
+            mk("bytes", vec![any("s")], Ty::List(Box::new(Ty::Byte)), true),
             // `stream_open_read/write/append(path)`: open a buffered file
             // stream as `Stream?` — checked strictly by dedicated rules; the
             // loose declaration makes the name resolvable and dispatchable.
@@ -456,6 +446,11 @@ impl<'a> Resolver<'a> {
             // streams; checked strictly by dedicated rules.
             mk("stdout_stream", vec![], Ty::Stream, true),
             mk("stderr_stream", vec![], Ty::Stream, true),
+            // `args()`: the program's command-line arguments, excluding the
+            // program name. Checked strictly by a dedicated rule.
+            mk("args", vec![], Ty::List(Box::new(Ty::String)), false),
+            // `exit(code)`: terminate the process with a numeric code.
+            mk("exit", vec![], Ty::Empty, false),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.
@@ -619,7 +614,10 @@ impl<'a> TypeCtx<'a> {
                 ret,
                 is_async,
             } => {
-                let ps = params.iter().map(|t| self.resolve_ty(t, generics)).collect();
+                let ps = params
+                    .iter()
+                    .map(|t| self.resolve_ty(t, generics))
+                    .collect();
                 let r = match ret {
                     Some(r) => self.resolve_ty(r, generics),
                     None => Ty::Empty,
@@ -686,7 +684,11 @@ impl<'a> TypeCtx<'a> {
     }
 
     fn bare_type(&self, entry: &TypeTableEntry) -> Ty {
-        let gargs: Vec<Ty> = entry.generics().iter().map(|g| Ty::Var(g.clone())).collect();
+        let gargs: Vec<Ty> = entry
+            .generics()
+            .iter()
+            .map(|g| Ty::Var(g.clone()))
+            .collect();
         match entry {
             TypeTableEntry::Class(t) => Ty::Class(t.name.clone(), gargs),
             TypeTableEntry::Struct(t) => Ty::Struct(t.name.clone(), gargs),
@@ -722,8 +724,10 @@ impl<'a> TypeCtx<'a> {
                 (n.clone(), self.generics_of(n))
             }
             _ => {
-                self.diags
-                    .emit(Diagnostic::error_at(span, "type is not generic").with_code(crate::error::ErrorCode::NotGeneric));
+                self.diags.emit(
+                    Diagnostic::error_at(span, "type is not generic")
+                        .with_code(crate::error::ErrorCode::NotGeneric),
+                );
                 return bare.clone();
             }
         };
@@ -738,7 +742,10 @@ impl<'a> TypeCtx<'a> {
                     ),
                 )
                 .with_code(crate::error::ErrorCode::WrongTypeArgs)
-                .note(format!("declared generic parameters: {}", render_list(&expected))),
+                .note(format!(
+                    "declared generic parameters: {}",
+                    render_list(&expected)
+                )),
             );
         }
         match bare {
@@ -761,12 +768,7 @@ impl<'a> TypeCtx<'a> {
 impl ResolvedProgram {
     /// Convenience entry point for type-checking: resolve `te` with the final
     /// module-wide tables (not a fresh resolver).
-    pub fn resolve_ty(
-        &self,
-        te: &TypeExpr,
-        generics: &[String],
-        diags: &DiagnosticSink,
-    ) -> Ty {
+    pub fn resolve_ty(&self, te: &TypeExpr, generics: &[String], diags: &DiagnosticSink) -> Ty {
         TypeCtx {
             diags,
             types: &self.types,
@@ -1082,10 +1084,7 @@ impl<'a> Resolver<'a> {
                     let field_ty = ty
                         .as_ref()
                         .map(|t| self.resolve_ty(t, generics))
-                        .or_else(|| {
-                            init.as_ref()
-                                .and_then(|e| self.init_expr_ty(e, generics))
-                        })
+                        .or_else(|| init.as_ref().and_then(|e| self.init_expr_ty(e, generics)))
                         .unwrap_or(Ty::Unknown);
                     fields.push(FieldInfo {
                         name: name.clone(),
@@ -1214,7 +1213,11 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         for c in classes {
-            if let Some(parent) = c.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(parent) = c
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 self.check_inheritance(&c, &parent);
             }
         }
@@ -1322,7 +1325,11 @@ impl<'a> Resolver<'a> {
             for m in &t.methods {
                 out.push((m.name.clone(), m.params.clone(), m.ret.clone(), m.is_static));
             }
-            if let Some(parent) = t.extends.as_ref().and_then(|e| e.named().map(str::to_string)) {
+            if let Some(parent) = t
+                .extends
+                .as_ref()
+                .and_then(|e| e.named().map(str::to_string))
+            {
                 out.extend(self.collect_methods_rec(&parent, visited));
             }
         }
@@ -1330,12 +1337,7 @@ impl<'a> Resolver<'a> {
     }
 }
 
-fn sig_compatible(
-    pp: &[ParamInfo],
-    pret: &Ty,
-    cp: &[ParamInfo],
-    cret: &Ty,
-) -> bool {
+fn sig_compatible(pp: &[ParamInfo], pret: &Ty, cp: &[ParamInfo], cret: &Ty) -> bool {
     if pp.len() != cp.len() {
         return false;
     }

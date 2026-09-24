@@ -13,9 +13,8 @@ fn emit_str(src: &str) -> IrModule {
     let mut map = SourceMap::default();
     let diags = DiagnosticSink::new();
     let out = frontend("test.pkl", src, &mut map, &diags).expect("frontend failed");
-    emit_ir(&out.program, &out.resolved, &diags).unwrap_or_else(|| {
-        panic!("emit failed:\n{}", diags.render_all(&map, false))
-    })
+    emit_ir(&out.program, &out.resolved, &diags)
+        .unwrap_or_else(|| panic!("emit failed:\n{}", diags.render_all(&map, false)))
 }
 
 #[test]
@@ -38,7 +37,11 @@ fn emits_arithmetic_main() {
         .any(|b| matches!(b.term, IrTerm::Return { v: None })));
     let dump = format!("{m}");
     assert!(dump.contains("binop.add"), "dump:\n{dump}");
-    assert!(m.strings.iter().any(|s| s == b"hello"), "string pool: {:?}\ndump:\n{m}", m.strings);
+    assert!(
+        m.strings.iter().any(|s| s == b"hello"),
+        "string pool: {:?}\ndump:\n{m}",
+        m.strings
+    );
     let symbols: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
     assert!(symbols.contains(&"pickle_print_obj"));
     assert!(symbols.contains(&"pickle_print_newline"));
@@ -187,7 +190,9 @@ fn emits_trailing_expr_after_newline_as_return() {
         "the tail expression must feed the return, dump:\n{m}"
     );
     assert!(
-        !add.blocks.iter().any(|b| matches!(b.term, IrTerm::Unreachable)),
+        !add.blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerm::Unreachable)),
         "no dead tail may remain, dump:\n{m}"
     );
 }
@@ -280,10 +285,22 @@ fn emits_array_literal_materializes_list() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_new"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_list_len"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_new"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_push"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_box_i64"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_len"),
+        "externs: {syms:?}"
+    );
 }
 
 #[test]
@@ -294,8 +311,14 @@ fn emits_index_read_unboxes() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_get"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
 }
 
 #[test]
@@ -306,8 +329,14 @@ fn emits_index_assign_boxes() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_set"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_set"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_box_i64"),
+        "externs: {syms:?}"
+    );
 }
 
 #[test]
@@ -321,10 +350,22 @@ fn emits_list_methods() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_list_pop"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_push"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_pop"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_box_i64"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
 }
 
 #[test]
@@ -339,8 +380,14 @@ fn emits_for_in_list_with_get_and_unbox() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_get"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
     let sum = m.funcs.iter().find(|f| f.name == "sum").expect("sum");
     let cond = sum
         .blocks
@@ -352,8 +399,14 @@ fn emits_for_in_list_with_get_and_unbox() {
             if let IrTerm::Branch { target } = &b.term {
                 *target == cond.id
                     && b.instrs.iter().any(|i| {
-                        if let IrInstr::Call { callee: Callee::Extern(ex), args, .. } = i {
-                            m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_list_len")
+                        if let IrInstr::Call {
+                            callee: Callee::Extern(ex),
+                            args,
+                            ..
+                        } = i
+                        {
+                            m.externs.get(ex.0).map(|e| e.symbol.as_str())
+                                == Some("pickle_list_len")
                                 && args.len() == 1
                         } else {
                             false
@@ -379,7 +432,10 @@ fn emits_char_lists_in_codegen() {
     );
     let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
     assert!(externs.contains(&"pickle_box_char"), "externs: {externs:?}");
-    assert!(externs.contains(&"pickle_unbox_char"), "externs: {externs:?}");
+    assert!(
+        externs.contains(&"pickle_unbox_char"),
+        "externs: {externs:?}"
+    );
 }
 
 #[test]
@@ -402,18 +458,32 @@ fn emits_nested_generic_lists() {
         }"#,
     );
     let syms = externs(&m);
-    assert!(syms.iter().any(|s| s == "pickle_list_new"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_list_push"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_list_get"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_new"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_push"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_get"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
     let probe = m.funcs.iter().find(|f| f.name == "probe").expect("probe");
     assert!(
         probe
             .blocks
             .iter()
             .flat_map(|b| b.instrs.iter())
-            .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
-                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_list_get")))
+            .filter(
+                |i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_list_get"))
+            )
             .count()
             >= 2,
         "a nested read needs two `pickle_list_get` calls, dump:\n{probe}"
@@ -463,7 +533,12 @@ fn emits_generic_function_instantiation() {
         .iter()
         .position(|f| f.symbol == "pkl_id_fn__int")
         .expect("id<int> instantiation");
-    assert_eq!(m.funcs[id_int].ret, IrTy::Int, "instantiated return type wrong:\n{}", m.funcs[id_int]);
+    assert_eq!(
+        m.funcs[id_int].ret,
+        IrTy::Int,
+        "instantiated return type wrong:\n{}",
+        m.funcs[id_int]
+    );
     let call_count = m
         .funcs
         .iter()
@@ -471,7 +546,10 @@ fn emits_generic_function_instantiation() {
         .flat_map(|b| b.instrs.iter())
         .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
         .count();
-    assert_eq!(call_count, 3, "all three sites must call the single instantiation");
+    assert_eq!(
+        call_count, 3,
+        "all three sites must call the single instantiation"
+    );
 }
 
 #[test]
@@ -526,7 +604,10 @@ fn emits_inferred_generic_function_instantiation() {
         .flat_map(|b| b.instrs.iter())
         .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
         .count();
-    assert_eq!(call_count, 2, "both inferred sites must call the single instantiation");
+    assert_eq!(
+        call_count, 2,
+        "both inferred sites must call the single instantiation"
+    );
 }
 
 #[test]
@@ -586,7 +667,10 @@ fn emits_generic_function_as_value() {
         .flat_map(|b| b.instrs.iter())
         .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Func(FuncId(id)), .. } if *id == id_int))
         .count();
-    assert!(static_calls >= 1, "the explicit call must hit the instantiation");
+    assert!(
+        static_calls >= 1,
+        "the explicit call must hit the instantiation"
+    );
 }
 
 #[test]
@@ -643,13 +727,25 @@ fn emits_generic_class_instantiation() {
         .iter()
         .flat_map(|f| f.blocks.iter())
         .flat_map(|b| b.instrs.iter())
-        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(_), .. }))
+        .filter(|i| {
+            matches!(
+                i,
+                IrInstr::Call {
+                    callee: Callee::Extern(_),
+                    ..
+                }
+            )
+        })
         .count();
     assert!(regs > 0);
     // The class name is interned for `pickle_class_register` and field reads
     // (`pickle_obj_slot_get`).
     let externs = externs(&m);
-    for need in ["pickle_class_register", "pickle_obj_slot_get", "pickle_obj_slot_set"] {
+    for need in [
+        "pickle_class_register",
+        "pickle_obj_slot_get",
+        "pickle_obj_slot_set",
+    ] {
         assert!(externs.iter().any(|e| e == need), "missing extern {need:?}");
     }
 }
@@ -695,24 +791,42 @@ fn emits_enum_construct_and_match() {
         "pickle_enum_field",
         "pickle_panic_no_match",
     ] {
-        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+        assert!(
+            syms.iter().any(|s| s == need),
+            "missing {need}, externs: {syms:?}"
+        );
     }
-    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_box_i64"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
 
-    let describe = m.funcs.iter().find(|f| f.name == "describe").expect("describe");
+    let describe = m
+        .funcs
+        .iter()
+        .find(|f| f.name == "describe")
+        .expect("describe");
     let checks = describe
         .blocks
         .iter()
         .filter(|b| matches!(b.term, IrTerm::BranchIf { .. }))
         .count();
-    assert!(checks >= 3, "three variant arms need three tag checks, dump:\n{describe}");
+    assert!(
+        checks >= 3,
+        "three variant arms need three tag checks, dump:\n{describe}"
+    );
     let field_reads = describe
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
-        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
-            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_enum_field")))
+        .filter(|i| {
+            matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_enum_field"))
+        })
         .count();
     assert!(
         field_reads >= 3,
@@ -772,18 +886,29 @@ fn emits_map_operations() {
         "pickle_map_keys",
         "pickle_map_values",
     ] {
-        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+        assert!(
+            syms.iter().any(|s| s == need),
+            "missing {need}, externs: {syms:?}"
+        );
     }
-    assert!(syms.iter().any(|s| s == "pickle_box_i64"), "externs: {syms:?}");
-    assert!(syms.iter().any(|s| s == "pickle_unbox_i64"), "externs: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pickle_box_i64"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_unbox_i64"),
+        "externs: {syms:?}"
+    );
     let lookup = m.funcs.iter().find(|f| f.name == "lookup").expect("lookup");
     assert!(
         lookup
             .blocks
             .iter()
             .flat_map(|b| b.instrs.iter())
-            .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
-                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_map_get_boxed")))
+            .filter(
+                |i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+                if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_map_get_boxed"))
+            )
             .count()
             >= 1,
         "a map read needs `pickle_map_get_boxed`, dump:\n{lookup}"
@@ -815,9 +940,16 @@ fn map_read_defaults_to_zero() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 Some((id.0, false))
-            } else if let IrInstr::Const { c: IrConst::Int(0), .. } = i {
+            } else if let IrInstr::Const {
+                c: IrConst::Int(0), ..
+            } = i
+            {
                 Some((usize::MAX, true))
             } else {
                 None
@@ -854,7 +986,12 @@ fn emits_class_ctor_registration_and_fields() {
         }"#,
     );
     let syms = externs(&m);
-    for s in ["pickle_class_register", "pickle_class_new", "pickle_obj_slot_get", "pickle_obj_slot_set"] {
+    for s in [
+        "pickle_class_register",
+        "pickle_class_new",
+        "pickle_obj_slot_get",
+        "pickle_obj_slot_set",
+    ] {
         assert!(syms.iter().any(|x| x == s), "externs: {syms:?}");
     }
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
@@ -863,7 +1000,11 @@ fn emits_class_ctor_registration_and_fields() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_register")
             } else {
                 false
@@ -900,12 +1041,29 @@ fn emits_class_methods_statics_and_this() {
         }"#,
     );
     let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
-    for sym in ["pkl_Counter_new", "pkl_Counter_add", "pkl_Counter_total", "pkl_Counter_sm_zero"] {
+    for sym in [
+        "pkl_Counter_new",
+        "pkl_Counter_add",
+        "pkl_Counter_total",
+        "pkl_Counter_sm_zero",
+    ] {
         assert!(syms.iter().any(|s| s == sym), "symbols: {syms:?}");
     }
-    let add = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_add").expect("add");
-    assert_eq!(add.params.first().map(|p| p.ty), Some(IrTy::Ptr), "receiver first");
-    let zero = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_sm_zero").expect("zero");
+    let add = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_add")
+        .expect("add");
+    assert_eq!(
+        add.params.first().map(|p| p.ty),
+        Some(IrTy::Ptr),
+        "receiver first"
+    );
+    let zero = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_sm_zero")
+        .expect("zero");
     assert!(zero.params.is_empty(), "static method has no receiver");
 }
 
@@ -938,7 +1096,11 @@ fn emits_explicit_ctor_field_inits_and_init_block() {
         syms.iter().any(|s| s == "pkl_Counter_new"),
         "symbols: {syms:?}"
     );
-    let new = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_new").expect("new");
+    let new = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_new")
+        .expect("new");
     assert_eq!(new.params.len(), 1, "explicit ctor params win over fields");
     assert_eq!(new.params[0].name, "start");
     let allocs = new
@@ -946,7 +1108,11 @@ fn emits_explicit_ctor_field_inits_and_init_block() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_new")
             } else {
                 false
@@ -976,12 +1142,24 @@ fn synthesized_ctor_skips_initialized_fields() {
             println(l.text)
         }"#,
     );
-    let point = m.funcs.iter().find(|f| f.symbol == "pkl_Point_new").expect("Point.new");
+    let point = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Point_new")
+        .expect("Point.new");
     let names: Vec<&str> = point.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, vec!["y"], "initialized field `x` is not a parameter");
-    let label = m.funcs.iter().find(|f| f.symbol == "pkl_Label_new").expect("Label.new");
+    let label = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Label_new")
+        .expect("Label.new");
     let names: Vec<&str> = label.params.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, vec!["text"], "`times` has an initializer so it is skipped");
+    assert_eq!(
+        names,
+        vec!["text"],
+        "`times` has an initializer so it is skipped"
+    );
 }
 
 #[test]
@@ -1021,10 +1199,22 @@ fn emits_property_accessors_and_dispatches() {
     ] {
         assert!(syms.iter().any(|s| s == sym), "symbols: {syms:?}");
     }
-    let get = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_doubled_get").expect("get");
-    assert_eq!(get.params.first().map(|p| p.ty), Some(IrTy::Ptr), "getter receiver first");
+    let get = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_doubled_get")
+        .expect("get");
+    assert_eq!(
+        get.params.first().map(|p| p.ty),
+        Some(IrTy::Ptr),
+        "getter receiver first"
+    );
     assert_eq!(get.ret, IrTy::Int, "getter returns the property type");
-    let set = m.funcs.iter().find(|f| f.symbol == "pkl_Counter_mirrored_set").expect("set");
+    let set = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Counter_mirrored_set")
+        .expect("set");
     assert_eq!(set.params.len(), 2, "setter takes `this` and `value`");
     assert_eq!(set.params[1].name, "value");
     assert_eq!(set.ret, IrTy::Unit, "setter returns unit");
@@ -1034,7 +1224,11 @@ fn emits_property_accessors_and_dispatches() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Func(fid), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Func(fid),
+                ..
+            } = i
+            {
                 Some(m.funcs.get(fid.0).map(|f| f.symbol.clone()))
             } else {
                 None
@@ -1042,7 +1236,11 @@ fn emits_property_accessors_and_dispatches() {
         })
         .flatten()
         .collect();
-    for want in ["pkl_Counter_doubled_get", "pkl_Counter_mirrored_get", "pkl_Counter_mirrored_set"] {
+    for want in [
+        "pkl_Counter_doubled_get",
+        "pkl_Counter_mirrored_get",
+        "pkl_Counter_mirrored_set",
+    ] {
         assert!(used.iter().any(|s| s == want), "main calls: {used:?}");
     }
 }
@@ -1117,7 +1315,11 @@ fn emits_static_property_accessors_receiverless() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Func(fid), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Func(fid),
+                ..
+            } = i
+            {
                 Some(m.funcs.get(fid.0).map(|f| f.symbol.clone()))
             } else {
                 None
@@ -1137,9 +1339,17 @@ fn emits_static_property_accessors_receiverless() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Func(fid), args, .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Func(fid),
+                args,
+                ..
+            } = i
+            {
                 Some((
-                    m.funcs.get(fid.0).map(|f| f.symbol.clone()).unwrap_or_default(),
+                    m.funcs
+                        .get(fid.0)
+                        .map(|f| f.symbol.clone())
+                        .unwrap_or_default(),
                     args.len(),
                 ))
             } else {
@@ -1148,11 +1358,13 @@ fn emits_static_property_accessors_receiverless() {
         })
         .collect();
     assert!(
-        used.iter().any(|(s, n)| s == "pkl_Config_sm_limit_get" && *n == 0),
+        used.iter()
+            .any(|(s, n)| s == "pkl_Config_sm_limit_get" && *n == 0),
         "main calls the getter with no receiver: {used:?}"
     );
     assert!(
-        used.iter().any(|(s, n)| s == "pkl_Config_sm_guarded_set" && *n == 1),
+        used.iter()
+            .any(|(s, n)| s == "pkl_Config_sm_guarded_set" && *n == 1),
         "main calls the setter with just the value: {used:?}"
     );
 }
@@ -1199,7 +1411,10 @@ fn emits_guarded_match_arms() {
         "pickle_unbox_f64",
         "pickle_panic_no_match",
     ] {
-        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+        assert!(
+            syms.iter().any(|s| s == need),
+            "missing {need}, externs: {syms:?}"
+        );
     }
     let area = m.funcs.iter().find(|f| f.name == "area").expect("area");
     let branches: Vec<String> = area
@@ -1221,8 +1436,10 @@ fn emits_guarded_match_arms() {
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
-        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
-            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_panic_no_match")))
+        .filter(|i| {
+            matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_panic_no_match"))
+        })
         .count();
     assert_eq!(
         panic_instrs, 1,
@@ -1269,7 +1486,10 @@ fn emits_non_enum_match_and_if_let() {
         "pickle_unbox_i64",
         "pickle_box_i64",
     ] {
-        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+        assert!(
+            syms.iter().any(|s| s == need),
+            "missing {need}, externs: {syms:?}"
+        );
     }
     let band = m.funcs.iter().find(|f| f.name == "band").expect("band");
     let eq_checks = band
@@ -1278,14 +1498,23 @@ fn emits_non_enum_match_and_if_let() {
         .flat_map(|b| b.instrs.iter())
         .filter(|i| matches!(i, IrInstr::BinOp { op: BinOp::Eq, .. }))
         .count();
-    assert!(eq_checks >= 1, "int literal case needs an equality check:\n{band}");
-    let name_of = m.funcs.iter().find(|f| f.name == "name_of").expect("name_of");
+    assert!(
+        eq_checks >= 1,
+        "int literal case needs an equality check:\n{band}"
+    );
+    let name_of = m
+        .funcs
+        .iter()
+        .find(|f| f.name == "name_of")
+        .expect("name_of");
     let cmp_calls = name_of
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
-        .filter(|i| matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
-            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_str_cmp")))
+        .filter(|i| {
+            matches!(i, IrInstr::Call { callee: Callee::Extern(ex), .. }
+            if m.externs.get(ex.0).map(|e| e.symbol.as_str()) == Some("pickle_str_cmp"))
+        })
         .count();
     assert_eq!(cmp_calls, 1, "one string case -> one str_cmp:\n{name_of}");
     let unwrap = m.funcs.iter().find(|f| f.name == "unwrap").expect("unwrap");
@@ -1297,10 +1526,15 @@ fn emits_non_enum_match_and_if_let() {
             _ => None,
         })
         .count();
-    assert!(branches >= 1, "option some/none needs a presence branch:\n{unwrap}");
+    assert!(
+        branches >= 1,
+        "option some/none needs a presence branch:\n{unwrap}"
+    );
     let pick = m.funcs.iter().find(|f| f.name == "pick").expect("pick");
     assert!(
-        pick.blocks.iter().any(|b| matches!(b.term, IrTerm::BranchIf { .. })),
+        pick.blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerm::BranchIf { .. })),
         "if-let needs a presence branch:\n{pick}"
     );
 }
@@ -1332,13 +1566,21 @@ fn property_getter_reads_bare_field_and_this() {
             println(x.plus)
         }"#,
     );
-    let get = m.funcs.iter().find(|f| f.symbol == "pkl_Meter_squared_get").expect("get");
+    let get = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Meter_squared_get")
+        .expect("get");
     let reads: Vec<&str> = get
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str())
             } else {
                 None
@@ -1346,7 +1588,10 @@ fn property_getter_reads_bare_field_and_this() {
         })
         .filter(|s| *s == "pickle_obj_slot_get")
         .collect();
-    assert!(reads.len() >= 2, "bare `value` reads dispatch through `this`, dump:\n{get}");
+    assert!(
+        reads.len() >= 2,
+        "bare `value` reads dispatch through `this`, dump:\n{get}"
+    );
 }
 
 #[test]
@@ -1375,23 +1620,38 @@ fn emits_char_fields_and_collections_boxed() {
     }
     // RHS-first form: `Tile('?')` records `glyph = 'x'` via a field init, and
     // `tag` becomes the ctor parameter.
-    let new = m.funcs.iter().find(|f| f.name == "Tile.new").expect("Tile.new");
+    let new = m
+        .funcs
+        .iter()
+        .find(|f| f.name == "Tile.new")
+        .expect("Tile.new");
     let names: Vec<&str> = new.params.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, vec!["tag"], "`glyph` carries an initializer so it is skipped");
+    assert_eq!(
+        names,
+        vec!["tag"],
+        "`glyph` carries an initializer so it is skipped"
+    );
     let tile = m.funcs.iter().find(|f| f.name == "Tile.new").expect("new");
     let stores: Vec<&str> = tile
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str())
             } else {
                 None
             }
         })
         .collect();
-    assert!(stores.contains(&"pickle_box_char"), "new must box the char field init, stores: {stores:?}");
+    assert!(
+        stores.contains(&"pickle_box_char"),
+        "new must box the char field init, stores: {stores:?}"
+    );
     // The getter path unboxes: `t.glyph` + `cs[1]` + `by["k"]` all want the
     // char scalar back.
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
@@ -1400,7 +1660,11 @@ fn emits_char_fields_and_collections_boxed() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str())
             } else {
                 None
@@ -1408,7 +1672,10 @@ fn emits_char_fields_and_collections_boxed() {
         })
         .filter(|s| *s == "pickle_unbox_char")
         .count();
-    assert!(unboxes >= 3, "field/get/list/map reads unbox chars, dump:\n{main}");
+    assert!(
+        unboxes >= 3,
+        "field/get/list/map reads unbox chars, dump:\n{main}"
+    );
 }
 
 #[test]
@@ -1434,7 +1701,10 @@ fn emits_map_entries_iteration() {
         "pickle_list_len",
         "pickle_unbox_i64",
     ] {
-        assert!(syms.iter().any(|s| s == need), "missing {need}, externs: {syms:?}");
+        assert!(
+            syms.iter().any(|s| s == need),
+            "missing {need}, externs: {syms:?}"
+        );
     }
     assert!(
         !syms.iter().any(|s| s == "pickle_map_get_boxed"),
@@ -1475,7 +1745,11 @@ fn emits_string_index_and_char_iteration() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str())
             } else {
                 None
@@ -1483,13 +1757,20 @@ fn emits_string_index_and_char_iteration() {
         })
         .filter(|s| *s == "pickle_str_get")
         .count();
-    assert!(get_calls >= 4, "three index reads + one loop-body read, dump:\n{init}");
+    assert!(
+        get_calls >= 4,
+        "three index reads + one loop-body read, dump:\n{init}"
+    );
     let iter = init
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(id),
+                ..
+            } = i
+            {
                 m.externs.get(id.0).map(|e| e.symbol.as_str())
             } else {
                 None
@@ -1497,7 +1778,10 @@ fn emits_string_index_and_char_iteration() {
         })
         .filter(|s| *s == "pickle_str_len")
         .count();
-    assert!(iter >= 1, "the loop bound uses pickle_str_len, dump:\n{init}");
+    assert!(
+        iter >= 1,
+        "the loop bound uses pickle_str_len, dump:\n{init}"
+    );
 }
 
 #[test]
@@ -1522,14 +1806,24 @@ fn emits_option_lift_coalesce_and_unwrap() {
         }"#,
     );
     let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
-    for want in ["pickle_box_i64", "pickle_unbox_i64", "pickle_panic_none_unwrap"] {
+    for want in [
+        "pickle_box_i64",
+        "pickle_unbox_i64",
+        "pickle_panic_none_unwrap",
+    ] {
         assert!(externs.contains(&want), "externs: {externs:?}");
     }
     let has_null = m.funcs.iter().any(|f| {
         f.blocks.iter().any(|b| {
-            b.instrs
-                .iter()
-                .any(|i| matches!(i, IrInstr::Const { c: IrConst::Null, .. }))
+            b.instrs.iter().any(|i| {
+                matches!(
+                    i,
+                    IrInstr::Const {
+                        c: IrConst::Null,
+                        ..
+                    }
+                )
+            })
         })
     });
     assert!(has_null, "`none` must lower to a null const, dump:\n{m}");
@@ -1563,7 +1857,15 @@ fn emits_optional_access_with_null_test() {
         .blocks
         .iter()
         .flat_map(|b| b.instrs.iter())
-        .filter(|i| matches!(i, IrInstr::Const { c: IrConst::Null, .. }))
+        .filter(|i| {
+            matches!(
+                i,
+                IrInstr::Const {
+                    c: IrConst::Null,
+                    ..
+                }
+            )
+        })
         .count();
     assert!(nulls >= 1, "`?.` none branch stores null, dump:\n{main}");
 }
@@ -1587,10 +1889,16 @@ fn emits_numeric_and_option_casts() {
     let dump = format!("{m}");
     assert!(dump.contains("itof"), "int->float uses itof, dump:\n{dump}");
     assert!(dump.contains("ftoi"), "float->int uses ftoi, dump:\n{dump}");
-    assert!(dump.contains("binop.ne"), "option `is` null-tests, dump:\n{dump}");
+    assert!(
+        dump.contains("binop.ne"),
+        "option `is` null-tests, dump:\n{dump}"
+    );
     let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
     for want in ["pickle_box_f64", "pickle_unbox_f64"] {
-        assert!(externs.contains(&want), "`as? float` boxes/unboxes floats: {externs:?}");
+        assert!(
+            externs.contains(&want),
+            "`as? float` boxes/unboxes floats: {externs:?}"
+        );
     }
 }
 
@@ -1621,11 +1929,17 @@ fn emits_static_field_cells_and_init() {
         }"#,
     );
     let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
-    assert!(syms.iter().any(|s| s == "pkl_static_init"), "symbols: {syms:?}");
+    assert!(
+        syms.iter().any(|s| s == "pkl_static_init"),
+        "symbols: {syms:?}"
+    );
 
     let externs: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
     for want in ["pickle_static_get", "pickle_static_set"] {
-        assert!(externs.contains(&want), "static cell extern missing: {externs:?}");
+        assert!(
+            externs.contains(&want),
+            "static cell extern missing: {externs:?}"
+        );
     }
 
     let init = m
@@ -1664,7 +1978,11 @@ fn emits_static_field_cells_and_init() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| {
-            if let IrInstr::Call { callee: Callee::Extern(ex), .. } = i {
+            if let IrInstr::Call {
+                callee: Callee::Extern(ex),
+                ..
+            } = i
+            {
                 m.externs.get(ex.0).map(|e| e.symbol.as_str())
             } else {
                 None
@@ -1716,11 +2034,15 @@ fn emits_class_const_inlining() {
 
     // `Config.BASE` in main inlines to the literal 2.
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
-    let has_two = main
-        .blocks
-        .iter()
-        .flat_map(|b| b.instrs.iter())
-        .any(|i| matches!(i, IrInstr::Const { c: IrConst::Int(2), .. }));
+    let has_two = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
+        matches!(
+            i,
+            IrInstr::Const {
+                c: IrConst::Int(2),
+                ..
+            }
+        )
+    });
     assert!(has_two, "Config.BASE should inline as an int const");
 
     // A bare-name const read inside a method also inlines (`DOUBLE + 1`,
@@ -1731,7 +2053,10 @@ fn emits_class_const_inlining() {
         .find(|f| f.symbol == "pkl_Config_limit")
         .expect("limit");
     let dump = format!("{limit}");
-    assert!(dump.contains("binop.mul"), "DOUBLE inlines BASE * 2, dump:\n{dump}");
+    assert!(
+        dump.contains("binop.mul"),
+        "DOUBLE inlines BASE * 2, dump:\n{dump}"
+    );
     assert!(dump.contains("binop.add"), "limit adds 1, dump:\n{dump}");
 }
 
@@ -1765,7 +2090,10 @@ fn emits_named_constructor_redirect() {
         }"#,
     );
     let syms: Vec<String> = m.funcs.iter().map(|f| f.symbol.clone()).collect();
-    assert!(syms.contains(&"pkl_Point_new".to_string()), "symbols: {syms:?}");
+    assert!(
+        syms.contains(&"pkl_Point_new".to_string()),
+        "symbols: {syms:?}"
+    );
     assert!(
         syms.contains(&"pkl_Point_nc_origin".to_string()),
         "symbols: {syms:?}"
@@ -1805,11 +2133,9 @@ fn emits_named_constructor_redirect() {
         .expect("origin");
     let origin_fid = pickle_compiler::ir::FuncId(origin_fid);
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
-    let main_calls = main
-        .blocks
-        .iter()
-        .flat_map(|b| b.instrs.iter())
-        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if *fid == origin_fid));
+    let main_calls = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(
+        |i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if *fid == origin_fid),
+    );
     assert!(main_calls, "main must call `pkl_Point_nc_origin`");
 }
 
@@ -1850,7 +2176,11 @@ fn emits_deinit_finalizer_and_registration() {
         .iter()
         .find(|e| e.symbol == "pickle_class_register")
         .expect("pickle_class_register extern");
-    assert_eq!(reg.params.len(), 7, "register takes addr,len,fields,mask,owned,finalizer,parent");
+    assert_eq!(
+        reg.params.len(),
+        7,
+        "register takes addr,len,fields,mask,owned,finalizer,parent"
+    );
     assert!(reg.params.iter().all(|t| *t == IrTy::Int));
     assert_eq!(reg.ret, IrTy::Unit);
 
@@ -1862,9 +2192,12 @@ fn emits_deinit_finalizer_and_registration() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .find_map(|i| match i {
-            IrInstr::Call { callee: Callee::Extern(id), args, .. }
-                if m.externs.get(id.0).map(|e| e.symbol.as_str())
-                    == Some("pickle_class_register") =>
+            IrInstr::Call {
+                callee: Callee::Extern(id),
+                args,
+                ..
+            } if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                == Some("pickle_class_register") =>
             {
                 Some(args.clone())
             }
@@ -1876,7 +2209,10 @@ fn emits_deinit_finalizer_and_registration() {
     let is_addr = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
         matches!(i, IrInstr::Const { dst, c: IrConst::FuncAddr(g) } if *dst == fin && *g == fid)
     });
-    assert!(is_addr, "sixth registration arg must be `addrof pkl_Widget_deinit`");
+    assert!(
+        is_addr,
+        "sixth registration arg must be `addrof pkl_Widget_deinit`"
+    );
     assert!(format!("{m}").contains("addrof fn#"), "dump:\n{m}");
 }
 
@@ -1902,9 +2238,12 @@ fn class_without_deinit_registers_a_null_finalizer() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .find_map(|i| match i {
-            IrInstr::Call { callee: Callee::Extern(id), args, .. }
-                if m.externs.get(id.0).map(|e| e.symbol.as_str())
-                    == Some("pickle_class_register") =>
+            IrInstr::Call {
+                callee: Callee::Extern(id),
+                args,
+                ..
+            } if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                == Some("pickle_class_register") =>
             {
                 Some(args.clone())
             }
@@ -1913,9 +2252,11 @@ fn class_without_deinit_registers_a_null_finalizer() {
         .expect("class registration call");
     assert_eq!(args.len(), 7);
     let fin = args[5];
-    let is_null = main.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
-        matches!(i, IrInstr::Const { dst, c: IrConst::Int(0) } if *dst == fin)
-    });
+    let is_null = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Const { dst, c: IrConst::Int(0) } if *dst == fin));
     assert!(is_null, "a class without `deinit` registers finalizer 0");
 }
 
@@ -1959,9 +2300,12 @@ fn emits_inheritance_layout_and_super_call() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .filter_map(|i| match i {
-            IrInstr::Call { callee: Callee::Extern(id), args, .. }
-                if m.externs.get(id.0).map(|e| e.symbol.as_str())
-                    == Some("pickle_class_register") =>
+            IrInstr::Call {
+                callee: Callee::Extern(id),
+                args,
+                ..
+            } if m.externs.get(id.0).map(|e| e.symbol.as_str())
+                == Some("pickle_class_register") =>
             {
                 Some(args.clone())
             }
@@ -1970,19 +2314,35 @@ fn emits_inheritance_layout_and_super_call() {
         .collect();
     assert_eq!(regs.len(), 2, "one registration per class");
     for r in &regs {
-        assert_eq!(r.len(), 7, "register takes addr,len,fields,mask,owned,finalizer,parent");
+        assert_eq!(
+            r.len(),
+            7,
+            "register takes addr,len,fields,mask,owned,finalizer,parent"
+        );
     }
     let const_int = |t: pickle_compiler::ir::Temp| -> Option<i64> {
-        main.blocks.iter().flat_map(|b| b.instrs.iter()).find_map(|i| match i {
-            IrInstr::Const { dst, c: IrConst::Int(v) } if *dst == t => Some(*v),
-            _ => None,
-        })
+        main.blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .find_map(|i| match i {
+                IrInstr::Const {
+                    dst,
+                    c: IrConst::Int(v),
+                } if *dst == t => Some(*v),
+                _ => None,
+            })
     };
     let parents: Vec<i64> = regs.iter().filter_map(|r| const_int(r[6])).collect();
     // The root has parent 0; the subclass points at the superclass id (10,
     // the first user class after the builtin stream id 9).
-    assert!(parents.contains(&0), "root class registers parent 0, got {parents:?}");
-    assert!(parents.contains(&10), "subclass registers superclass id 10, got {parents:?}");
+    assert!(
+        parents.contains(&0),
+        "root class registers parent 0, got {parents:?}"
+    );
+    assert!(
+        parents.contains(&10),
+        "subclass registers superclass id 10, got {parents:?}"
+    );
 
     // `super.baseTag()` lowers to a direct call of the superclass method
     // (static dispatch on the shared object).
@@ -1991,11 +2351,20 @@ fn emits_inheritance_layout_and_super_call() {
         .iter()
         .position(|f| f.symbol == "pkl_Animal_baseTag")
         .expect("pkl_Animal_baseTag");
-    let tag = m.funcs.iter().find(|f| f.symbol == "pkl_Dog_tag").expect("pkl_Dog_tag");
-    let calls_parent = tag.blocks.iter().flat_map(|b| b.instrs.iter()).any(|i| {
-        matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == base)
-    });
-    assert!(calls_parent, "`super.baseTag()` must call the superclass method:\n{m}");
+    let tag = m
+        .funcs
+        .iter()
+        .find(|f| f.symbol == "pkl_Dog_tag")
+        .expect("pkl_Dog_tag");
+    let calls_parent = tag
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == base));
+    assert!(
+        calls_parent,
+        "`super.baseTag()` must call the superclass method:\n{m}"
+    );
 }
 
 #[test]
@@ -2066,7 +2435,11 @@ fn emits_override_dispatch_cascade() {
 
     let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
     let is_extern = |i: &IrInstr| -> bool {
-        if let IrInstr::Call { callee: Callee::Extern(id), .. } = i {
+        if let IrInstr::Call {
+            callee: Callee::Extern(id),
+            ..
+        } = i
+        {
             m.externs.get(id.0).map(|e| e.symbol.as_str()) == Some("pickle_class_is")
         } else {
             false
@@ -2090,11 +2463,10 @@ fn emits_override_dispatch_cascade() {
         .iter()
         .position(|f| f.symbol == "pkl_Animal_age")
         .expect("pkl_Animal_age");
-    let fast = main
-        .blocks
-        .iter()
-        .flat_map(|b| b.instrs.iter())
-        .any(|i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == age_pos));
+    let fast =
+        main.blocks.iter().flat_map(|b| b.instrs.iter()).any(
+            |i| matches!(i, IrInstr::Call { callee: Callee::Func(fid), .. } if fid.0 == age_pos),
+        );
     assert!(fast, "non-overridden methods must stay direct calls:\n{m}");
 
     // `super.describe()` inside a method is always the superclass
@@ -2119,7 +2491,10 @@ fn emits_override_dispatch_cascade() {
         .iter()
         .flat_map(|b| b.instrs.iter())
         .any(is_extern);
-    assert!(direct_super, "`super.describe()` must call the superclass impl:\n{m}");
+    assert!(
+        direct_super,
+        "`super.describe()` must call the superclass impl:\n{m}"
+    );
     assert!(no_is, "`super.describe()` must not dispatch:\n{m}");
 }
 
@@ -2145,8 +2520,14 @@ fn emits_class_is_and_as_lowering() {
         }"#,
     );
     let syms: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
-    assert!(syms.contains(&"pickle_class_is"), "downcast `is` needs the runtime test:\n{m}");
-    assert!(syms.contains(&"pickle_class_cast"), "downcast `as` needs the checked cast:\n{m}");
+    assert!(
+        syms.contains(&"pickle_class_is"),
+        "downcast `is` needs the runtime test:\n{m}"
+    );
+    assert!(
+        syms.contains(&"pickle_class_cast"),
+        "downcast `as` needs the checked cast:\n{m}"
+    );
 }
 
 #[test]
@@ -2184,7 +2565,9 @@ fn emits_manual_alloc_adopt_and_free() {
     );
     let msyms = externs(&managed);
     assert!(
-        !msyms.iter().any(|s| s == "pickle_manual_adopt" || s == "pickle_manual_free"),
+        !msyms
+            .iter()
+            .any(|s| s == "pickle_manual_adopt" || s == "pickle_manual_free"),
         "managed bindings must stay GC-owned: {msyms:?}"
     );
 }
@@ -2395,7 +2778,11 @@ fn emits_zero_capture_lambda_and_fn_value_trampoline() {
         .find(|f| f.symbol.starts_with("pkl_closure_"))
         .expect("zero-capture lambda hoist");
     assert_eq!(same.params.len(), 2, "env + x only, got:\n{dump}");
-    assert_eq!(same.params[0].ty, IrTy::Ptr, "first param is the closure:\n{dump}");
+    assert_eq!(
+        same.params[0].ty,
+        IrTy::Ptr,
+        "first param is the closure:\n{dump}"
+    );
     // A module function used as a value gets a forwarder trampoline so its ABI
     // matches a hoisted lambda body (closure first, then the real args).
     let tramp = m
@@ -2418,9 +2805,10 @@ fn emits_zero_capture_lambda_and_fn_value_trampoline() {
     // Dynamic dispatch for the lambda and the fn value.
     let main = m.funcs.iter().find(|f| f.is_main).expect("main");
     assert!(
-        main.blocks
+        main.blocks.iter().any(|b| b
+            .instrs
             .iter()
-            .any(|b| b.instrs.iter().any(|i| matches!(i, IrInstr::CallInd { .. }))),
+            .any(|i| matches!(i, IrInstr::CallInd { .. }))),
         "main must dispatch closures dynamically:\n{dump}"
     );
     assert!(
@@ -2457,22 +2845,35 @@ fn emits_generic_body_lambda_per_instantiation() {
         .filter(|(_, f)| f.symbol.starts_with("pkl_closure_"))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(closures.len(), 2, "one hoisted copy per instantiation, got:\n{dump}");
-    let int_copy = m
-        .funcs
-        .iter()
-        .any(|f| f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Int));
-    let float_copy = m
-        .funcs
-        .iter()
-        .any(|f| f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Float));
+    assert_eq!(
+        closures.len(),
+        2,
+        "one hoisted copy per instantiation, got:\n{dump}"
+    );
+    let int_copy = m.funcs.iter().any(|f| {
+        f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Int)
+    });
+    let float_copy = m.funcs.iter().any(|f| {
+        f.symbol.starts_with("pkl_closure_") && f.params.get(1).is_some_and(|p| p.ty == IrTy::Float)
+    });
     assert!(int_copy, "an int-typed closure copy must exist:\n{dump}");
     assert!(float_copy, "a float-typed closure copy must exist:\n{dump}");
     // Both enclosing instantiations lower (and are called), so no bare generic
     // declaration body is emitted.
-    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_make_identity__int"), "missing int instantiation:\n{dump}");
-    assert!(m.funcs.iter().any(|f| f.symbol == "pkl_make_identity__float"), "missing float instantiation:\n{dump}");
-    assert!(!m.funcs.iter().any(|f| f.symbol == "pkl_make_identity"), "bare generic body must not lower:\n{dump}");
+    assert!(
+        m.funcs.iter().any(|f| f.symbol == "pkl_make_identity__int"),
+        "missing int instantiation:\n{dump}"
+    );
+    assert!(
+        m.funcs
+            .iter()
+            .any(|f| f.symbol == "pkl_make_identity__float"),
+        "missing float instantiation:\n{dump}"
+    );
+    assert!(
+        !m.funcs.iter().any(|f| f.symbol == "pkl_make_identity"),
+        "bare generic body must not lower:\n{dump}"
+    );
 }
 
 #[test]
@@ -2561,7 +2962,12 @@ fn emits_list_mutation_builtins() {
         }"#,
     );
     let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
-    for want in ["pickle_list_sort", "pickle_list_remove", "pickle_list_insert", "pickle_list_push"] {
+    for want in [
+        "pickle_list_sort",
+        "pickle_list_remove",
+        "pickle_list_insert",
+        "pickle_list_push",
+    ] {
         assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
     }
 }
@@ -2577,6 +2983,21 @@ fn emits_bytes_str_bridge_builtins() {
     );
     let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
     for want in ["pickle_str_to_bytes", "pickle_str_from_list"] {
+        assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
+    }
+}
+
+#[test]
+fn emits_os_builtins() {
+    let m = emit_str(
+        r#"fn main() {
+            let a = args()
+            println(len(a))
+            exit(0)
+        }"#,
+    );
+    let symbols: Vec<String> = m.externs.iter().map(|e| e.symbol.clone()).collect();
+    for want in ["pickle_args", "pickle_exit"] {
         assert!(symbols.contains(&want.to_string()), "symbols: {symbols:?}");
     }
 }
@@ -2649,5 +3070,3 @@ fn rejects_nested_string_index_assign() {
         "expected the emitter to refuse a nested string index-assignment target"
     );
 }
-
-

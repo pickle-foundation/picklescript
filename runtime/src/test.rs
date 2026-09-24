@@ -122,9 +122,7 @@ pub extern "C" fn pickle_test_fail_obj(obj: *const crate::object::PickleObject) 
     } else {
         let bytes = crate::strings::string_bytes_ptr(obj);
         let len = crate::strings::string_bytes_len(obj);
-        unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(bytes, len)).into_owned()
-        }
+        unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(bytes, len)).into_owned() }
     };
     if crate::panic::is_capturing() {
         crate::panic::record_panic_msg(msg);
@@ -138,7 +136,9 @@ pub extern "C" fn pickle_test_fail_obj(obj: *const crate::object::PickleObject) 
 /// their contents, lists element-wise as `[..]`.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pickle_expect_display(obj: *const crate::object::PickleObject) -> *mut crate::object::PickleObject {
+pub extern "C" fn pickle_expect_display(
+    obj: *const crate::object::PickleObject,
+) -> *mut crate::object::PickleObject {
     let mut buf = Vec::new();
     crate::console::fmt_obj_to(&mut buf, obj as *mut crate::object::PickleObject);
     crate::strings::string_from_bytes(buf.as_ptr(), buf.len(), crate::gc::gc_mut())
@@ -179,9 +179,8 @@ pub extern "C" fn pickle_expect_obj_eq(
                 crate::strings::string_bytes_len(b),
             );
             // SAFETY: both slices come straight from managed string payloads.
-            let eq = unsafe {
-                std::slice::from_raw_parts(pa, la) == std::slice::from_raw_parts(pb, lb)
-            };
+            let eq =
+                unsafe { std::slice::from_raw_parts(pa, la) == std::slice::from_raw_parts(pb, lb) };
             eq as i32
         }
         (PICKLE_CLASS_LIST, PICKLE_CLASS_LIST) => {
@@ -268,8 +267,8 @@ pub extern "C" fn pickle_runtime_run_tests() -> i32 {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut open: Vec<String> = Vec::new(); // active group path, beforeAll done
-    // The root group has no path segment, so it never appears in a test's
-    // `prefixes`; its hooks run explicitly around the whole suite.
+                                            // The root group has no path segment, so it never appears in a test's
+                                            // `prefixes`; its hooks run explicitly around the whole suite.
     if !tests.is_empty() {
         run_hooks(&hooks, "", HOOK_BEFORE_ALL);
     }

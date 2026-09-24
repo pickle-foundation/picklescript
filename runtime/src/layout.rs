@@ -149,9 +149,7 @@ pub const fn enum_object_size(field_count: usize) -> usize {
 /// Number of payload fields of an enum object, derived from its stored size.
 #[inline]
 pub fn enum_field_count(e: *const PickleObject) -> usize {
-    unsafe { (*e).size as usize }
-        .saturating_sub(HEADER + 8)
-        / 8
+    unsafe { (*e).size as usize }.saturating_sub(HEADER + 8) / 8
 }
 
 #[inline]
@@ -197,7 +195,8 @@ pub fn builtin_string_total(n: usize) -> usize {
 }
 
 /// An object -> raw buffer deallocator hook used during sweep.
-pub type RawReleaser = unsafe extern "C" fn(*mut PickleObject, *const crate::object::DescriptorTable);
+pub type RawReleaser =
+    unsafe extern "C" fn(*mut PickleObject, *const crate::object::DescriptorTable);
 
 #[cfg(test)]
 mod tests {
@@ -205,7 +204,13 @@ mod tests {
 
     #[test]
     fn offsets_are_8aligned() {
-        for off in [STR_LEN_OFF, STR_BYTES_OFF, LIST_LEN_OFF, LIST_CAP_OFF, LIST_DATA_OFF] {
+        for off in [
+            STR_LEN_OFF,
+            STR_BYTES_OFF,
+            LIST_LEN_OFF,
+            LIST_CAP_OFF,
+            LIST_DATA_OFF,
+        ] {
             assert_eq!(off % 8, 0);
         }
         assert_eq!(std::mem::size_of::<MapEntry>(), 16);

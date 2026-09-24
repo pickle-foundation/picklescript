@@ -82,10 +82,12 @@ pub extern "C" fn pickle_stream_open_write(path: *const PickleObject) -> *mut Pi
 /// Open `path` for appending, creating it if absent. `none` when the path
 /// cannot be opened.
 #[no_mangle]
-pub extern "C" fn pickle_stream_open_append(
-    path: *const PickleObject,
-) -> *mut PickleObject {
-    match std::fs::OpenOptions::new().append(true).create(true).open(path_of(path)) {
+pub extern "C" fn pickle_stream_open_append(path: *const PickleObject) -> *mut PickleObject {
+    match std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path_of(path))
+    {
         Ok(file) => stream_new(StreamInner {
             closed: false,
             target: Some(StreamTarget::Writer(BufWriter::new(file))),

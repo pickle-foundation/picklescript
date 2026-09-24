@@ -8,14 +8,17 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::ast::*;
 use crate::ast::BinOp as AstBinOp;
 use crate::ast::UnOp as AstUnOp;
+use crate::ast::*;
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
-use crate::ir::*;
 use crate::ir::BinOp as IrBinOp;
 use crate::ir::UnOp as IrUnOp;
-use crate::resolve::{CallableInfo, ClassTable, CtorInfo, EnumTable, FieldInfo, ParamInfo, PropertyInfo, ResolvedProgram, TypeTableEntry};
+use crate::ir::*;
+use crate::resolve::{
+    CallableInfo, ClassTable, CtorInfo, EnumTable, FieldInfo, ParamInfo, PropertyInfo,
+    ResolvedProgram, TypeTableEntry,
+};
 use crate::ty::Ty;
 
 /// Make a function symbol from a type's display name: keep alphanumerics,
@@ -180,12 +183,12 @@ enum FnSource<'a> {
     },
     /// A `deinit` finalizer: runs at GC sweep on a dead instance, off the
     /// allocation path. Slot 0 is `this`; returns unit.
-    Deinit {
-        table: ClassTable,
-        body: &'a Block,
-    },
+    Deinit { table: ClassTable, body: &'a Block },
     /// A class/struct method (instance or static).
-    Method { table: ClassTable, md: &'a MethodDecl },
+    Method {
+        table: ClassTable,
+        md: &'a MethodDecl,
+    },
     /// A property accessor: slot 0 is `this` (instance only; static
     /// properties are receiver-less), and setters take a `value` parameter,
     /// over the resolved property signature.
@@ -359,12 +362,20 @@ fn ctor_super_delegation(body: &Block) -> Option<&Expr> {
 /// Static slot number of static field `name` (its position among static
 /// fields).
 fn static_field_slot(table: &ClassTable, name: &str) -> Option<usize> {
-    table.fields.iter().filter(|f| f.is_static).position(|f| f.name == name)
+    table
+        .fields
+        .iter()
+        .filter(|f| f.is_static)
+        .position(|f| f.name == name)
 }
 
 /// The declared info of static field `name`, when present.
 fn static_field_info(table: &ClassTable, name: &str) -> Option<FieldInfo> {
-    table.fields.iter().find(|f| f.is_static && f.name == name).cloned()
+    table
+        .fields
+        .iter()
+        .find(|f| f.is_static && f.name == name)
+        .cloned()
 }
 
 /// Runtime representation of a `List<T>` element.
@@ -620,7 +631,10 @@ impl<'a> Emitter<'a> {
         // Test modules have no `main`, so the class-registration preamble
         // cannot ride on one. Synthesize a `pkl_test_setup` the runner calls
         // before executing hooks/tests (only when there is anything to set up).
-        let has_tests = prog.items.iter().any(|i| matches!(i.kind, ItemKind::Test(_)));
+        let has_tests = prog
+            .items
+            .iter()
+            .any(|i| matches!(i.kind, ItemKind::Test(_)));
         if has_tests && (!self.classes.is_empty() || self.static_init_id.is_some()) {
             let fid = self.push_class_func("test.setup", "pkl_test_setup", FnSource::TestSetup);
             self.test_setup_id = Some(fid);
@@ -733,12 +747,21 @@ impl<'a> Emitter<'a> {
         self.generic_ctx_name = saved_ctx;
     }
 
-    fn walk_accessor(&mut self, a: &'a PropertyAccessor, owner_cid: Option<i64>, owner_name: Option<&str>) {
+    fn walk_accessor(
+        &mut self,
+        a: &'a PropertyAccessor,
+        owner_cid: Option<i64>,
+        owner_name: Option<&str>,
+    ) {
         let mut scope = Vec::new();
         let mut acc = Vec::new();
         match a {
-            PropertyAccessor::Expr(e) => self.walk_expr(e, owner_cid, owner_name, 0, &mut scope, &mut acc),
-            PropertyAccessor::Block(b) => self.walk_block(b, owner_cid, owner_name, 0, &mut scope, &mut acc),
+            PropertyAccessor::Expr(e) => {
+                self.walk_expr(e, owner_cid, owner_name, 0, &mut scope, &mut acc)
+            }
+            PropertyAccessor::Block(b) => {
+                self.walk_block(b, owner_cid, owner_name, 0, &mut scope, &mut acc)
+            }
         }
     }
 
@@ -784,7 +807,11 @@ impl<'a> Emitter<'a> {
         acc: &mut Vec<(String, Span)>,
     ) {
         match s {
-            Stmt::Let { pattern, init: Some(e), .. } => {
+            Stmt::Let {
+                pattern,
+                init: Some(e),
+                ..
+            } => {
                 self.walk_expr(e, owner_cid, owner_name, lmark, scope, acc);
                 for n in pattern_binds(pattern) {
                     scope_bind(scope, &n);
@@ -849,10 +876,7 @@ impl<'a> Emitter<'a> {
                 // trampoline: the hoisted lambda bodies accept `(env, ...)`,
                 // but a bare top-level function does not. Register it now so the
                 // build loop (which runs after registration) compiles its body.
-                let shadowed = scope
-                    .last()
-                    .map(|s| s.contains(name))
-                    .unwrap_or(false);
+                let shadowed = scope.last().map(|s| s.contains(name)).unwrap_or(false);
                 if !shadowed
                     && self.module.funcs_by_name.contains_key(name)
                     && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
@@ -884,8 +908,7 @@ impl<'a> Emitter<'a> {
                             if let Some(&(fid, is_static)) =
                                 self.method_ids.get(&(cid, name.clone()))
                             {
-                                if !is_static
-                                    && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
+                                if !is_static && matches!(self.types.get(&e.span), Some(Ty::Fn(..)))
                                 {
                                     self.register_method_trampoline(e.span, fid, cid, name);
                                 }
@@ -981,9 +1004,11 @@ impl<'a> Emitter<'a> {
                     }
                     if let Some(cid) = owner_cid {
                         if self.instance_field_index(cid, &name).is_some()
-                            || self
-                                .property_ids
-                                .contains_key(&(cid as u32, name.to_string(), false))
+                            || self.property_ids.contains_key(&(
+                                cid as u32,
+                                name.to_string(),
+                                false,
+                            ))
                             || self.static_field(cid, &name).is_some()
                             || self.class_const_defined(cid, &name)
                         {
@@ -999,8 +1024,7 @@ impl<'a> Emitter<'a> {
                     return;
                 }
                 scope.pop();
-                let captures =
-                    self.decide_captures(&free_names, owner_cid, owner_name, e.span);
+                let captures = self.decide_captures(&free_names, owner_cid, owner_name, e.span);
                 let captures = match captures {
                     Ok(c) => c,
                     Err(()) => return,
@@ -1028,7 +1052,11 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            ExprKind::If { cond, then, else_else } => {
+            ExprKind::If {
+                cond,
+                then,
+                else_else,
+            } => {
                 match cond {
                     IfCond::Cond(c) => self.walk_expr(c, owner_cid, owner_name, lmark, scope, acc),
                     IfCond::Binding { pattern, value } => {
@@ -1060,7 +1088,9 @@ impl<'a> Emitter<'a> {
                 }
             }
             ExprKind::Await(x) => self.walk_expr(x, owner_cid, owner_name, lmark, scope, acc),
-            ExprKind::Cast { expr, .. } => self.walk_expr(expr, owner_cid, owner_name, lmark, scope, acc),
+            ExprKind::Cast { expr, .. } => {
+                self.walk_expr(expr, owner_cid, owner_name, lmark, scope, acc)
+            }
             ExprKind::Unsafe(b) => {
                 scope.push(HashSet::new());
                 self.walk_block(b, owner_cid, owner_name, lmark, scope, acc);
@@ -1135,9 +1165,7 @@ impl<'a> Emitter<'a> {
                     continue;
                 }
                 // Statics/consts resolve by the declaring class alone.
-                if self.static_field(cid, name).is_some()
-                    || self.class_const_defined(cid, name)
-                {
+                if self.static_field(cid, name).is_some() || self.class_const_defined(cid, name) {
                     continue;
                 }
             }
@@ -1182,11 +1210,45 @@ impl<'a> Emitter<'a> {
         self.module.funcs_by_name.contains_key(name)
             || self.class_decls.contains_key(name)
             || self.consts_inits.contains_key(name)
-            || matches!(name, "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir" | "stream_open_read" | "stream_open_write" | "stream_open_append" | "stdout_stream" | "stderr_stream")
+            || matches!(
+                name,
+                "print"
+                    | "println"
+                    | "len"
+                    | "alloc"
+                    | "free"
+                    | "assert"
+                    | "expect"
+                    | "abs"
+                    | "range"
+                    | "min"
+                    | "max"
+                    | "clamp"
+                    | "str"
+                    | "bytes"
+                    | "read_file"
+                    | "write_file"
+                    | "file_exists"
+                    | "delete"
+                    | "list_dir"
+                    | "mkdir"
+                    | "stream_open_read"
+                    | "stream_open_write"
+                    | "stream_open_append"
+                    | "stdout_stream"
+                    | "stderr_stream"
+                    | "args"
+                    | "exit"
+            )
     }
 
     /// Register a lambda's hoisted body and its closure class.
-    fn register_lambda(&mut self, lambda: &'a Expr, captures: Vec<Capture>, owner_cid: Option<i64>) {
+    fn register_lambda(
+        &mut self,
+        lambda: &'a Expr,
+        captures: Vec<Capture>,
+        owner_cid: Option<i64>,
+    ) {
         self.register_lambda_at(lambda, captures, owner_cid, &HashMap::new(), None);
     }
 
@@ -1342,10 +1404,8 @@ impl<'a> Emitter<'a> {
         self.fid_list.push(fid);
         self.fsource.insert(fid, FnSource::TopLevel(f));
         self.finfo.insert(fid, info.clone());
-        self.src_param_tys.insert(
-            fid,
-            info.params.iter().map(|p| p.ty.clone()).collect(),
-        );
+        self.src_param_tys
+            .insert(fid, info.params.iter().map(|p| p.ty.clone()).collect());
     }
 
     // ---- class/struct registration ---------------------------------------
@@ -1801,8 +1861,7 @@ impl<'a> Emitter<'a> {
                     if !dt.methods.iter().any(|di| di.name == *mname) {
                         continue;
                     }
-                    let Some(&(dfid, dstatic)) =
-                        self.method_ids.get(&(*dcid, mname.clone()))
+                    let Some(&(dfid, dstatic)) = self.method_ids.get(&(*dcid, mname.clone()))
                     else {
                         continue;
                     };
@@ -1889,20 +1948,17 @@ impl<'a> Emitter<'a> {
         };
         let id = self.next_iface_id;
         self.next_iface_id += 1;
-        let members = self
-            .iface_members
-            .entry(id)
-            .or_insert_with(|| {
-                let mut plan = Vec::new();
-                let mut mi = 0u32;
-                for m in &t.members {
-                    if !m.is_property {
-                        plan.push((m.name.clone(), mi));
-                        mi += 1;
-                    }
+        let members = self.iface_members.entry(id).or_insert_with(|| {
+            let mut plan = Vec::new();
+            let mut mi = 0u32;
+            for m in &t.members {
+                if !m.is_property {
+                    plan.push((m.name.clone(), mi));
+                    mi += 1;
                 }
-                plan
-            });
+            }
+            plan
+        });
         let _ = members;
         let _ = &t.generics;
         self.iface_inst_ids.insert(key, id);
@@ -1934,7 +1990,11 @@ impl<'a> Emitter<'a> {
                 return Err(());
             };
             let iface_id = self.iface_id_for(&iname, &iargs, span)?;
-            let members = self.iface_members.get(&iface_id).cloned().unwrap_or_default();
+            let members = self
+                .iface_members
+                .get(&iface_id)
+                .cloned()
+                .unwrap_or_default();
             let mut slots = Vec::with_capacity(members.len());
             for (mname, m_idx) in &members {
                 match self.method_ids.get(&(cid, mname.clone())) {
@@ -2029,7 +2089,11 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 chain.push(p);
             }
         }
@@ -2080,7 +2144,11 @@ impl<'a> Emitter<'a> {
         // `synthesized_ctor_param_meta`).
         let parent_explicit = parent
             .as_ref()
-            .map(|p| self.table_of(p).map(|pt| pt.ctor.is_some()).unwrap_or(false))
+            .map(|p| {
+                self.table_of(p)
+                    .map(|pt| pt.ctor.is_some())
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
         if let Some(cd) = ctor_decl {
             if parent_explicit && ctor_super_delegation(&cd.body).is_none() {
@@ -2240,11 +2308,10 @@ impl<'a> Emitter<'a> {
                 },
             );
             self.finfo.insert(mid, info.clone());
-            self.src_param_tys.insert(
-                mid,
-                info.params.iter().map(|p| p.ty.clone()).collect(),
-            );
-            self.method_ids.insert((cid, md.name.clone()), (mid, info.is_static));
+            self.src_param_tys
+                .insert(mid, info.params.iter().map(|p| p.ty.clone()).collect());
+            self.method_ids
+                .insert((cid, md.name.clone()), (mid, info.is_static));
         }
 
         // Property accessors: `pkl_<Name>_<p>_get`/`_set` (instance, slot 0 is
@@ -2316,7 +2383,9 @@ impl<'a> Emitter<'a> {
             }
             for ((id, pname, is_set), fid) in self.static_property_ids.clone() {
                 if id == pcid {
-                    self.static_property_ids.entry((cid, pname, is_set)).or_insert(fid);
+                    self.static_property_ids
+                        .entry((cid, pname, is_set))
+                        .or_insert(fid);
                 }
             }
         }
@@ -2379,12 +2448,16 @@ impl<'a> Emitter<'a> {
         args: &[Ty],
         span: Span,
     ) -> Result<u32, ()> {
-        if let Some(&cid) = self.class_inst_by_args.get(&(name.to_string(), args.to_vec())) {
+        if let Some(&cid) = self
+            .class_inst_by_args
+            .get(&(name.to_string(), args.to_vec()))
+        {
             return Ok(cid);
         }
         let (table, members) = match self.resolved.types.get(name) {
-            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => (t.clone(),
-                self.generic_type_members.get(name).copied()),
+            Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => {
+                (t.clone(), self.generic_type_members.get(name).copied())
+            }
             _ => return self.bad(span, format!("`{name}` is not a class or struct")),
         };
         if table.generics.len() != args.len() {
@@ -2401,16 +2474,16 @@ impl<'a> Emitter<'a> {
             return self.bad(span, format!("`{name}` is not lowerable"));
         };
         if table.extends.is_some() {
-            return self.bad(
-                span,
-                format!("`{name}` with `extends` is not lowered yet"),
-            );
+            return self.bad(span, format!("`{name}` with `extends` is not lowered yet"));
         }
         if members
             .iter()
             .any(|m| matches!(m, ClassMember::Method(md) if md.is_override))
         {
-            return self.bad(span, format!("`{name}` uses `override`, which is not lowered yet"));
+            return self.bad(
+                span,
+                format!("`{name}` uses `override`, which is not lowered yet"),
+            );
         }
         if members
             .iter()
@@ -2424,10 +2497,15 @@ impl<'a> Emitter<'a> {
         if members.iter().any(|m| matches!(m, ClassMember::Deinit(_))) {
             return self.bad(
                 span,
-                format!("`{name}` uses `deinit`, which is not lowered yet for generic classes/structs"),
+                format!(
+                    "`{name}` uses `deinit`, which is not lowered yet for generic classes/structs"
+                ),
             );
         }
-        if members.iter().any(|m| matches!(m, ClassMember::Property(_))) {
+        if members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Property(_)))
+        {
             return self.bad(
                 span,
                 format!("`{name}` uses properties, which are not lowered yet for generic classes/structs"),
@@ -2448,17 +2526,19 @@ impl<'a> Emitter<'a> {
         // The implements list, with the instantiation's type arguments
         // substituted in so each entry is a concrete interface instantiation
         // (`Iterable<int>`).
-        let implements: Vec<Ty> = table
-            .implements
-            .iter()
-            .map(|t| t.subst(&map))
-            .collect();
+        let implements: Vec<Ty> = table.implements.iter().map(|t| t.subst(&map)).collect();
         let suffix = args
             .iter()
             .map(|t| sanitize_symbol(&t.bare_name()))
             .collect::<Vec<_>>()
             .join("_");
-        let display = format!("{name}<{}>", args.iter().map(|t| t.bare_name()).collect::<Vec<_>>().join(", "));
+        let display = format!(
+            "{name}<{}>",
+            args.iter()
+                .map(|t| t.bare_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         let stable = ClassTable {
             name: display.clone(),
             span: table.span,
@@ -2667,14 +2747,16 @@ impl<'a> Emitter<'a> {
         // instantiation's substitution while this body compiles. Lambdas,
         // trampolines, and non-instantiated functions carry none.
         self.current_subst = self.instanton_subst.get(&fid).cloned().unwrap_or_default();
-        self.fn_generics = self.fid_generics.get(&fid).cloned().unwrap_or_else(|| {
-            match &self.fsource.get(&fid) {
-                Some(FnSource::TopLevel(f)) => {
-                    f.generics.iter().map(|g| g.name.clone()).collect()
-                }
-                _ => Vec::new(),
-            }
-        });
+        self.fn_generics =
+            self.fid_generics
+                .get(&fid)
+                .cloned()
+                .unwrap_or_else(|| match &self.fsource.get(&fid) {
+                    Some(FnSource::TopLevel(f)) => {
+                        f.generics.iter().map(|g| g.name.clone()).collect()
+                    }
+                    _ => Vec::new(),
+                });
 
         let Some(src) = self.fsource.get(&fid).cloned() else {
             return;
@@ -2697,7 +2779,12 @@ impl<'a> Emitter<'a> {
                 ret,
                 owner,
             } => self.build_lambda_body(lambda, &captures, &pty, &ret, owner, fid),
-            FnSource::Trampoline { span, target, pty, ret } => {
+            FnSource::Trampoline {
+                span,
+                target,
+                pty,
+                ret,
+            } => {
                 self.owner = None;
                 self.build_trampoline(span, target, &pty, &ret);
             }
@@ -2717,46 +2804,57 @@ impl<'a> Emitter<'a> {
                 init_blocks,
                 ctor,
             } => {
-                self.owner = self
-                    .fid_owner
-                    .get(&fid)
-                    .copied()
-                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
+                self.owner = self.fid_owner.get(&fid).copied().or_else(|| {
+                    self.class_by_name
+                        .get(&table.name)
+                        .copied()
+                        .map(|x| x as i64)
+                });
                 let _ = self.build_ctor_body(&table, &inits, &init_blocks, ctor);
             }
             FnSource::NamedCtor { table, ctor } => {
-                self.owner = self
-                    .fid_owner
-                    .get(&fid)
-                    .copied()
-                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
+                self.owner = self.fid_owner.get(&fid).copied().or_else(|| {
+                    self.class_by_name
+                        .get(&table.name)
+                        .copied()
+                        .map(|x| x as i64)
+                });
                 let _ = self.build_named_ctor(&table, ctor);
             }
             FnSource::Deinit { table, body } => {
-                self.owner = self
-                    .fid_owner
-                    .get(&fid)
-                    .copied()
-                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
+                self.owner = self.fid_owner.get(&fid).copied().or_else(|| {
+                    self.class_by_name
+                        .get(&table.name)
+                        .copied()
+                        .map(|x| x as i64)
+                });
                 let _ = self.build_deinit_body(&table, body);
             }
             FnSource::Method { table, md } => {
                 let Some(info) = self.finfo.get(&fid).cloned() else {
                     return;
                 };
-                self.owner = self
-                    .fid_owner
-                    .get(&fid)
-                    .copied()
-                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
+                self.owner = self.fid_owner.get(&fid).copied().or_else(|| {
+                    self.class_by_name
+                        .get(&table.name)
+                        .copied()
+                        .map(|x| x as i64)
+                });
                 let _ = self.build_method_body(&table, md, &info);
             }
-            FnSource::Property { table, pd, info, is_set, is_static } => {
-                self.owner = self
-                    .fid_owner
-                    .get(&fid)
-                    .copied()
-                    .or_else(|| self.class_by_name.get(&table.name).copied().map(|x| x as i64));
+            FnSource::Property {
+                table,
+                pd,
+                info,
+                is_set,
+                is_static,
+            } => {
+                self.owner = self.fid_owner.get(&fid).copied().or_else(|| {
+                    self.class_by_name
+                        .get(&table.name)
+                        .copied()
+                        .map(|x| x as i64)
+                });
                 let _ = self.build_property_body(&table, pd, &info, is_set, is_static);
             }
             FnSource::StaticInit { inits } => {
@@ -2828,7 +2926,7 @@ impl<'a> Emitter<'a> {
     /// Build the hoisted body of a lambda. Slot 0 is the closure object; the
     /// captured values are copied out of it into fresh locals before the body
     /// runs (read-only snapshots), and the lambda's own parameters follow.
-fn build_lambda_body(
+    fn build_lambda_body(
         &mut self,
         lambda: &'a Expr,
         captures: &[Capture],
@@ -3064,7 +3162,10 @@ fn build_lambda_body(
                 Ok(v) => v,
                 Err(()) => return,
             };
-            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.instr(IrInstr::StoreSlot {
+                slot: ret_slot,
+                v: val,
+            });
             self.term(IrTerm::Branch { target: join });
 
             self.cur = next;
@@ -3075,12 +3176,18 @@ fn build_lambda_body(
             Ok(v) => v,
             Err(()) => return,
         };
-        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+        self.instr(IrInstr::StoreSlot {
+            slot: ret_slot,
+            v: val,
+        });
         self.term(IrTerm::Branch { target: join });
 
         self.cur = join;
         let dst = self.temp();
-        self.instr(IrInstr::LoadSlot { dst, slot: ret_slot });
+        self.instr(IrInstr::LoadSlot {
+            dst,
+            slot: ret_slot,
+        });
         self.term(IrTerm::Return { v: Some(dst) });
     }
 
@@ -3153,7 +3260,10 @@ fn build_lambda_body(
             IrTy::Ptr,
             vec![cid_t, n_t],
         )?;
-        self.instr(IrInstr::StoreSlot { slot: this_slot, v: this });
+        self.instr(IrInstr::StoreSlot {
+            slot: this_slot,
+            v: this,
+        });
 
         let this = self.load(this_slot);
 
@@ -3164,12 +3274,7 @@ fn build_lambda_body(
             let manual = ifields[slot].manual;
             let v = self.expr(init)?;
             let v = if manual {
-                self.extern_call_t1(
-                    "pickle_manual_adopt",
-                    vec![IrTy::Ptr],
-                    IrTy::Ptr,
-                    vec![v],
-                )?
+                self.extern_call_t1("pickle_manual_adopt", vec![IrTy::Ptr], IrTy::Ptr, vec![v])?
             } else {
                 v
             };
@@ -3209,9 +3314,7 @@ fn build_lambda_body(
         // `super(...)`: the leading constructor parameters are forwarded and
         // the ancestor's body (and any further chain) runs inline.
         if ctor.is_none() {
-            if let Some((ancestor, count)) =
-                self.synthesized_ctor_param_meta(&table.name).1
-            {
+            if let Some((ancestor, count)) = self.synthesized_ctor_param_meta(&table.name).1 {
                 self.emit_synthesized_super_chain(&ancestor, count)?;
             }
         }
@@ -3252,18 +3355,19 @@ fn build_lambda_body(
     /// Lower a `super(...)` delegation at the front of a primary constructor
     /// body: evaluate the arguments in the current scope, then inline the
     /// parent's constructor chain.
-    fn emit_super_chain(
-        &mut self,
-        owner_name: &str,
-        delegation: &Expr,
-    ) -> Result<(), ()> {
-        let ExprKind::Call { callee: _super, args } = &delegation.kind else {
+    fn emit_super_chain(&mut self, owner_name: &str, delegation: &Expr) -> Result<(), ()> {
+        let ExprKind::Call {
+            callee: _super,
+            args,
+        } = &delegation.kind
+        else {
             return self.bad(delegation.span, "`super(...)` delegation is malformed");
         };
-        let Some(parent) = self
-            .table_of(owner_name)
-            .and_then(|t| t.extends.as_ref().and_then(|e| e.named().map(str::to_string)))
-        else {
+        let Some(parent) = self.table_of(owner_name).and_then(|t| {
+            t.extends
+                .as_ref()
+                .and_then(|e| e.named().map(str::to_string))
+        }) else {
             return self.bad(delegation.span, "`super(...)` requires a superclass");
         };
         let Some(pt) = self.table_of(&parent) else {
@@ -3285,11 +3389,7 @@ fn build_lambda_body(
     /// constructor that sits below an explicit-primary ancestor: forward the
     /// first `count` constructor parameters (already in the function's local
     /// slots) to the ancestor's inlined constructor chain.
-    fn emit_synthesized_super_chain(
-        &mut self,
-        ancestor: &str,
-        count: usize,
-    ) -> Result<(), ()> {
+    fn emit_synthesized_super_chain(&mut self, ancestor: &str, count: usize) -> Result<(), ()> {
         let Some(at) = self.table_of(ancestor) else {
             return Ok(());
         };
@@ -3636,7 +3736,11 @@ fn build_lambda_body(
                 c: IrConst::Int(field_count as i64),
             });
             let mask = self.temp();
-            let m = if field_count >= 64 { u64::MAX } else { (1u64 << field_count) - 1 };
+            let m = if field_count >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << field_count) - 1
+            };
             instrs.push(IrInstr::Const {
                 dst: mask,
                 c: IrConst::Int(m as i64),
@@ -3679,7 +3783,11 @@ fn build_lambda_body(
             // (empty buckets included, so `pickle_class_implements` answers for
             // zero-method interfaces) and publish one method-table entry per
             // dispatch method.
-            let buckets = self.class_iface_buckets.get(&cid).cloned().unwrap_or_default();
+            let buckets = self
+                .class_iface_buckets
+                .get(&cid)
+                .cloned()
+                .unwrap_or_default();
             for (iface_id, slots) in buckets {
                 let cid_t = self.temp();
                 instrs.push(IrInstr::Const {
@@ -4034,7 +4142,10 @@ fn build_lambda_body(
         if let Some(Ty::Map(k, v)) = &seq_ot {
             if let Pattern::Tuple(parts) = pattern {
                 if parts.len() != 2 {
-                    return self.bad(span, "map entries pattern must bind exactly two names `(k, v)`");
+                    return self.bad(
+                        span,
+                        "map entries pattern must bind exactly two names `(k, v)`",
+                    );
                 }
                 let kname = match &parts[0] {
                     Pattern::Binding { name, .. } => name.clone(),
@@ -4057,7 +4168,10 @@ fn build_lambda_body(
             }
         }
         let Pattern::Binding { name, .. } = pattern else {
-            return self.bad(span, "iteration patterns other than a binding are not lowered yet");
+            return self.bad(
+                span,
+                "iteration patterns other than a binding are not lowered yet",
+            );
         };
         let seq_ot = match self.ty_of(&sequence.span) {
             Some(Ty::Ref(inner)) => Some((*inner).clone()),
@@ -4074,12 +4188,8 @@ fn build_lambda_body(
         }
         if let Some(Ty::Map(_, v)) = &seq_ot {
             let map_t = self.expr(sequence)?;
-            let vals = self.extern_call_t1(
-                "pickle_map_values",
-                vec![IrTy::Ptr],
-                IrTy::Ptr,
-                vec![map_t],
-            )?;
+            let vals =
+                self.extern_call_t1("pickle_map_values", vec![IrTy::Ptr], IrTy::Ptr, vec![map_t])?;
             return self.for_in_values(name, vals, v.as_ref().clone(), body, span);
         }
         // `Iterable<T>` protocol: the sequence is an interface-typed value or
@@ -4100,10 +4210,12 @@ fn build_lambda_body(
                 lhs,
                 rhs,
             } => (lhs, rhs, true),
-            _ => return self.bad(
-                sequence.span,
-                "`for (x in ...)` over non-range, non-list sequences is not lowered yet",
-            ),
+            _ => {
+                return self.bad(
+                    sequence.span,
+                    "`for (x in ...)` over non-range, non-list sequences is not lowered yet",
+                )
+            }
         };
         self.ensure_int(start)?;
         self.ensure_int(end)?;
@@ -4111,8 +4223,14 @@ fn build_lambda_body(
         let end_t = self.expr(end)?;
         let idx = self.new_slot(IrTy::Int);
         let end_slot = self.new_slot(IrTy::Int);
-        self.instr(IrInstr::StoreSlot { slot: idx, v: start_t });
-        self.instr(IrInstr::StoreSlot { slot: end_slot, v: end_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx,
+            v: start_t,
+        });
+        self.instr(IrInstr::StoreSlot {
+            slot: end_slot,
+            v: end_t,
+        });
 
         let cond_id = self.new_block();
         let body_id = self.new_block();
@@ -4185,16 +4303,26 @@ fn build_lambda_body(
         let seq_slot = self.new_slot(IrTy::Ptr);
         let idx_slot = self.new_slot(IrTy::Int);
         let len_slot = self.new_slot(IrTy::Int);
-        self.instr(IrInstr::StoreSlot { slot: seq_slot, v: seq_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: seq_slot,
+            v: seq_t,
+        });
         let zero = self.temp();
         self.instr(IrInstr::Const {
             dst: zero,
             c: IrConst::Int(0),
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: zero,
+        });
         let seq_l = self.load(seq_slot);
-        let len_t = self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
-        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+        let len_t =
+            self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
+        self.instr(IrInstr::StoreSlot {
+            slot: len_slot,
+            v: len_t,
+        });
 
         let cond_id = self.new_block();
         let body_id = self.new_block();
@@ -4257,7 +4385,10 @@ fn build_lambda_body(
             a: c,
             b: one,
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: nxt,
+        });
         self.term(IrTerm::Branch { target: cond_id });
         self.cur = end_id;
         Ok(())
@@ -4282,9 +4413,13 @@ fn build_lambda_body(
     ) -> Result<(), ()> {
         let _ = self.elem_rep(elem, span)?;
         let iterable_ift = Ty::Interface("Iterable".into(), vec![elem.clone()]);
-        let itv = self.interface_zero_arg_call(span, &iterable_ift, seq_t, "iterator", IrTy::Ptr)?;
+        let itv =
+            self.interface_zero_arg_call(span, &iterable_ift, seq_t, "iterator", IrTy::Ptr)?;
         let it_slot = self.new_slot(IrTy::Ptr);
-        self.instr(IrInstr::StoreSlot { slot: it_slot, v: itv });
+        self.instr(IrInstr::StoreSlot {
+            slot: it_slot,
+            v: itv,
+        });
 
         let iterator_ift = Ty::Interface("Iterator".into(), vec![elem.clone()]);
         let elem_ir = elem_ir(elem);
@@ -4297,7 +4432,10 @@ fn build_lambda_body(
         self.cur = cond_id;
         let it = self.load(it_slot);
         let next_v = self.interface_zero_arg_call(span, &iterator_ift, it, "next", IrTy::Ptr)?;
-        self.instr(IrInstr::StoreSlot { slot: opt_slot, v: next_v });
+        self.instr(IrInstr::StoreSlot {
+            slot: opt_slot,
+            v: next_v,
+        });
         let opt = self.load(opt_slot);
         let present = self.opt_is_present(opt)?;
         self.term(IrTerm::BranchIf {
@@ -4352,24 +4490,39 @@ fn build_lambda_body(
         let vals_slot = self.new_slot(IrTy::Ptr);
         let idx_slot = self.new_slot(IrTy::Int);
         let len_slot = self.new_slot(IrTy::Int);
-        self.instr(IrInstr::StoreSlot { slot: map_slot, v: map_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: map_slot,
+            v: map_t,
+        });
         let map_l = self.load(map_slot);
         let keys_t =
             self.extern_call_t1("pickle_map_keys", vec![IrTy::Ptr], IrTy::Ptr, vec![map_l])?;
         let vals_t =
             self.extern_call_t1("pickle_map_values", vec![IrTy::Ptr], IrTy::Ptr, vec![map_l])?;
-        self.instr(IrInstr::StoreSlot { slot: keys_slot, v: keys_t });
-        self.instr(IrInstr::StoreSlot { slot: vals_slot, v: vals_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: keys_slot,
+            v: keys_t,
+        });
+        self.instr(IrInstr::StoreSlot {
+            slot: vals_slot,
+            v: vals_t,
+        });
         let zero = self.temp();
         self.instr(IrInstr::Const {
             dst: zero,
             c: IrConst::Int(0),
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: zero,
+        });
         let keys_l = self.load(keys_slot);
         let len_t =
             self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![keys_l])?;
-        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: len_slot,
+            v: len_t,
+        });
 
         let cond_id = self.new_block();
         let body_id = self.new_block();
@@ -4448,7 +4601,10 @@ fn build_lambda_body(
             a: c,
             b: one,
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: nxt,
+        });
         self.term(IrTerm::Branch { target: cond_id });
         self.cur = end_id;
         Ok(())
@@ -4457,25 +4613,30 @@ fn build_lambda_body(
     /// `for (c in s)` over a string: iterates byte indices, binds the raw
     /// 0..=255 byte from `pickle_str_get` (no unbox) as a `byte` (`int` ABI).
     /// The string lives in a managed slot for the whole loop.
-    fn for_in_string(
-        &mut self,
-        name: &str,
-        seq_t: Temp,
-        body: &Block,
-    ) -> Result<(), ()> {
+    fn for_in_string(&mut self, name: &str, seq_t: Temp, body: &Block) -> Result<(), ()> {
         let seq_slot = self.new_slot(IrTy::Ptr);
         let idx_slot = self.new_slot(IrTy::Int);
         let len_slot = self.new_slot(IrTy::Int);
-        self.instr(IrInstr::StoreSlot { slot: seq_slot, v: seq_t });
+        self.instr(IrInstr::StoreSlot {
+            slot: seq_slot,
+            v: seq_t,
+        });
         let zero = self.temp();
         self.instr(IrInstr::Const {
             dst: zero,
             c: IrConst::Int(0),
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: zero });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: zero,
+        });
         let seq_l = self.load(seq_slot);
-        let len_t = self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
-        self.instr(IrInstr::StoreSlot { slot: len_slot, v: len_t });
+        let len_t =
+            self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
+        self.instr(IrInstr::StoreSlot {
+            slot: len_slot,
+            v: len_t,
+        });
 
         let cond_id = self.new_block();
         let body_id = self.new_block();
@@ -4532,7 +4693,10 @@ fn build_lambda_body(
             a: c,
             b: one,
         });
-        self.instr(IrInstr::StoreSlot { slot: idx_slot, v: nxt });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: nxt,
+        });
         self.term(IrTerm::Branch { target: cond_id });
         self.cur = end_id;
         Ok(())
@@ -4580,10 +4744,7 @@ fn build_lambda_body(
             ExprKind::OptAccess { object, name } => self.opt_access(e, object, name),
             ExprKind::OptUnwrap(inner) => self.opt_unwrap(e, inner),
             ExprKind::Lambda { .. } => self.lambda_value(e),
-            ExprKind::Match {
-                scrutinee,
-                arms,
-            } => self.match_expr(e, scrutinee, arms),
+            ExprKind::Match { scrutinee, arms } => self.match_expr(e, scrutinee, arms),
             ExprKind::Await(_) => self.bad(e.span, "`await` is not lowered yet"),
             ExprKind::GenericCall { name, type_args } => self.generic_fn_value(e, name, type_args),
             ExprKind::Cast { expr, ty, kind } => self.cast(e, expr, ty, *kind),
@@ -4755,7 +4916,10 @@ fn build_lambda_body(
                 return self.field_read(e.span, this, &field_ty, slot);
             }
             // Inside an instance method a bare property name reads the getter.
-            if let Some(&fid) = self.property_ids.get(&(cid as u32, name.to_string(), false)) {
+            if let Some(&fid) = self
+                .property_ids
+                .get(&(cid as u32, name.to_string(), false))
+            {
                 let this = self.this_value(e)?;
                 return self.call_method(e, fid, &[], Some(this));
             }
@@ -4783,7 +4947,10 @@ fn build_lambda_body(
                 ),
             );
         }
-        self.bad(e.span, format!("using `{name}` as a value is not lowered yet"))
+        self.bad(
+            e.span,
+            format!("using `{name}` as a value is not lowered yet"),
+        )
     }
 
     fn this_value(&mut self, e: &Expr) -> Result<Temp, ()> {
@@ -4869,10 +5036,12 @@ fn build_lambda_body(
         match op {
             AstBinOp::And | AstBinOp::Or => return self.logic(e, op, lhs, rhs),
             AstBinOp::NullCoalesce => return self.null_coalesce(e, lhs, rhs),
-            AstBinOp::Range | AstBinOp::RangeIncl | AstBinOp::Send
-            | AstBinOp::Is | AstBinOp::In | AstBinOp::Pow => {
-                return self.bad(e.span, "this operator is not lowered yet")
-            }
+            AstBinOp::Range
+            | AstBinOp::RangeIncl
+            | AstBinOp::Send
+            | AstBinOp::Is
+            | AstBinOp::In
+            | AstBinOp::Pow => return self.bad(e.span, "this operator is not lowered yet"),
             AstBinOp::Add if both_str => {
                 let a = self.expr(lhs)?;
                 let b = self.expr(rhs)?;
@@ -4900,7 +5069,11 @@ fn build_lambda_body(
                 let dst = self.temp();
                 self.instr(IrInstr::BinOp {
                     dst,
-                    op: if op == AstBinOp::Eq { IrBinOp::Eq } else { IrBinOp::Ne },
+                    op: if op == AstBinOp::Eq {
+                        IrBinOp::Eq
+                    } else {
+                        IrBinOp::Ne
+                    },
                     a: cmp,
                     b: zero,
                 });
@@ -4975,19 +5148,12 @@ fn build_lambda_body(
         // (e.g. under a substitution) bails loudly instead of miscompiling.
         if matches!(
             op,
-            AstBinOp::Lt
-                | AstBinOp::Le
-                | AstBinOp::Gt
-                | AstBinOp::Ge
-                | AstBinOp::Eq
-                | AstBinOp::Ne
+            AstBinOp::Lt | AstBinOp::Le | AstBinOp::Gt | AstBinOp::Ge | AstBinOp::Eq | AstBinOp::Ne
         ) && !cmp_types_compatible(aty, bty)
         {
             return self.bad(
                 e.span,
-                format!(
-                    "comparison `{op:?}` with incompatible operand types is not lowered yet"
-                ),
+                format!("comparison `{op:?}` with incompatible operand types is not lowered yet"),
             );
         }
         let dst = self.temp();
@@ -5015,7 +5181,10 @@ fn build_lambda_body(
         });
         self.cur = rhs_id;
         let b = self.expr(rhs)?;
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: b,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = short_id;
         let sv = self.temp();
@@ -5023,7 +5192,10 @@ fn build_lambda_body(
             dst: sv,
             c: IrConst::Bool(!is_and),
         });
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: sv });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: sv,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
         Ok(self.load(res_slot))
@@ -5043,7 +5215,10 @@ fn build_lambda_body(
             else_: if is_and { short_id } else { rhs_id },
         });
         self.cur = rhs_id;
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: b,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = short_id;
         let sv = self.temp();
@@ -5051,7 +5226,10 @@ fn build_lambda_body(
             dst: sv,
             c: IrConst::Bool(!is_and),
         });
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: sv });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: sv,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
         self.load(res_slot)
@@ -5111,7 +5289,10 @@ fn build_lambda_body(
         });
         self.cur = some_id;
         let av = self.opt_resolve(a, &inner, e.span)?;
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: av });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: av,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = rhs_id;
         let b = self.expr(rhs)?;
@@ -5121,7 +5302,10 @@ fn build_lambda_body(
         } else {
             b
         };
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: b,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
         Ok(self.load(res_slot))
@@ -5181,12 +5365,18 @@ fn build_lambda_body(
         });
         self.cur = none_id;
         let n = self.null_temp()?;
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: n });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: n,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = some_id;
         let (member_ty, mv) = self.opt_member_read(e, o, &inner, name)?;
         let mv = self.option_wrap(mv, &member_ty, e.span)?;
-        self.instr(IrInstr::StoreSlot { slot: res_slot, v: mv });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: mv,
+        });
         self.term(IrTerm::Branch { target: join });
         self.cur = join;
         Ok(self.load(res_slot))
@@ -5203,12 +5393,16 @@ fn build_lambda_body(
         name: &str,
     ) -> Result<(Ty, Temp), ()> {
         let (cid, cname) = match recv_ty {
-            Ty::Class(cn, _) | Ty::Struct(cn, _) => (self.class_id_of(recv_ty, e.span)?, cn.clone()),
+            Ty::Class(cn, _) | Ty::Struct(cn, _) => {
+                (self.class_id_of(recv_ty, e.span)?, cn.clone())
+            }
             _ => (None, String::new()),
         };
         let Some(cid) = cid else {
-            return self
-                .bad(e.span, "optional access is only lowered for class/struct members");
+            return self.bad(
+                e.span,
+                "optional access is only lowered for class/struct members",
+            );
         };
         if let Some(slot) = self.instance_field_index(cid as i64, name) {
             let field_ty = self.field_at(cid as i64, slot).ty.clone();
@@ -5243,7 +5437,13 @@ fn build_lambda_body(
 
     /// `x is T` / `x as T` / `x as? T`. The result stays in the typed IR value
     /// domain: `is` -> bool, `as` -> `T`, `as?` -> `T?` (a pointer).
-    fn cast(&mut self, e: &Expr, operand: &Expr, ty: &TypeExpr, kind: CastKind) -> Result<Temp, ()> {
+    fn cast(
+        &mut self,
+        e: &Expr,
+        operand: &Expr,
+        ty: &TypeExpr,
+        kind: CastKind,
+    ) -> Result<Temp, ()> {
         let src = self.ty_of(&operand.span).unwrap_or(Ty::Unknown);
         let dst = self.resolved.resolve_ty(ty, &[], self.diags);
         match kind {
@@ -5318,10 +5518,8 @@ fn build_lambda_body(
         }
         if self.iface_of(&base_src).is_some() {
             let Some((_, dcid)) = self.user_class_id(&base_dst) else {
-                let _: Result<(), ()> = self.bad(
-                    e.span,
-                    format!("`{src} is {dst}` is not lowered yet"),
-                );
+                let _: Result<(), ()> =
+                    self.bad(e.span, format!("`{src} is {dst}` is not lowered yet"));
                 return Err(());
             };
             let dc = self.int_const(dcid as i64);
@@ -5356,23 +5554,14 @@ fn build_lambda_body(
     /// Produce the option `inner?` from an already-evaluated value `v` of type
     /// `src`. A managed source passes through; scalars are boxed. When `src` is
     /// itself an option, `none` is preserved and the present value is converted.
-    fn cast_to_option(
-        &mut self,
-        span: Span,
-        v: Temp,
-        src: &Ty,
-        inner: &Ty,
-    ) -> Result<Temp, ()> {
+    fn cast_to_option(&mut self, span: Span, v: Temp, src: &Ty, inner: &Ty) -> Result<Temp, ()> {
         if let Some(si) = src.inner_option() {
             if &si == inner {
                 // Already the requested option; `none` is preserved.
                 return Ok(v);
             }
             if !(si.is_numeric() && inner.is_numeric()) {
-                return self.bad(
-                    span,
-                    format!("`{src} as? {inner}` is not lowered yet"),
-                );
+                return self.bad(span, format!("`{src} as? {inner}` is not lowered yet"));
             }
             // Present -> convert the inner; absent -> none.
             let res_slot = self.new_slot(IrTy::Ptr);
@@ -5387,13 +5576,19 @@ fn build_lambda_body(
             });
             self.cur = none_id;
             let n = self.null_temp()?;
-            self.instr(IrInstr::StoreSlot { slot: res_slot, v: n });
+            self.instr(IrInstr::StoreSlot {
+                slot: res_slot,
+                v: n,
+            });
             self.term(IrTerm::Branch { target: join });
             self.cur = some_id;
             let iv = self.opt_resolve(v, &si, span)?;
             let cv = self.convert(span, iv, &si, inner)?;
             let wrapped = self.option_wrap(cv, inner, span)?;
-            self.instr(IrInstr::StoreSlot { slot: res_slot, v: wrapped });
+            self.instr(IrInstr::StoreSlot {
+                slot: res_slot,
+                v: wrapped,
+            });
             self.term(IrTerm::Branch { target: join });
             self.cur = join;
             return Ok(self.load(res_slot));
@@ -5469,10 +5664,8 @@ fn build_lambda_body(
         }
         if self.iface_of(from).is_some() {
             let Some((_, dcid)) = self.user_class_id(to) else {
-                let _: Result<(), ()> = self.bad(
-                    span,
-                    format!("`{from} as {to}` is not lowered yet"),
-                );
+                let _: Result<(), ()> =
+                    self.bad(span, format!("`{from} as {to}` is not lowered yet"));
                 return Err(());
             };
             let dc = self.int_const(dcid as i64);
@@ -5557,7 +5750,10 @@ fn build_lambda_body(
             return self.member_assign(e, op, object, name, value);
         }
         let ExprKind::Ident(name) = &target.kind else {
-            return self.bad(span, "assignment targets other than names are not lowered yet");
+            return self.bad(
+                span,
+                "assignment targets other than names are not lowered yet",
+            );
         };
         let v = self.expr(value)?;
         let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
@@ -5679,13 +5875,19 @@ fn build_lambda_body(
             _ => None,
         };
         let Some(cid) = cid else {
-            return self.bad(e.span, "assignment over this member type is not lowered yet");
+            return self.bad(
+                e.span,
+                "assignment over this member type is not lowered yet",
+            );
         };
         let Some(idx) = self.instance_field_index(cid as i64, name) else {
             // `obj.prop = value` dispatches the property's setter.
             if let Some(&fid) = self.property_ids.get(&(cid, name.to_string(), true)) {
                 if op != AssignOp::Assign {
-                    return self.bad(e.span, "compound assignment to a property is not lowered yet");
+                    return self.bad(
+                        e.span,
+                        "compound assignment to a property is not lowered yet",
+                    );
                 }
                 let obj = self.expr(object)?;
                 let v = self.expr(value)?;
@@ -5764,7 +5966,10 @@ fn build_lambda_body(
             return Ok(v);
         }
         if matches!(rep, ElemRep::Ptr) {
-            return self.bad(span, "compound assignment to a non-scalar field is not lowered yet");
+            return self.bad(
+                span,
+                "compound assignment to a non-scalar field is not lowered yet",
+            );
         }
         let obj_c = obj;
         // Read the current value (unboxed), combine, write back.
@@ -5806,7 +6011,12 @@ fn build_lambda_body(
     /// Declared info of the static field at static slot `idx` of class `cid`.
     fn static_field_at(&self, cid: i64, idx: usize) -> Option<FieldInfo> {
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
-        plan.table.fields.iter().filter(|f| f.is_static).nth(idx).cloned()
+        plan.table
+            .fields
+            .iter()
+            .filter(|f| f.is_static)
+            .nth(idx)
+            .cloned()
     }
 
     /// Static-field read: `pickle_static_get` then unbox scalars.
@@ -5956,19 +6166,11 @@ fn build_lambda_body(
             let addr = self.ptr_element_addr(base, idx, ty, e.span)?;
             if op == AssignOp::Assign {
                 let v = self.expr(value)?;
-                self.instr(IrInstr::StoreRaw {
-                    addr,
-                    v,
-                    ty,
-                });
+                self.instr(IrInstr::StoreRaw { addr, v, ty });
                 return Ok(v);
             }
             let cur = self.temp();
-            self.instr(IrInstr::LoadRaw {
-                dst: cur,
-                addr,
-                ty,
-            });
+            self.instr(IrInstr::LoadRaw { dst: cur, addr, ty });
             let v = self.expr(value)?;
             let dst = self.temp();
             self.instr(IrInstr::BinOp {
@@ -5981,10 +6183,7 @@ fn build_lambda_body(
             return Ok(dst);
         }
         if let Some(Ty::Ref(_)) = &ot {
-            return self.bad(
-                e.span,
-                "cannot write through an immutable reference (`&T`)",
-            );
+            return self.bad(e.span, "cannot write through an immutable reference (`&T`)");
         }
         if matches!(ot, Some(Ty::String)) {
             return self.str_index_assign(e, op, object, index, value);
@@ -6181,13 +6380,7 @@ fn build_lambda_body(
 
     /// The byte to write back for `s[i] op= v`: `v` itself for a plain store,
     /// or the current byte combined with `v` for a compound operator.
-    fn str_index_byte(
-        &mut self,
-        op: AssignOp,
-        s: Temp,
-        i: Temp,
-        v: Temp,
-    ) -> Result<Temp, ()> {
+    fn str_index_byte(&mut self, op: AssignOp, s: Temp, i: Temp, v: Temp) -> Result<Temp, ()> {
         if op == AssignOp::Assign {
             return Ok(v);
         }
@@ -6269,13 +6462,7 @@ fn build_lambda_body(
     /// through the referent.
     fn index_read(&mut self, e: &Expr, object: &Expr, index: &Expr) -> Result<Temp, ()> {
         if let Some(Ty::Map(k, v)) = self.ty_of(&object.span) {
-            return self.map_index_read(
-                e,
-                object,
-                index,
-                k.as_ref().clone(),
-                v.as_ref().clone(),
-            );
+            return self.map_index_read(e, object, index, k.as_ref().clone(), v.as_ref().clone());
         }
         if let Some(Ty::Ref(inner)) = self.ty_of(&object.span) {
             if let Ty::Map(k, v) = inner.as_ref() {
@@ -6309,10 +6496,12 @@ fn build_lambda_body(
                 return Ok(dst);
             }
             Some(Ty::List(inner)) => inner.as_ref().clone(),
-            Some(Ty::Ref(inner)) if matches!(inner.as_ref(), Ty::List(..)) => match inner.as_ref() {
-                Ty::List(e) => e.as_ref().clone(),
-                _ => unreachable!(),
-            },
+            Some(Ty::Ref(inner)) if matches!(inner.as_ref(), Ty::List(..)) => {
+                match inner.as_ref() {
+                    Ty::List(e) => e.as_ref().clone(),
+                    _ => unreachable!(),
+                }
+            }
             Some(Ty::String) => {
                 let obj = self.expr(object)?;
                 let idx = self.expr(index)?;
@@ -6540,7 +6729,11 @@ fn build_lambda_body(
                 }
                 ElemRep::Ptr => v,
             };
-            self.extern_call_void("pickle_list_push", vec![IrTy::Ptr, IrTy::Ptr], vec![list, push_v]);
+            self.extern_call_void(
+                "pickle_list_push",
+                vec![IrTy::Ptr, IrTy::Ptr],
+                vec![list, push_v],
+            );
         }
         Ok(list)
     }
@@ -6583,12 +6776,7 @@ fn build_lambda_body(
 
     /// Box a scalar so it can be stored in a List/Map, or pass a pointer type
     /// through untouched.
-    fn box_for_store(
-        &mut self,
-        rep: &ElemRep,
-        v: Temp,
-        v_ty: IrTy,
-    ) -> Result<Temp, ()> {
+    fn box_for_store(&mut self, rep: &ElemRep, v: Temp, v_ty: IrTy) -> Result<Temp, ()> {
         match rep {
             ElemRep::Scalar(box_sym, _, _) => {
                 self.extern_call_t1(box_sym, vec![v_ty], IrTy::Ptr, vec![v])
@@ -6609,9 +6797,7 @@ fn build_lambda_body(
             Ty::Bool => {
                 self.extern_call_t1("pickle_box_bool", vec![IrTy::Bool], IrTy::Ptr, vec![v])
             }
-            Ty::Byte => {
-                self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![v])
-            }
+            Ty::Byte => self.extern_call_t1("pickle_box_i64", vec![IrTy::Int], IrTy::Ptr, vec![v]),
             Ty::Char => {
                 self.extern_call_t1("pickle_box_char", vec![IrTy::Char], IrTy::Ptr, vec![v])
             }
@@ -6668,12 +6854,7 @@ fn build_lambda_body(
     /// the chain; payload bindings extract and unbox each field like list
     /// elements. A chain that reaches its end without a catch-all arm calls
     /// `pickle_panic_no_match`.
-    fn match_expr(
-        &mut self,
-        e: &Expr,
-        scrutinee: &Expr,
-        arms: &[MatchArm],
-    ) -> Result<Temp, ()> {
+    fn match_expr(&mut self, e: &Expr, scrutinee: &Expr, arms: &[MatchArm]) -> Result<Temp, ()> {
         let st = self.ty_of(&scrutinee.span);
         let Some(st) = st else {
             return self.bad(e.span, "matching over non-enum values is not lowered yet");
@@ -6681,7 +6862,9 @@ fn build_lambda_body(
         if !matches!(st, Ty::Enum(..)) {
             return self.lower_generic_match(e, scrutinee, arms, &st);
         }
-        let Ty::Enum(en_name, _) = &st else { unreachable!() };
+        let Ty::Enum(en_name, _) = &st else {
+            unreachable!()
+        };
         let enum_name = en_name.clone();
         let table = match self.resolved.types.get(&enum_name) {
             Some(TypeTableEntry::Enum(t)) => t.clone(),
@@ -6702,12 +6885,7 @@ fn build_lambda_body(
         };
 
         let sv = self.load(s_slot);
-        let tag = self.extern_call_t1(
-            "pickle_enum_tag",
-            vec![IrTy::Ptr],
-            IrTy::Int,
-            vec![sv],
-        )?;
+        let tag = self.extern_call_t1("pickle_enum_tag", vec![IrTy::Ptr], IrTy::Int, vec![sv])?;
         let join = self.new_block();
 
         let mut cur = self.cur;
@@ -6718,8 +6896,20 @@ fn build_lambda_body(
             // With a guard, bindings and the guard condition are evaluated in
             // a `guard_in` block that the tag check branches into; on a false
             // guard the chain falls through to the next arm (or the
-            // non-exhaustive panic when nothing else remains).
-            let guard_in = if guard.is_some() {
+            // non-exhaustive panic when nothing else remains). A nested payload
+            // pattern (e.g. `ExprKind.Lit(Lit.String(parts))`) also contributes
+            // match conditions folded after the tag check, so it needs its own
+            // `guard_in` block too: otherwise `guard_in` aliases `body` and the
+            // arm's `BranchIf` term is overwritten when the body re-terminates
+            // the shared block, letting the body run for every matching outer
+            // variant.
+            let has_payload_cond = match &arm.pattern {
+                Pattern::Variant { payloads, .. } => payloads
+                    .iter()
+                    .any(|p| !matches!(p, Pattern::Wildcard | Pattern::Binding { .. })),
+                _ => false,
+            };
+            let guard_in = if guard.is_some() || has_payload_cond {
                 self.new_block()
             } else {
                 body
@@ -6886,9 +7076,7 @@ fn build_lambda_body(
                             1 => &path[0],
                             _ => return self.bad(arm.span, "invalid enum variant pattern"),
                         };
-                        let Some(vi) =
-                            table.variants.iter().position(|(n, ..)| n == vname)
-                        else {
+                        let Some(vi) = table.variants.iter().position(|(n, ..)| n == vname) else {
                             return self.bad(
                                 arm.span,
                                 format!("enum `{enum_name}` has no variant `{vname}`"),
@@ -6970,7 +7158,10 @@ fn build_lambda_body(
         st: &Ty,
     ) -> Result<Temp, ()> {
         let Some(s_ir) = self.match_scrutinee_ir(st) else {
-            return self.bad(e.span, format!("matching over `{st}` values is not lowered yet"));
+            return self.bad(
+                e.span,
+                format!("matching over `{st}` values is not lowered yet"),
+            );
         };
         // The scrutinee lives in a slot so every arm sees the same value (and
         // a managed one stays rooted across arm allocations).
@@ -7108,13 +7299,7 @@ fn build_lambda_body(
     /// patterns test each element; `a | b` tests either alternative; literal
     /// patterns test equality. Only call for patterns that can actually gate
     /// a branch; the checker rejects incompatible ones first.
-    fn pattern_test_cond(
-        &mut self,
-        p: &Pattern,
-        st: &Ty,
-        a: Temp,
-        span: Span,
-    ) -> Result<Temp, ()> {
+    fn pattern_test_cond(&mut self, p: &Pattern, st: &Ty, a: Temp, span: Span) -> Result<Temp, ()> {
         match p {
             Pattern::Literal(Lit::None) if st.is_option() => {
                 let present = self.opt_is_present(a)?;
@@ -7157,7 +7342,10 @@ fn build_lambda_body(
                         self.term(IrTerm::Branch { target: join });
                         self.cur = on_absent;
                         let f = self.const_temp(IrConst::Bool(false));
-                        self.instr(IrInstr::StoreSlot { slot: res_slot, v: f });
+                        self.instr(IrInstr::StoreSlot {
+                            slot: res_slot,
+                            v: f,
+                        });
                         self.term(IrTerm::Branch { target: join });
                         self.cur = join;
                         Ok(self.load(res_slot))
@@ -7270,7 +7458,8 @@ fn build_lambda_body(
                         IrTy::Ptr,
                         vec![a, idx],
                     )?;
-                    let un = self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], unbox_ir, vec![raw])?;
+                    let un =
+                        self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], unbox_ir, vec![raw])?;
                     Ok(Some(self.pattern_test_cond(other, elem, un, span)?))
                 } else {
                     let raw = self.extern_call_t1(
@@ -7306,9 +7495,7 @@ fn build_lambda_body(
                 Ok(self.const_temp(IrConst::Int(v)))
             }
             (Lit::Float { value }, _) if matches!(st, Ty::Int | Ty::Byte) => {
-                if *value == value.trunc()
-                    && *value >= i64::MIN as f64
-                    && *value <= i64::MAX as f64
+                if *value == value.trunc() && *value >= i64::MIN as f64 && *value <= i64::MAX as f64
                 {
                     Ok(self.const_temp(IrConst::Int(*value as i64)))
                 } else {
@@ -7389,13 +7576,7 @@ fn build_lambda_body(
     /// under `map_ty`; `some(v)` unboxes the present option; tuple patterns
     /// unbox each element; `[a | b]` binds nothing (the checker only admits
     /// or-patterns that introduce no names); `_`/literals bind nothing.
-    fn bind_match_value(
-        &mut self,
-        p: &Pattern,
-        st: &Ty,
-        v: Temp,
-        span: Span,
-    ) -> Result<(), ()> {
+    fn bind_match_value(&mut self, p: &Pattern, st: &Ty, v: Temp, span: Span) -> Result<(), ()> {
         match p {
             Pattern::Wildcard | Pattern::Literal(_) => Ok(()),
             Pattern::Binding { name, .. } => {
@@ -7420,7 +7601,9 @@ fn build_lambda_body(
                 } else if matches!(st, Ty::Enum(..)) {
                     // Bind the names an enum variant pattern introduces,
                     // recursing into each payload.
-                    let Ty::Enum(ename, _) = st else { unreachable!() };
+                    let Ty::Enum(ename, _) = st else {
+                        unreachable!()
+                    };
                     let table = match self.resolved.types.get(ename) {
                         Some(TypeTableEntry::Enum(t)) => t.clone(),
                         _ => return self.bad(span, format!("unknown enum type `{ename}`")),
@@ -7430,13 +7613,8 @@ fn build_lambda_body(
                         1 => &path[0],
                         _ => return self.bad(span, "invalid enum variant pattern"),
                     };
-                    let Some(vi) =
-                        table.variants.iter().position(|(n, ..)| n == vname)
-                    else {
-                        return self.bad(
-                            span,
-                            format!("enum `{ename}` has no variant `{vname}`"),
-                        );
+                    let Some(vi) = table.variants.iter().position(|(n, ..)| n == vname) else {
+                        return self.bad(span, format!("enum `{ename}` has no variant `{vname}`"));
                     };
                     let ftypes = table.variants[vi].1.clone();
                     for (pi, p) in payloads.iter().enumerate() {
@@ -7500,13 +7678,7 @@ fn build_lambda_body(
 
     /// Bind a nested pattern to a value `v` of type `ty` already in IR form
     /// (a `some` payload or a tuple element).
-    fn bind_pattern_value(
-        &mut self,
-        p: &Pattern,
-        ty: &Ty,
-        v: Temp,
-        span: Span,
-    ) -> Result<(), ()> {
+    fn bind_pattern_value(&mut self, p: &Pattern, ty: &Ty, v: Temp, span: Span) -> Result<(), ()> {
         self.bind_match_value(p, ty, v, span)
     }
 
@@ -7609,13 +7781,7 @@ fn build_lambda_body(
     /// conditions are folded in. Payload fields are read only inside a block
     /// guarded by the tag equality, so a mismatched variant is never
     /// dereferenced.
-    fn enum_variant_cond(
-        &mut self,
-        p: &Pattern,
-        st: &Ty,
-        v: Temp,
-        span: Span,
-    ) -> Result<Temp, ()> {
+    fn enum_variant_cond(&mut self, p: &Pattern, st: &Ty, v: Temp, span: Span) -> Result<Temp, ()> {
         let Pattern::Variant { path, payloads } = p else {
             unreachable!()
         };
@@ -7668,7 +7834,10 @@ fn build_lambda_body(
             self.term(IrTerm::Branch { target: join });
             self.cur = on_other;
             let f = self.const_temp(IrConst::Bool(false));
-            self.instr(IrInstr::StoreSlot { slot: res_slot, v: f });
+            self.instr(IrInstr::StoreSlot {
+                slot: res_slot,
+                v: f,
+            });
             self.term(IrTerm::Branch { target: join });
             self.cur = join;
             Ok(self.load(res_slot))
@@ -7739,7 +7908,9 @@ fn build_lambda_body(
         if let IfCond::Binding { pattern, value } = cond {
             return self.if_let_expr(e, pattern, value, then, else_else);
         }
-        let IfCond::Cond(c) = cond else { unreachable!() };
+        let IfCond::Cond(c) = cond else {
+            unreachable!()
+        };
         let cond_t = self.expr(c)?;
         let res_ty = self.irty(e.span).ok();
         let need_slot = !matches!(res_ty, Some(IrTy::Unit) | None) && else_else.is_some();
@@ -7918,7 +8089,36 @@ fn build_lambda_body(
                 if self.class_by_name.contains_key(name) {
                     return false;
                 }
-                if matches!(name.as_str(), "print" | "println" | "len" | "alloc" | "free" | "assert" | "expect" | "abs" | "range" | "min" | "max" | "clamp" | "str" | "bytes" | "read_file" | "write_file" | "file_exists" | "delete" | "list_dir" | "mkdir" | "stream_open_read" | "stream_open_write" | "stream_open_append" | "stdout_stream" | "stderr_stream") {
+                if matches!(
+                    name.as_str(),
+                    "print"
+                        | "println"
+                        | "len"
+                        | "alloc"
+                        | "free"
+                        | "assert"
+                        | "expect"
+                        | "abs"
+                        | "range"
+                        | "min"
+                        | "max"
+                        | "clamp"
+                        | "str"
+                        | "bytes"
+                        | "read_file"
+                        | "write_file"
+                        | "file_exists"
+                        | "delete"
+                        | "list_dir"
+                        | "mkdir"
+                        | "stream_open_read"
+                        | "stream_open_write"
+                        | "stream_open_append"
+                        | "stdout_stream"
+                        | "stderr_stream"
+                        | "args"
+                        | "exit"
+                ) {
                     return false;
                 }
             }
@@ -7943,9 +8143,7 @@ fn build_lambda_body(
             ExprKind::Call { callee, args } if args.is_empty() => {
                 if let ExprKind::Member { object, name } = &callee.kind {
                     if name == "not" {
-                        return self
-                            .peel_expect(object)
-                            .map(|(v, neg)| (v, !neg));
+                        return self.peel_expect(object).map(|(v, neg)| (v, !neg));
                     }
                 }
                 None
@@ -7969,7 +8167,10 @@ fn build_lambda_body(
     ) -> Result<Temp, ()> {
         for a in args {
             if a.spread || a.name.is_some() {
-                return self.bad(e.span, "expectation methods take plain positional arguments");
+                return self.bad(
+                    e.span,
+                    "expectation methods take plain positional arguments",
+                );
             }
         }
         let vt = self.ty_of(&value.span).unwrap_or(Ty::Unknown);
@@ -8030,24 +8231,15 @@ fn build_lambda_body(
                 let n = self.expr(&a.value)?;
                 let n_it = self.irty(a.value.span)?;
                 let len = match &vt {
-                    Ty::String => self.extern_call_t1(
-                        "pickle_str_len",
-                        vec![IrTy::Str],
-                        IrTy::Int,
-                        vec![v],
-                    )?,
-                    Ty::List(_) => self.extern_call_t1(
-                        "pickle_list_len",
-                        vec![IrTy::Ptr],
-                        IrTy::Int,
-                        vec![v],
-                    )?,
-                    Ty::Map(_, _) => self.extern_call_t1(
-                        "pickle_map_len",
-                        vec![IrTy::Ptr],
-                        IrTy::Int,
-                        vec![v],
-                    )?,
+                    Ty::String => {
+                        self.extern_call_t1("pickle_str_len", vec![IrTy::Str], IrTy::Int, vec![v])?
+                    }
+                    Ty::List(_) => {
+                        self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![v])?
+                    }
+                    Ty::Map(_, _) => {
+                        self.extern_call_t1("pickle_map_len", vec![IrTy::Ptr], IrTy::Int, vec![v])?
+                    }
                     _ => {
                         return self.bad(
                             value.span,
@@ -8088,10 +8280,7 @@ fn build_lambda_body(
                         )?
                     }
                     _ => {
-                        return self.bad(
-                            value.span,
-                            "`.toContain()` needs a string or list value",
-                        )
+                        return self.bad(value.span, "`.toContain()` needs a string or list value")
                     }
                 };
                 let ok = self.cmp_zero(res, IrBinOp::Ne, negated)?;
@@ -8274,7 +8463,8 @@ fn build_lambda_body(
                 Ok(dst)
             }
             IrTy::Str | IrTy::Ptr => {
-                let len = self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![v])?;
+                let len =
+                    self.extern_call_t1("pickle_str_len", vec![IrTy::Ptr], IrTy::Int, vec![v])?;
                 self.cmp_zero(len, IrBinOp::Ne, !need)
             }
             IrTy::Unit => {
@@ -8287,16 +8477,21 @@ fn build_lambda_body(
     /// Render a value temp as text for an `Expected:/Received:` line.
     fn expect_str(&mut self, t: Temp, it: IrTy, _span: Span) -> Result<Temp, ()> {
         match it {
-            IrTy::Int => self.extern_call_t1("pickle_str_from_i64", vec![IrTy::Int], IrTy::Str, vec![t]),
-            IrTy::Float => self.extern_call_t1("pickle_str_from_f64", vec![IrTy::Float], IrTy::Str, vec![t]),
-            IrTy::Bool => self.extern_call_t1("pickle_str_from_bool", vec![IrTy::Bool], IrTy::Str, vec![t]),
-            IrTy::Char => self.extern_call_t1("pickle_str_from_char", vec![IrTy::Char], IrTy::Str, vec![t]),
-            IrTy::Str | IrTy::Ptr => self.extern_call_t1(
-                "pickle_expect_display",
-                vec![IrTy::Ptr],
-                IrTy::Str,
-                vec![t],
-            ),
+            IrTy::Int => {
+                self.extern_call_t1("pickle_str_from_i64", vec![IrTy::Int], IrTy::Str, vec![t])
+            }
+            IrTy::Float => {
+                self.extern_call_t1("pickle_str_from_f64", vec![IrTy::Float], IrTy::Str, vec![t])
+            }
+            IrTy::Bool => {
+                self.extern_call_t1("pickle_str_from_bool", vec![IrTy::Bool], IrTy::Str, vec![t])
+            }
+            IrTy::Char => {
+                self.extern_call_t1("pickle_str_from_char", vec![IrTy::Char], IrTy::Str, vec![t])
+            }
+            IrTy::Str | IrTy::Ptr => {
+                self.extern_call_t1("pickle_expect_display", vec![IrTy::Ptr], IrTy::Str, vec![t])
+            }
             IrTy::Unit => self.str_const("none"),
         }
     }
@@ -8390,8 +8585,12 @@ fn build_lambda_body(
             IrTy::Ptr,
             vec![obj, zero],
         )?;
-        let fn_addr =
-            self.extern_call_t1("pickle_unbox_i64", vec![IrTy::Ptr], IrTy::Int, vec![addr_boxed])?;
+        let fn_addr = self.extern_call_t1(
+            "pickle_unbox_i64",
+            vec![IrTy::Ptr],
+            IrTy::Int,
+            vec![addr_boxed],
+        )?;
         let mut ir_params = vec![IrTy::Ptr];
         let mut iargs = vec![obj];
         for (i, a) in args.iter().enumerate() {
@@ -8536,7 +8735,10 @@ fn build_lambda_body(
     /// bodies.
     fn fn_value_closure(&mut self, e: &Expr, _fid: FuncId) -> Result<Temp, ()> {
         let Some(&tramp) = self.fn_tramp.get(&e.span) else {
-            return self.bad(e.span, "function value was not registered for dynamic dispatch");
+            return self.bad(
+                e.span,
+                "function value was not registered for dynamic dispatch",
+            );
         };
         self.closure_obj(e, tramp, &[])
     }
@@ -8546,13 +8748,12 @@ fn build_lambda_body(
     /// the receiver object. `fn_value_call` dispatches through it exactly like
     /// a lambda capture (`closure_obj`), except the captured value is the
     /// receiver rather than a checked lambda capture.
-    fn bound_method_value(
-        &mut self,
-        e: &Expr,
-        object: &Expr,
-    ) -> Result<Temp, ()> {
+    fn bound_method_value(&mut self, e: &Expr, object: &Expr) -> Result<Temp, ()> {
         let Some(&tramp) = self.fn_tramp.get(&e.span) else {
-            return self.bad(e.span, "bound method was not registered for dynamic dispatch");
+            return self.bad(
+                e.span,
+                "bound method was not registered for dynamic dispatch",
+            );
         };
         let cid = self.register_closure_class(1, e.span)?;
         let cid_t = self.int_const(cid as i64);
@@ -8610,11 +8811,7 @@ fn build_lambda_body(
                             return self.bad(e.span, "`free()` takes no arguments");
                         }
                         let obj = self.expr(object)?;
-                        self.extern_call_void(
-                            "pickle_manual_free",
-                            vec![IrTy::Ptr],
-                            vec![obj],
-                        );
+                        self.extern_call_void("pickle_manual_free", vec![IrTy::Ptr], vec![obj]);
                         return Ok(self.unit_temp());
                     }
                 }
@@ -8639,7 +8836,11 @@ fn build_lambda_body(
                 .resolved
                 .fns
                 .get(cname)
-                .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+                .and_then(|infos| {
+                    infos
+                        .iter()
+                        .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+                })
                 .cloned()
             {
                 if !info.generics.is_empty() {
@@ -8654,9 +8855,7 @@ fn build_lambda_body(
         // on the runtime class id just like an explicit receiver call.
         if let Some(cid) = self.owner {
             if let ExprKind::Ident(mname) = &callee.kind {
-                if let Some(&(fid, is_static)) =
-                    self.method_ids.get(&(cid as u32, mname.clone()))
-                {
+                if let Some(&(fid, is_static)) = self.method_ids.get(&(cid as u32, mname.clone())) {
                     if is_static {
                         return self.call_method(e, fid, args, None);
                     }
@@ -8797,19 +8996,9 @@ fn build_lambda_body(
                         Some(Ty::Byte) => "pickle_print_byte",
                         Some(Ty::Char) => "pickle_print_char",
                         Some(Ty::String) => "pickle_print_obj",
-                        Some(Ty::List(_))
-                        | Some(Ty::Map(_, _))
-                        | Some(Ty::Enum(..))
-                        | Some(Ty::Class(..))
-                        | Some(Ty::Struct(..)) => {
-                            "pickle_print_obj"
-                        }
-                        _ => {
-                            return self.bad(
-                                a.value.span,
-                                "unsupported `print` argument type",
-                            )
-                        }
+                        Some(Ty::List(_)) | Some(Ty::Map(_, _)) | Some(Ty::Enum(..))
+                        | Some(Ty::Class(..)) | Some(Ty::Struct(..)) => "pickle_print_obj",
+                        _ => return self.bad(a.value.span, "unsupported `print` argument type"),
                     };
                     let pty = match a_ty {
                         Some(Ty::Int) => IrTy::Int,
@@ -8817,12 +9006,10 @@ fn build_lambda_body(
                         Some(Ty::Bool) => IrTy::Bool,
                         Some(Ty::Byte) => IrTy::Int,
                         Some(Ty::Char) => IrTy::Char,
-                        Some(Ty::String)
-                        | Some(Ty::List(_))
-                        | Some(Ty::Map(_, _))
-                        | Some(Ty::Enum(..))
-                        | Some(Ty::Class(..))
-                        | Some(Ty::Struct(..)) => IrTy::Ptr,
+                        Some(Ty::String) | Some(Ty::List(_)) | Some(Ty::Map(_, _))
+                        | Some(Ty::Enum(..)) | Some(Ty::Class(..)) | Some(Ty::Struct(..)) => {
+                            IrTy::Ptr
+                        }
                         _ => IrTy::Ptr,
                     };
                     self.extern_call_void(sym, vec![pty], vec![t]);
@@ -8832,7 +9019,7 @@ fn build_lambda_body(
                 }
                 Ok(self.unit_temp())
             }
-"alloc" => {
+            "alloc" => {
                 if args.len() != 2 {
                     return self.bad(e.span, "`alloc(T, count)` takes two arguments");
                 }
@@ -8856,12 +9043,7 @@ fn build_lambda_body(
                     a: count,
                     b: s,
                 });
-                self.extern_call_t1(
-                    "pickle_raw_alloc",
-                    vec![IrTy::Int],
-                    IrTy::Int,
-                    vec![size],
-                )
+                self.extern_call_t1("pickle_raw_alloc", vec![IrTy::Int], IrTy::Int, vec![size])
             }
             "free" => {
                 if args.len() != 1 {
@@ -8899,7 +9081,10 @@ fn build_lambda_body(
                 let zero = match vit {
                     IrTy::Int => {
                         let t = self.temp();
-                        self.instr(IrInstr::Const { dst: t, c: IrConst::Int(0) });
+                        self.instr(IrInstr::Const {
+                            dst: t,
+                            c: IrConst::Int(0),
+                        });
                         t
                     }
                     IrTy::Float => {
@@ -8925,7 +9110,11 @@ fn build_lambda_body(
                     b: zero,
                 });
                 let neg_v = self.temp();
-                self.instr(IrInstr::UnOp { dst: neg_v, op: IrUnOp::Neg, v });
+                self.instr(IrInstr::UnOp {
+                    dst: neg_v,
+                    op: IrUnOp::Neg,
+                    v,
+                });
                 // `is_neg ? -v : v`
                 let res_slot = self.new_slot(vit);
                 let neg_b = self.new_block();
@@ -8937,7 +9126,10 @@ fn build_lambda_body(
                     else_: pos_b,
                 });
                 self.cur = neg_b;
-                self.instr(IrInstr::StoreSlot { slot: res_slot, v: neg_v });
+                self.instr(IrInstr::StoreSlot {
+                    slot: res_slot,
+                    v: neg_v,
+                });
                 self.term(IrTerm::Branch { target: join });
                 self.cur = pos_b;
                 self.instr(IrInstr::StoreSlot { slot: res_slot, v });
@@ -8946,10 +9138,16 @@ fn build_lambda_body(
                 Ok(self.load(res_slot))
             }
             "min" | "max" => {
-                if args.len() != 2 || args[0].name.is_some() || args[0].spread
-                    || args[1].name.is_some() || args[1].spread
+                if args.len() != 2
+                    || args[0].name.is_some()
+                    || args[0].spread
+                    || args[1].name.is_some()
+                    || args[1].spread
                 {
-                    return self.bad(e.span, format!("`{name}(a, b)` takes exactly two arguments"));
+                    return self.bad(
+                        e.span,
+                        format!("`{name}(a, b)` takes exactly two arguments"),
+                    );
                 }
                 let it = self.irty(args[0].value.span)?;
                 if !matches!(it, IrTy::Int | IrTy::Float) {
@@ -8958,7 +9156,11 @@ fn build_lambda_body(
                 let a = self.expr(&args[0].value)?;
                 let b = self.expr(&args[1].value)?;
                 let pick_a = self.temp();
-                let op = if name == "min" { IrBinOp::Lt } else { IrBinOp::Gt };
+                let op = if name == "min" {
+                    IrBinOp::Lt
+                } else {
+                    IrBinOp::Gt
+                };
                 self.instr(IrInstr::BinOp {
                     dst: pick_a,
                     op,
@@ -8976,10 +9178,16 @@ fn build_lambda_body(
                     else_: b_b,
                 });
                 self.cur = a_b;
-                self.instr(IrInstr::StoreSlot { slot: res_slot, v: a });
+                self.instr(IrInstr::StoreSlot {
+                    slot: res_slot,
+                    v: a,
+                });
                 self.term(IrTerm::Branch { target: join });
                 self.cur = b_b;
-                self.instr(IrInstr::StoreSlot { slot: res_slot, v: b });
+                self.instr(IrInstr::StoreSlot {
+                    slot: res_slot,
+                    v: b,
+                });
                 self.term(IrTerm::Branch { target: join });
                 self.cur = join;
                 Ok(self.load(res_slot))
@@ -9037,10 +9245,16 @@ fn build_lambda_body(
                     else_: take_hi,
                 });
                 self.cur = take_max;
-                self.instr(IrInstr::StoreSlot { slot: res_slot, v: maxv });
+                self.instr(IrInstr::StoreSlot {
+                    slot: res_slot,
+                    v: maxv,
+                });
                 self.term(IrTerm::Branch { target: join });
                 self.cur = take_hi;
-                self.instr(IrInstr::StoreSlot { slot: res_slot, v: hi });
+                self.instr(IrInstr::StoreSlot {
+                    slot: res_slot,
+                    v: hi,
+                });
                 self.term(IrTerm::Branch { target: join });
                 self.cur = join;
                 Ok(self.load(res_slot))
@@ -9095,12 +9309,7 @@ fn build_lambda_body(
                     return self.bad(e.span, "`bytes(s)` takes exactly one argument");
                 }
                 let v = self.expr(&args[0].value)?;
-                self.extern_call_t1(
-                    "pickle_str_to_bytes",
-                    vec![IrTy::Str],
-                    IrTy::Ptr,
-                    vec![v],
-                )
+                self.extern_call_t1("pickle_str_to_bytes", vec![IrTy::Str], IrTy::Ptr, vec![v])
             }
             "range" => {
                 if args.is_empty() || args.len() > 3 {
@@ -9212,6 +9421,22 @@ fn build_lambda_body(
                 };
                 self.extern_call_t1(sym, vec![], IrTy::Ptr, vec![])
             }
+            "args" => {
+                if !args.is_empty() {
+                    return self.bad(e.span, "`args()` takes no arguments");
+                }
+                // Returns a `List<string>` of the program's command-line
+                // arguments, excluding the program name.
+                self.extern_call_t1("pickle_args", vec![], IrTy::Ptr, vec![])
+            }
+            "exit" => {
+                if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+                    return self.bad(e.span, "`exit(code)` takes exactly one argument");
+                }
+                let code = self.expr(&args[0].value)?;
+                self.extern_call_void("pickle_exit", vec![IrTy::Int], vec![code]);
+                Ok(self.unit_temp())
+            }
             _ if self.generic_user_fn(name) => self.bad(
                 e.span,
                 format!(
@@ -9229,7 +9454,11 @@ fn build_lambda_body(
         self.resolved
             .fns
             .get(name)
-            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .and_then(|infos| {
+                infos
+                    .iter()
+                    .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+            })
             .is_some_and(|c| !c.generics.is_empty())
     }
 
@@ -9256,7 +9485,11 @@ fn build_lambda_body(
             .resolved
             .fns
             .get(name)
-            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .and_then(|infos| {
+                infos
+                    .iter()
+                    .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+            })
             .cloned()
         else {
             return self.bad(e.span, format!("unknown generic function `{name}`"));
@@ -9353,7 +9586,11 @@ fn build_lambda_body(
             .resolved
             .fns
             .get(name)
-            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .and_then(|infos| {
+                infos
+                    .iter()
+                    .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+            })
             .cloned()
         else {
             return self.bad(e.span, format!("unknown generic function `{name}`"));
@@ -9431,10 +9668,16 @@ fn build_lambda_body(
         let pty: Vec<Ty> = info.params.iter().map(|p| p.ty.clone()).collect();
         let ret = info.ret.clone();
         if pty.iter().any(|t| self.map_ty(t, span).is_err()) {
-            return self.bad(span, "cannot map an instantiated function value's parameters");
+            return self.bad(
+                span,
+                "cannot map an instantiated function value's parameters",
+            );
         }
         if self.map_ty(&ret, span).is_err() {
-            return self.bad(span, "cannot map an instantiated function value's return type");
+            return self.bad(
+                span,
+                "cannot map an instantiated function value's return type",
+            );
         }
         let t = self.push_class_func(
             "fn.value",
@@ -9464,7 +9707,11 @@ fn build_lambda_body(
             .resolved
             .fns
             .get(name)
-            .and_then(|infos| infos.iter().find(|c| !(c.span.file.0 == 0 && c.span.end == 0)))
+            .and_then(|infos| {
+                infos
+                    .iter()
+                    .find(|c| !(c.span.file.0 == 0 && c.span.end == 0))
+            })
             .cloned()
         else {
             return Ok(None);
@@ -9483,7 +9730,10 @@ fn build_lambda_body(
             .iter()
             .map(|g| map.get(g).cloned().unwrap_or(Ty::Unknown))
             .collect();
-        if arg_tys.iter().any(|t| matches!(t, Ty::Unknown | Ty::Var(_)) || t.has_var()) {
+        if arg_tys
+            .iter()
+            .any(|t| matches!(t, Ty::Unknown | Ty::Var(_)) || t.has_var())
+        {
             return Ok(None);
         }
         Ok(Some(self.generic_fn_value_for(v, &info, arg_tys)?))
@@ -9513,7 +9763,11 @@ fn build_lambda_body(
                 }
             }
         }
-        let missing: Vec<&String> = info.generics.iter().filter(|g| !map.contains_key(*g)).collect();
+        let missing: Vec<&String> = info
+            .generics
+            .iter()
+            .filter(|g| !map.contains_key(*g))
+            .collect();
         if !missing.is_empty() {
             let plural = if missing.len() == 1 { "" } else { "s" };
             let names = missing
@@ -9571,10 +9825,7 @@ fn build_lambda_body(
             Some(&cid) => cid,
             None => self.register_class_instantiation(name, &arg_tys, e.span)?,
         };
-        let fid = *self
-            .ctor_ids
-            .get(&cid)
-            .ok_or(())?;
+        let fid = *self.ctor_ids.get(&cid).ok_or(())?;
         // Mirror the plain class-constructor call: borrow `&T` reference
         // parameters, wrap optional parameters, and store the result.
         let fparams = self.module.funcs[fid.0].params.clone();
@@ -9617,7 +9868,10 @@ fn build_lambda_body(
     ) -> Result<FuncId, ()> {
         let name = &info.name;
         let Some(f) = self.fn_decls.get(name).copied() else {
-            return self.bad(span, format!("no declaration for generic function `{name}`"));
+            return self.bad(
+                span,
+                format!("no declaration for generic function `{name}`"),
+            );
         };
         if f.is_async {
             return self.bad(
@@ -9678,10 +9932,8 @@ fn build_lambda_body(
                 ..info.clone()
             },
         );
-        self.src_param_tys.insert(
-            fid,
-            info.params.iter().map(|p| p.ty.subst(map)).collect(),
-        );
+        self.src_param_tys
+            .insert(fid, info.params.iter().map(|p| p.ty.subst(map)).collect());
         self.instanton_subst.insert(fid, map.clone());
         self.instantiations.insert(key.clone(), fid);
         Ok(fid)
@@ -9716,10 +9968,7 @@ fn build_lambda_body(
         if args.len() != n {
             return self.bad(
                 e.span,
-                format!(
-                    "`{variant_name}` takes {n} argument(s), got {}",
-                    args.len()
-                ),
+                format!("`{variant_name}` takes {n} argument(s), got {}", args.len()),
             );
         }
         let tag = self.temp();
@@ -9771,10 +10020,7 @@ fn build_lambda_body(
                     .find(|(_, (n, _, _))| n == name)
                     .map(|(i, (_, ft, _))| (i as i64, ft))
                 else {
-                    return self.bad(
-                        e.span,
-                        format!("enum `{}` has no variant `{name}`", t.name),
-                    );
+                    return self.bad(e.span, format!("enum `{}` has no variant `{name}`", t.name));
                 };
                 if !fields.is_empty() {
                     return self.bad(
@@ -9840,14 +10086,20 @@ fn build_lambda_body(
             }
             return self.bad(
                 e.span,
-                format!("method `{name}` of `{}` cannot be used as a value", self.class_name_of(cid)),
+                format!(
+                    "method `{name}` of `{}` cannot be used as a value",
+                    self.class_name_of(cid)
+                ),
             );
         }
         // `Type.staticProperty` reads a receiver-less accessor; `Type.field`
         // reads a static field cell.
         if let ExprKind::Ident(tname) = &object.kind {
             if let Some(&cid) = self.class_by_name.get(tname) {
-                if let Some(&fid) = self.static_property_ids.get(&(cid, name.to_string(), false)) {
+                if let Some(&fid) = self
+                    .static_property_ids
+                    .get(&(cid, name.to_string(), false))
+                {
                     return self.call_method(e, fid, &[], None);
                 }
                 if let Some((dcid, slot, info)) = self.static_field(cid as i64, name) {
@@ -9858,9 +10110,7 @@ fn build_lambda_body(
                 }
                 return self.bad(
                     e.span,
-                    format!(
-                        "static member `{name}` on `{tname}` is not lowered yet"
-                    ),
+                    format!("static member `{name}` on `{tname}` is not lowered yet"),
                 );
             }
         }
@@ -9883,10 +10133,18 @@ fn build_lambda_body(
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
         let ancestry = self.ancestry(&plan.name);
         for cn in ancestry.iter().rev() {
-            let Some(table) = self.table_of(cn) else { continue };
-            let Some(slot) = static_field_slot(&table, name) else { continue };
-            let Some(info) = static_field_info(&table, name) else { continue };
-            let Some(&dcid) = self.class_by_name.get(cn) else { continue };
+            let Some(table) = self.table_of(cn) else {
+                continue;
+            };
+            let Some(slot) = static_field_slot(&table, name) else {
+                continue;
+            };
+            let Some(info) = static_field_info(&table, name) else {
+                continue;
+            };
+            let Some(&dcid) = self.class_by_name.get(cn) else {
+                continue;
+            };
             return Some((dcid, slot, info));
         }
         None
@@ -9910,30 +10168,19 @@ fn build_lambda_body(
     /// Inline a class constant's initializer at a use site. Returns `None` when
     /// `name` is not a constant of class `cid` (or an ancestor); `Some(Err)` on
     /// a cyclic constant.
-    fn read_class_const(
-        &mut self,
-        span: Span,
-        cid: i64,
-        name: &str,
-    ) -> Option<Result<Temp, ()>> {
+    fn read_class_const(&mut self, span: Span, cid: i64, name: &str) -> Option<Result<Temp, ()>> {
         let plan = self.classes.iter().find(|p| p.class_id as i64 == cid)?;
         let ancestry = self.ancestry(&plan.name);
         for cn in ancestry.iter().rev() {
             let Some(&dcid) = self.class_by_name.get(cn) else {
                 continue;
             };
-            let Some((_, value)) = self
-                .class_consts
-                .get(&(dcid, name.to_string()))
-                .cloned()
-            else {
+            let Some((_, value)) = self.class_consts.get(&(dcid, name.to_string())).cloned() else {
                 continue;
             };
             let key = format!("{}.{}", self.class_name_of(dcid), name);
             if self.const_inlining.iter().any(|n| n == &key) {
-                return Some(
-                    self.bad(span, format!("cyclic `const` initialization of `{key}`")),
-                );
+                return Some(self.bad(span, format!("cyclic `const` initialization of `{key}`")));
             }
             self.const_inlining.push(key);
             // Constant initializers are evaluated in the declaring class's
@@ -9979,7 +10226,13 @@ fn build_lambda_body(
     }
 
     /// `obj.slot` field read: `pickle_obj_slot_get` then unbox scalars.
-    fn field_read(&mut self, span: Span, obj: Temp, field_ty: &Ty, slot: usize) -> Result<Temp, ()> {
+    fn field_read(
+        &mut self,
+        span: Span,
+        obj: Temp,
+        field_ty: &Ty,
+        slot: usize,
+    ) -> Result<Temp, ()> {
         let rep = self.elem_rep(field_ty, span)?;
         let idx = self.int_const(slot as i64);
         let raw = self.extern_call_t1(
@@ -10024,10 +10277,7 @@ fn build_lambda_body(
                     }
                     return self.call_method(e, fid, args, None);
                 }
-                return self.bad(
-                    e.span,
-                    format!("`{tname}` has no static method `{name}`"),
-                );
+                return self.bad(e.span, format!("`{tname}` has no static method `{name}`"));
             }
         }
 
@@ -10046,7 +10296,9 @@ fn build_lambda_body(
                 if is_static {
                     return self.bad(
                         e.span,
-                        format!("static method `{name}` must be called on the type, not an instance"),
+                        format!(
+                            "static method `{name}` must be called on the type, not an instance"
+                        ),
                     );
                 }
                 let receiver = self.expr(object)?;
@@ -10078,7 +10330,10 @@ fn build_lambda_body(
                 }
                 return self.bad(
                     e.span,
-                    format!("field `{name}` of `{}` is not callable", self.class_name_of(cid)),
+                    format!(
+                        "field `{name}` of `{}` is not callable",
+                        self.class_name_of(cid)
+                    ),
                 );
             }
             return self.bad(
@@ -10148,7 +10403,12 @@ fn build_lambda_body(
                         if !args.is_empty() {
                             return self.bad(e.span, "`keys` takes no arguments");
                         }
-                        self.extern_call_t1("pickle_map_keys", vec![IrTy::Ptr], IrTy::Ptr, vec![obj])
+                        self.extern_call_t1(
+                            "pickle_map_keys",
+                            vec![IrTy::Ptr],
+                            IrTy::Ptr,
+                            vec![obj],
+                        )
                     }
                     "values" => {
                         if !args.is_empty() {
@@ -10189,6 +10449,36 @@ fn build_lambda_body(
         self.emit_call_to(fid, call_args, _e)
     }
 
+    /// Resolve the IR parameter type at `fparam_idx` (which counts the
+    /// implicit receiver slot, when the call has one) for function `fid`.
+    /// The callee's `IrFunc.params` are only populated once its body has been
+    /// emitted, so a caller that precedes the callee (functions are lowered in
+    /// definition order) would otherwise see an empty param list and skip
+    /// value marshaling. In that case the checker's source signature
+    /// (`src_param_tys`, indexed by the explicit argument position) is mapped
+    /// to its IR type instead.
+    fn callee_param_ir(
+        &mut self,
+        fid: FuncId,
+        fparam_idx: usize,
+        arg_idx: usize,
+        span: Span,
+    ) -> Option<IrTy> {
+        if let Some(t) = self.module.funcs[fid.0]
+            .params
+            .get(fparam_idx)
+            .map(|p| p.ty)
+        {
+            return Some(t);
+        }
+        let src = self
+            .src_param_tys
+            .get(&fid)
+            .and_then(|v| v.get(arg_idx))
+            .cloned()?;
+        self.map_ty(&src, span).ok()
+    }
+
     /// Marshal a method call's receiver (first for instance methods) and
     /// argument values into the callee's calling-convention temp list.
     fn marshal_method_args(
@@ -10198,17 +10488,17 @@ fn build_lambda_body(
         args: &[CallArg],
         receiver: Option<Temp>,
     ) -> Result<Vec<Temp>, ()> {
-        let fparams = self.module.funcs[fid.0].params.clone();
         let mut call_args = match receiver {
             Some(r) => vec![r],
             None => Vec::new(),
         };
         let base = call_args.len();
         for (i, a) in args.iter().enumerate() {
-            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(base + i)).cloned();
+            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
             let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
             let t = self.borrow_arg(src.as_ref(), a)?;
-            let t = if !is_ref && matches!(fparams.get(base + i).map(|p| p.ty), Some(IrTy::Ptr)) {
+            let fparam = self.callee_param_ir(fid, base + i, i, a.value.span);
+            let t = if !is_ref && matches!(fparam, Some(IrTy::Ptr)) {
                 let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
                 self.option_wrap(t, &vt, a.value.span)?
             } else {
@@ -10268,7 +10558,10 @@ fn build_lambda_body(
             self.cur = cb;
             let call_args = self.marshal_method_args(e, dfid, args, Some(receiver))?;
             let val = self.emit_call_to(dfid, call_args, e)?;
-            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.instr(IrInstr::StoreSlot {
+                slot: ret_slot,
+                v: val,
+            });
             self.term(IrTerm::Branch { target: join });
 
             self.cur = next;
@@ -10276,12 +10569,18 @@ fn build_lambda_body(
         // Fall back to the receiver's own statically-resolved implementation.
         let call_args = self.marshal_method_args(e, fallback_fid, args, Some(receiver))?;
         let val = self.emit_call_to(fallback_fid, call_args, e)?;
-        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+        self.instr(IrInstr::StoreSlot {
+            slot: ret_slot,
+            v: val,
+        });
         self.term(IrTerm::Branch { target: join });
 
         self.cur = join;
         let dst = self.temp();
-        self.instr(IrInstr::LoadSlot { dst, slot: ret_slot });
+        self.instr(IrInstr::LoadSlot {
+            dst,
+            slot: ret_slot,
+        });
         Ok(dst)
     }
 
@@ -10390,7 +10689,10 @@ fn build_lambda_body(
             self.cur = cb;
             let call_args = self.marshal_method_args(e, dfid, args, Some(receiver))?;
             let val = self.emit_call_to(dfid, call_args, e)?;
-            self.instr(IrInstr::StoreSlot { slot: ret_slot, v: val });
+            self.instr(IrInstr::StoreSlot {
+                slot: ret_slot,
+                v: val,
+            });
             self.term(IrTerm::Branch { target: join });
 
             self.cur = next;
@@ -10444,12 +10746,18 @@ fn build_lambda_body(
             ret,
             args: call_args,
         });
-        self.instr(IrInstr::StoreSlot { slot: ret_slot, v: dst });
+        self.instr(IrInstr::StoreSlot {
+            slot: ret_slot,
+            v: dst,
+        });
         self.term(IrTerm::Branch { target: join });
 
         self.cur = join;
         let out = self.temp();
-        self.instr(IrInstr::LoadSlot { dst: out, slot: ret_slot });
+        self.instr(IrInstr::LoadSlot {
+            dst: out,
+            slot: ret_slot,
+        });
         Ok(out)
     }
 
@@ -10468,7 +10776,10 @@ fn build_lambda_body(
         name: &str,
         ret_ty: IrTy,
     ) -> Result<Temp, ()> {
-        let dummy = Expr { span, kind: ExprKind::Ident(String::new()) };
+        let dummy = Expr {
+            span,
+            kind: ExprKind::Ident(String::new()),
+        };
         self.interface_dispatch(&dummy, span, ift, rec, name, &[], ret_ty)
     }
 
@@ -10512,7 +10823,8 @@ fn build_lambda_body(
                     return self.bad(e.span, "`pop` takes no arguments");
                 }
                 let rep = self.elem_rep(&elem, e.span)?;
-                let raw = self.extern_call_t1("pickle_list_pop", vec![IrTy::Ptr], IrTy::Ptr, vec![obj])?;
+                let raw =
+                    self.extern_call_t1("pickle_list_pop", vec![IrTy::Ptr], IrTy::Ptr, vec![obj])?;
                 match rep {
                     ElemRep::Scalar(_, unbox_sym, ir) => {
                         self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
@@ -10526,8 +10838,12 @@ fn build_lambda_body(
                 }
                 let rep = self.elem_rep(&elem, e.span)?;
                 let index = self.expr(&args[0].value)?;
-                let raw =
-                    self.extern_call_t1("pickle_list_remove", vec![IrTy::Ptr, IrTy::Int], IrTy::Ptr, vec![obj, index])?;
+                let raw = self.extern_call_t1(
+                    "pickle_list_remove",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![obj, index],
+                )?;
                 match rep {
                     ElemRep::Scalar(_, unbox_sym, ir) => {
                         self.extern_call_t1(unbox_sym, vec![IrTy::Ptr], ir, vec![raw])
@@ -10561,12 +10877,17 @@ fn build_lambda_body(
                     return self.bad(e.span, "`sort` takes no arguments");
                 }
                 let kind = self.sort_kind(&elem, e.span)?;
-                self.extern_call_void("pickle_list_sort", vec![IrTy::Ptr, IrTy::Int], vec![obj, kind]);
+                self.extern_call_void(
+                    "pickle_list_sort",
+                    vec![IrTy::Ptr, IrTy::Int],
+                    vec![obj, kind],
+                );
                 Ok(self.unit_temp())
             }
-            other => {
-                self.bad(e.span, format!("`{other}` method on `List` is not lowered yet"))
-            }
+            other => self.bad(
+                e.span,
+                format!("`{other}` method on `List` is not lowered yet"),
+            ),
         }
     }
 
@@ -10632,9 +10953,10 @@ fn build_lambda_body(
                     vec![obj],
                 )
             }
-            other => {
-                self.bad(e.span, format!("`{other}` method on `Stream` is not lowered yet"))
-            }
+            other => self.bad(
+                e.span,
+                format!("`{other}` method on `Stream` is not lowered yet"),
+            ),
         }
     }
 
@@ -10663,7 +10985,9 @@ fn build_lambda_body(
             | Ty::Ptr(..)
             | Ty::Fn(..) => Ok(Ptr),
             Ty::Ref(..) => self.bad(span, "lists of `&T` references are not supported yet"),
-            Ty::None | Ty::Empty => self.bad(span, "a list of `none` has no element representation"),
+            Ty::None | Ty::Empty => {
+                self.bad(span, "a list of `none` has no element representation")
+            }
             Ty::Unknown => self.bad(span, "list element type is not statically known"),
             Ty::Var(_) => self.bad(span, "generic element types are not lowered yet"),
         }
@@ -10789,10 +11113,7 @@ fn build_lambda_body(
                         );
                     };
                     let Some(slot) = self.lookup(name) else {
-                        return self.bad(
-                            a.value.span,
-                            format!("cannot borrow unknown `{name}`"),
-                        );
+                        return self.bad(a.value.span, format!("cannot borrow unknown `{name}`"));
                     };
                     let dst = self.temp();
                     self.instr(IrInstr::LocalAddr { dst, slot });
@@ -10904,17 +11225,20 @@ fn build_lambda_body(
             d.code = Some(crate::error::ErrorCode::NotLowered);
         }
         self.diags.emit(d);
-    Err(())
+        Err(())
     }
 
     fn bad_span_note<T>(&mut self, msg: &str) -> Result<T, ()> {
         self.failed = true;
-        let mut d = Diagnostic::error_at(Span::new(crate::diag::FileId(0), 0, 0), format!("codegen: {msg}"));
+        let mut d = Diagnostic::error_at(
+            Span::new(crate::diag::FileId(0), 0, 0),
+            format!("codegen: {msg}"),
+        );
         if msg.contains("not lowered yet") {
             d.code = Some(crate::error::ErrorCode::NotLowered);
         }
         self.diags.emit(d);
-    Err(())
+        Err(())
     }
 
     // ---- allocation helpers ----

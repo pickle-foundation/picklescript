@@ -1,0 +1,11 @@
+fn main() {
+    let a = args()
+    print(len(a))
+    println("")
+    for (i in 0..len(a)) {
+        println(a[i])
+    }
+    if (len(a) >= 2 && a[1] == "exit") {
+        exit(7)
+    }
+}

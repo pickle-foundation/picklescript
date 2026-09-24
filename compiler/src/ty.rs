@@ -57,7 +57,10 @@ pub enum Ty {
 
 impl Ty {
     pub fn is_primitive(&self) -> bool {
-        matches!(self, Ty::Bool | Ty::Char | Ty::Byte | Ty::Int | Ty::Float | Ty::String)
+        matches!(
+            self,
+            Ty::Bool | Ty::Char | Ty::Byte | Ty::Int | Ty::Float | Ty::String
+        )
     }
 
     pub fn is_numeric(&self) -> bool {
@@ -106,9 +109,11 @@ impl Ty {
         match self {
             Ty::Var(_) => true,
             Ty::Option(t) | Ty::List(t) | Ty::Range(t) | Ty::Ptr(t) | Ty::Ref(t) => t.has_var(),
-            Ty::Class(_, a) | Ty::Struct(_, a) | Ty::Enum(_, a) | Ty::Interface(_, a) | Ty::Tuple(a) => {
-                a.iter().any(Ty::has_var)
-            }
+            Ty::Class(_, a)
+            | Ty::Struct(_, a)
+            | Ty::Enum(_, a)
+            | Ty::Interface(_, a)
+            | Ty::Tuple(a) => a.iter().any(Ty::has_var),
             Ty::Map(k, v) => k.has_var() || v.has_var(),
             Ty::Fn(ps, r) => ps.iter().any(Ty::has_var) || r.has_var(),
             _ => false,
@@ -121,12 +126,8 @@ impl Ty {
         match self {
             Ty::Var(n) => map.get(n).cloned().unwrap_or_else(|| Ty::Var(n.clone())),
             Ty::Option(inner) => inner.subst(map).opt_of(),
-            Ty::Class(n, a) => {
-                Ty::Class(n.clone(), a.iter().map(|t| t.subst(map)).collect())
-            }
-            Ty::Struct(n, a) => {
-                Ty::Struct(n.clone(), a.iter().map(|t| t.subst(map)).collect())
-            }
+            Ty::Class(n, a) => Ty::Class(n.clone(), a.iter().map(|t| t.subst(map)).collect()),
+            Ty::Struct(n, a) => Ty::Struct(n.clone(), a.iter().map(|t| t.subst(map)).collect()),
             Ty::Enum(n, a) => Ty::Enum(n.clone(), a.iter().map(|t| t.subst(map)).collect()),
             Ty::Interface(n, a) => {
                 Ty::Interface(n.clone(), a.iter().map(|t| t.subst(map)).collect())
@@ -134,9 +135,10 @@ impl Ty {
             Ty::List(t) => Ty::List(Box::new(t.subst(map))),
             Ty::Map(k, v) => Ty::Map(Box::new(k.subst(map)), Box::new(v.subst(map))),
             Ty::Tuple(items) => Ty::Tuple(items.iter().map(|t| t.subst(map)).collect()),
-            Ty::Fn(ps, r) => {
-                Ty::Fn(ps.iter().map(|t| t.subst(map)).collect(), Box::new(r.subst(map)))
-            }
+            Ty::Fn(ps, r) => Ty::Fn(
+                ps.iter().map(|t| t.subst(map)).collect(),
+                Box::new(r.subst(map)),
+            ),
             Ty::Range(t) => Ty::Range(Box::new(t.subst(map))),
             Ty::Ptr(t) => Ty::Ptr(Box::new(t.subst(map))),
             Ty::Ref(t) => Ty::Ref(Box::new(t.subst(map))),
@@ -172,11 +174,18 @@ impl Ty {
             Ty::String => "string".into(),
             Ty::None => "none".into(),
             Ty::Option(inner) => format!("{}?", inner.bare_name()),
-            Ty::Class(n, args) | Ty::Struct(n, args) | Ty::Enum(n, args) | Ty::Interface(n, args) => {
+            Ty::Class(n, args)
+            | Ty::Struct(n, args)
+            | Ty::Enum(n, args)
+            | Ty::Interface(n, args) => {
                 if args.is_empty() {
                     n.clone()
                 } else {
-                    let inner = args.iter().map(Ty::bare_name).collect::<Vec<_>>().join(", ");
+                    let inner = args
+                        .iter()
+                        .map(Ty::bare_name)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     format!("{n}<{inner}>")
                 }
             }
@@ -184,11 +193,19 @@ impl Ty {
             Ty::Map(k, v) => format!("Map<{}, {}>", k.bare_name(), v.bare_name()),
             Ty::Stream => "stream".into(),
             Ty::Tuple(items) => {
-                let inner = items.iter().map(Ty::bare_name).collect::<Vec<_>>().join(", ");
+                let inner = items
+                    .iter()
+                    .map(Ty::bare_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("({inner})")
             }
             Ty::Fn(params, ret) => {
-                let ps = params.iter().map(Ty::bare_name).collect::<Vec<_>>().join(", ");
+                let ps = params
+                    .iter()
+                    .map(Ty::bare_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("({ps}) -> {}", ret.bare_name())
             }
             Ty::Empty => "void".into(),

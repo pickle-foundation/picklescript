@@ -331,7 +331,10 @@ mod tests {
         }
         assert!(crate::list::pickle_list_get(l, 99).is_null());
         crate::list::pickle_list_set(l, 0, crate::boxscalar::pickle_box_i64(42));
-        assert_eq!(crate::boxscalar::pickle_unbox_i64(crate::list::pickle_list_get(l, 0)), 42);
+        assert_eq!(
+            crate::boxscalar::pickle_unbox_i64(crate::list::pickle_list_get(l, 0)),
+            42
+        );
         let popped = crate::list::pickle_list_pop(l);
         assert_eq!(crate::boxscalar::pickle_unbox_i64(popped), 0);
         assert_eq!(crate::list::pickle_list_len(l), 3);
@@ -389,10 +392,22 @@ mod tests {
         );
         let s = crate::list::pickle_list_new(0);
         for t in ["pear", "apple", "mango"] {
-            crate::list::pickle_list_push(s, crate::strings::string_from_bytes(t.as_ptr(), t.len(), crate::gc::gc_mut()));
+            crate::list::pickle_list_push(
+                s,
+                crate::strings::string_from_bytes(t.as_ptr(), t.len(), crate::gc::gc_mut()),
+            );
         }
         crate::list::pickle_list_sort(s, 2);
-        assert_eq!(crate::strings::string_bytes_len(crate::list::pickle_list_get(s, 0)), 5);
-        assert_eq!(crate::strings::pickle_str_cmp(crate::list::pickle_list_get(s, 0), crate::strings::string_from_bytes(b"apple".as_ptr(), 5, crate::gc::gc_mut())), 0);
+        assert_eq!(
+            crate::strings::string_bytes_len(crate::list::pickle_list_get(s, 0)),
+            5
+        );
+        assert_eq!(
+            crate::strings::pickle_str_cmp(
+                crate::list::pickle_list_get(s, 0),
+                crate::strings::string_from_bytes(b"apple".as_ptr(), 5, crate::gc::gc_mut())
+            ),
+            0
+        );
     }
 }

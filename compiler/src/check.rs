@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
-use crate::resolve::{
-    CallableInfo, ClassTable, CtorInfo, ResolvedProgram, TypeTableEntry,
-};
+use crate::resolve::{CallableInfo, ClassTable, CtorInfo, ResolvedProgram, TypeTableEntry};
 use crate::ty::Ty;
 
 /// Map a checker diagnostic message to its stable error code.
@@ -25,7 +23,10 @@ pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
         ("after `free()`", UseAfterFree),
         ("after it was moved", UseAfterFree),
         ("was already freed", DoubleFree),
-        ("`free` is only available on a `#[manualAlloc]` binding", FreeOnNonManual),
+        (
+            "`free` is only available on a `#[manualAlloc]` binding",
+            FreeOnNonManual,
+        ),
         ("cannot store `#[manualAlloc]`", OwnedPosition),
         ("cannot assign `#[manualAlloc]`", OwnedPosition),
         ("cannot bind `#[manualAlloc]`", OwnedPosition),
@@ -66,14 +67,20 @@ pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
         ("`alloc(T, count)`", RawBuffer),
         ("`alloc` element type", RawBuffer),
         ("`alloc` count must be an `int`", RawBuffer),
-        ("`alloc` currently only supports scalar element types", RawBuffer),
+        (
+            "`alloc` currently only supports scalar element types",
+            RawBuffer,
+        ),
         ("`free(p)` takes one argument", RawBuffer),
         ("`free` expects a pointer argument", RawBuffer),
         ("`free()` takes no arguments", RawBuffer),
         ("may only be used inside an `unsafe` block", UnsafeRequired),
         // E03xx type checking.
         ("type mismatch in ", TypeMismatch),
-        ("cannot return a value from a function with no return type", ReturnValue),
+        (
+            "cannot return a value from a function with no return type",
+            ReturnValue,
+        ),
         ("`if` branches have mismatched types", ReturnValue),
         ("match arms produce inconsistent types", ReturnValue),
         ("condition must be a `bool`", ConditionNotBool),
@@ -96,26 +103,41 @@ pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
         ("no assignable member `", NoMember),
         ("has no variant", EnumVariant),
         ("payload field(s); use `", EnumVariant),
-        ("enum variant pattern requires a value of enum type", EnumVariant),
+        (
+            "enum variant pattern requires a value of enum type",
+            EnumVariant,
+        ),
         ("cannot be constructed directly", CannotConstruct),
-        ("cannot assign to a member of a non-class value", NonClassMemberAssign),
+        (
+            "cannot assign to a member of a non-class value",
+            NonClassMemberAssign,
+        ),
         ("declares `implements", InterfaceConformance),
         ("`this` used outside of a class body", ThisSuper),
         ("`super` used outside of a class body", ThisSuper),
         ("no parent to call `super`", ThisSuper),
-        ("can only be used as a named constructor's delegation", ThisSuper),
+        (
+            "can only be used as a named constructor's delegation",
+            ThisSuper,
+        ),
         ("may only delegate to `this(...)`", ThisSuper),
         ("cannot assign to immutable", Assignment),
         ("must be assigned on an instance", Assignment),
         ("must be assigned on the type", Assignment),
         ("has no setter", Assignment),
-        ("assignment target must be a variable, member, or index", Assignment),
+        (
+            "assignment target must be a variable, member, or index",
+            Assignment,
+        ),
         ("cannot write through an immutable reference", Assignment),
         ("cannot write to a field", Assignment),
         ("can never succeed", Cast),
         ("cannot cast `", Cast),
         // E02xx-adjacent reference rules surfaced by the checker.
-        ("references are supported only as function parameter types", RefParamOnly),
+        (
+            "references are supported only as function parameter types",
+            RefParamOnly,
+        ),
         // E03xx pattern errors without a dedicated code stay unlisted on
         // purpose: `tuple pattern does not match a tuple value` has no bucket
         // that says exactly what happened, so it renders uncoded.
@@ -145,11 +167,7 @@ struct Local {
     moved: bool,
 }
 
-pub fn check_program(
-    prog: &Program,
-    resolved: &ResolvedProgram,
-    diags: &DiagnosticSink,
-) {
+pub fn check_program(prog: &Program, resolved: &ResolvedProgram, diags: &DiagnosticSink) {
     let mut ck = Checker::new(prog, resolved, diags);
     ck.check();
 }
@@ -607,10 +625,7 @@ impl<'a> Checker<'a> {
         // T? expression can satisfy T?; T satisfies T? via implicit option.
         if want.is_option() {
             if got.is_option() {
-                let (wi, gi) = (
-                    want.inner_option().unwrap(),
-                    got.inner_option().unwrap(),
-                );
+                let (wi, gi) = (want.inner_option().unwrap(), got.inner_option().unwrap());
                 return self.ok_types(&wi, &gi);
             }
             let inner = want.inner_option().unwrap();
@@ -627,9 +642,7 @@ impl<'a> Checker<'a> {
                 }
             }
             // A subclass/descendant `got` is assignable to an ancestor `want`.
-            if matches!(want, Ty::Class(..) | Ty::Struct(..))
-                && self.is_ancestor(wantn, gotn)
-            {
+            if matches!(want, Ty::Class(..) | Ty::Struct(..)) && self.is_ancestor(wantn, gotn) {
                 return true;
             }
         }
@@ -662,9 +675,7 @@ impl<'a> Checker<'a> {
         if !self.ok_types(want, got) {
             self.err_note(
                 span,
-                format!(
-                    "type mismatch in {what}: expected `{want}`, found `{got}`"
-                ),
+                format!("type mismatch in {what}: expected `{want}`, found `{got}`"),
                 format!(
                     "`{}` does not satisfy `{}`; use `as` for an explicit conversion",
                     got, want
@@ -757,7 +768,11 @@ impl<'a> Checker<'a> {
             if table.implements.iter().any(|t| t.named() == Some(iface)) {
                 return true;
             }
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 pending.push(p);
             }
         }
@@ -781,7 +796,9 @@ impl<'a> Checker<'a> {
                 continue;
             }
             seen.push(cname.clone());
-            let Some(table) = self.class_table(&cname) else { continue };
+            let Some(table) = self.class_table(&cname) else {
+                continue;
+            };
             for i in &table.implements {
                 if let Ty::Interface(iname, iargs) = i {
                     if iname == "Iterable" {
@@ -790,7 +807,11 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 chain.push(p);
             }
         }
@@ -814,7 +835,11 @@ impl<'a> Checker<'a> {
                 Some(TypeTableEntry::Class(t)) | Some(TypeTableEntry::Struct(t)) => t.clone(),
                 _ => continue,
             };
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 pending.push(p);
             }
         }
@@ -860,7 +885,11 @@ impl<'a> Checker<'a> {
             if let Some(f) = table.consts.iter().find(|f| f.name == name) {
                 return Some((f.clone(), true));
             }
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 chain.push(p);
             }
         }
@@ -868,11 +897,7 @@ impl<'a> Checker<'a> {
         None
     }
 
-    fn find_method(
-        &self,
-        class: &str,
-        name: &str,
-    ) -> Option<CallableInfo> {
+    fn find_method(&self, class: &str, name: &str) -> Option<CallableInfo> {
         let mut chain: Vec<String> = vec![class.to_string()];
         let mut seen: Vec<String> = Vec::new();
         while let Some(cname) = chain.pop() {
@@ -887,7 +912,11 @@ impl<'a> Checker<'a> {
             if let Some(m) = table.methods.iter().find(|m| m.name == name) {
                 return Some(m.clone());
             }
-            if let Some(p) = table.extends.as_ref().and_then(|t| t.named().map(str::to_string)) {
+            if let Some(p) = table
+                .extends
+                .as_ref()
+                .and_then(|t| t.named().map(str::to_string))
+            {
                 chain.push(p);
             }
         }
@@ -1097,12 +1126,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(d) = &p.default {
                 let dt = self.check_expr(d);
-                self.check_assignable(
-                    &self.resolve_param_ty(p),
-                    &dt,
-                    p.span,
-                    "default argument",
-                );
+                self.check_assignable(&self.resolve_param_ty(p), &dt, p.span, "default argument");
             }
         }
         if let Some(body) = &f.body {
@@ -1150,7 +1174,9 @@ impl<'a> Checker<'a> {
                 if !matches!(t, Ty::Class(..) | Ty::Struct(..)) {
                     self.err_note(
                         span,
-                        format!("`#[manualAlloc]` field must be a class or struct type, found `{t}`"),
+                        format!(
+                            "`#[manualAlloc]` field must be a class or struct type, found `{t}`"
+                        ),
                         "ownership applies to class/struct instances",
                     );
                 }
@@ -1197,8 +1223,7 @@ impl<'a> Checker<'a> {
     }
 
     fn resolve_param_ty(&self, p: &Param) -> Ty {
-        p.ty
-            .as_ref()
+        p.ty.as_ref()
             .map(|t| {
                 let mut generics = self.fn_generics.clone();
                 if let Some(gt) = self.self_ty.as_ref().and_then(|t| self.type_key(t)) {
@@ -1220,7 +1245,8 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        self.resolved.resolve_ty(te, self.instantiated_generics(&g), self.diags)
+        self.resolved
+            .resolve_ty(te, self.instantiated_generics(&g), self.diags)
     }
 
     /// Generics with `self_args` substituted for the current class, so method
@@ -1323,11 +1349,7 @@ impl<'a> Checker<'a> {
                     .map(|t| self.resolved_fn_ty(t, &self.fn_generics));
                 // The declared type of a `let x: T`/`var x: T` binding lives on
                 // the pattern; `T` may not be an immutable `&T` reference.
-                if let Pattern::Binding {
-                    ty: Some(ann),
-                    ..
-                } = pattern
-                {
+                if let Pattern::Binding { ty: Some(ann), .. } = pattern {
                     let at = self.resolved_fn_ty(ann, &self.fn_generics);
                     self.guard_ref_use(&at, *span, "a `let` binding");
                 }
@@ -1351,10 +1373,7 @@ impl<'a> Checker<'a> {
                         // moves the allocation out of `x`.
                         self.mark_moved(src);
                     } else if init.is_none() {
-                        self.err(
-                            *span,
-                            "`#[manualAlloc]` requires an allocation initializer",
-                        );
+                        self.err(*span, "`#[manualAlloc]` requires an allocation initializer");
                     } else if !matches!(final_ty, Ty::Class(..) | Ty::Struct(..)) {
                         self.err_note(
                             *span,
@@ -1380,7 +1399,12 @@ impl<'a> Checker<'a> {
                 }
                 final_ty
             }
-            Stmt::Const { name, ty, value, span } => {
+            Stmt::Const {
+                name,
+                ty,
+                value,
+                span,
+            } => {
                 let vt = self.check_expr(value);
                 if let Some(t) = ty {
                     let tt = self.resolved_fn_ty(t, &self.fn_generics);
@@ -1549,10 +1573,7 @@ impl<'a> Checker<'a> {
                         self.bind_pattern(part, &t, mutable);
                     }
                 } else if *ty != Ty::Unknown {
-                    self.err(
-                        p.span(),
-                        "tuple pattern does not match a tuple value",
-                    );
+                    self.err(p.span(), "tuple pattern does not match a tuple value");
                 }
             }
             Pattern::Variant { path, payloads } => {
@@ -1596,7 +1617,10 @@ impl<'a> Checker<'a> {
                             self.bind_pattern(part, &ft, mutable);
                         }
                     } else {
-                        self.err(p.span(), format!("enum `{enum_name}` has no variant `{variant_name}`"));
+                        self.err(
+                            p.span(),
+                            format!("enum `{enum_name}` has no variant `{variant_name}`"),
+                        );
                     }
                 }
             }
@@ -1623,7 +1647,10 @@ impl<'a> Checker<'a> {
             named_ctors: Vec::new(),
             consts: Vec::new(),
         });
-        self.self_ty = Some(Ty::Class(c.name.clone(), table.generics.iter().cloned().map(Ty::Var).collect()));
+        self.self_ty = Some(Ty::Class(
+            c.name.clone(),
+            table.generics.iter().cloned().map(Ty::Var).collect(),
+        ));
         self.self_args = table
             .generics
             .iter()
@@ -1642,28 +1669,20 @@ impl<'a> Checker<'a> {
                     ..
                 } => {
                     let ft = self.check_expr(e);
-                    let w = ty
-                        .as_ref()
-                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
                     if let Some(w) = &w {
                         self.guard_ref_use(w, *span, "a field");
                     }
-                    let w = w
-                        .or_else(|| {
-                            self.resolved
-                                .types
-                                .get(&c.name)
-                                .and_then(|e| match e {
-                                    TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
-                                        .fields
-                                        .iter()
-                                        .find(|f| f.name == m.name())
-                                        .map(|f| {
-                                            self.subst(&f.ty, &self.self_args)
-                                        }),
-                                    _ => None,
-                                })
-                        });
+                    let w = w.or_else(|| {
+                        self.resolved.types.get(&c.name).and_then(|e| match e {
+                            TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
+                                .fields
+                                .iter()
+                                .find(|f| f.name == m.name())
+                                .map(|f| self.subst(&f.ty, &self.self_args)),
+                            _ => None,
+                        })
+                    });
                     let w = match w {
                         Some(t) if !matches!(t, Ty::Unknown) => Some(t),
                         _ => Some(ft.clone()),
@@ -1695,9 +1714,7 @@ impl<'a> Checker<'a> {
                     const_,
                     ..
                 } => {
-                    let w = ty
-                        .as_ref()
-                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
                     if let Some(w) = &w {
                         self.guard_ref_use(w, *span, "a field");
                     }
@@ -1714,7 +1731,9 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
-                ClassMember::Const { value, ty, span, .. } => {
+                ClassMember::Const {
+                    value, ty, span, ..
+                } => {
                     let vt = self.check_expr(value);
                     if let Some(t) = ty {
                         let tt = self.resolved_fn_ty(t, &table.generics);
@@ -1736,7 +1755,8 @@ impl<'a> Checker<'a> {
                         // A `super(...)` delegation is only valid inside a
                         // primary constructor body of a class with a parent.
                         self.super_ctor_params = table.extends.as_ref().map(|p| {
-                            let parent = self.class_table(&p.named().map(str::to_string).unwrap_or_default());
+                            let parent = self
+                                .class_table(&p.named().map(str::to_string).unwrap_or_default());
                             parent
                                 .map(|pt| self.primary_ctor_param_tys(&pt))
                                 .unwrap_or_default()
@@ -1786,7 +1806,10 @@ impl<'a> Checker<'a> {
             named_ctors: Vec::new(),
             consts: Vec::new(),
         });
-        self.self_ty = Some(Ty::Struct(s.name.clone(), table.generics.iter().cloned().map(Ty::Var).collect()));
+        self.self_ty = Some(Ty::Struct(
+            s.name.clone(),
+            table.generics.iter().cloned().map(Ty::Var).collect(),
+        ));
         self.self_args = table
             .generics
             .iter()
@@ -1808,17 +1831,14 @@ impl<'a> Checker<'a> {
                         .as_ref()
                         .map(|t| self.resolved_fn_ty(t, &table.generics))
                         .or_else(|| {
-                            self.resolved
-                                .types
-                                .get(&s.name)
-                                .and_then(|e| match e {
-                                    TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
-                                        .fields
-                                        .iter()
-                                        .find(|f| f.name == m.name())
-                                        .map(|f| self.subst(&f.ty, &self.self_args)),
-                                    _ => None,
-                                })
+                            self.resolved.types.get(&s.name).and_then(|e| match e {
+                                TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == m.name())
+                                    .map(|f| self.subst(&f.ty, &self.self_args)),
+                                _ => None,
+                            })
                         });
                     let w = match w {
                         Some(t) if !matches!(t, Ty::Unknown) => Some(t),
@@ -1851,9 +1871,7 @@ impl<'a> Checker<'a> {
                     const_,
                     ..
                 } => {
-                    let w = ty
-                        .as_ref()
-                        .map(|t| self.resolved_fn_ty(t, &table.generics));
+                    let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
                     if let Some(w) = &w {
                         self.guard_ref_use(w, *span, "a field");
                     }
@@ -1921,11 +1939,10 @@ impl<'a> Checker<'a> {
     /// property type and runs with `this` live; the setter receives the new
     /// value bound to `value` and reads `this`.
     fn check_property_bodies(&mut self, p: &PropertyDecl, generics: &[String]) {
-        let pty = p
-            .ty
-            .as_ref()
-            .map(|t| self.resolved_fn_ty(t, generics))
-            .unwrap_or(Ty::Unknown);
+        let pty =
+            p.ty.as_ref()
+                .map(|t| self.resolved_fn_ty(t, generics))
+                .unwrap_or(Ty::Unknown);
         if let Some(get) = &p.get {
             self.push_scope();
             self.fn_generics = Vec::new();
@@ -1977,24 +1994,24 @@ impl<'a> Checker<'a> {
                 let Some(iface_name) = i.named().map(str::to_string) else {
                     continue;
                 };
-                let Some(TypeTableEntry::Interface(iface)) =
-                    self.resolved.types.get(&iface_name)
+                let Some(TypeTableEntry::Interface(iface)) = self.resolved.types.get(&iface_name)
                 else {
                     continue;
                 };
                 for member in &iface.members {
                     if member.is_property {
-                        let has = self
-                            .find_property(&name, &member.name)
-                            .or_else(|| self.find_field(&name, &member.name, &HashMap::new()).map(|(f, _)| crate::resolve::PropertyInfo {
-                                name: f.name,
-                                visibility: f.visibility,
-                                is_static: f.is_static,
-                                ty: f.ty,
-                                has_get: true,
-                                has_set: f.mutable,
-                                span: f.span,
-                            }));
+                        let has = self.find_property(&name, &member.name).or_else(|| {
+                            self.find_field(&name, &member.name, &HashMap::new())
+                                .map(|(f, _)| crate::resolve::PropertyInfo {
+                                    name: f.name,
+                                    visibility: f.visibility,
+                                    is_static: f.is_static,
+                                    ty: f.ty,
+                                    has_get: true,
+                                    has_set: f.mutable,
+                                    span: f.span,
+                                })
+                        });
                         if has.is_none() {
                             self.err(
                                 member.span,
@@ -2031,13 +2048,10 @@ impl<'a> Checker<'a> {
             ExprKind::Lit(Lit::String(parts)) => self.string_ty(parts),
             ExprKind::Lit(l) => self.lit_ty(l),
             ExprKind::Ident(name) => self.ident_ty(e, name),
-            ExprKind::This => self
-                .self_ty
-                .clone()
-                .unwrap_or_else(|| {
-                    self.err(e.span, "`this` used outside of a class body");
-                    Ty::Unknown
-                }),
+            ExprKind::This => self.self_ty.clone().unwrap_or_else(|| {
+                self.err(e.span, "`this` used outside of a class body");
+                Ty::Unknown
+            }),
             ExprKind::Super => self.super_ty(e),
             ExprKind::Call { callee, args } => self.check_call(e, callee, args),
             ExprKind::Member { object, name } => self.check_member(e, object, name),
@@ -2063,9 +2077,7 @@ impl<'a> Checker<'a> {
                 let _ = self.check_expr(inner);
                 Ty::Unknown
             }
-            ExprKind::GenericCall { name, type_args } => {
-                self.generic_fn_ty(e, name, type_args)
-            }
+            ExprKind::GenericCall { name, type_args } => self.generic_fn_ty(e, name, type_args),
             ExprKind::Cast { expr, ty, kind } => self.check_cast(e, expr, ty, *kind),
             ExprKind::Unsafe(b) => {
                 self.unsafe_depth += 1;
@@ -2074,9 +2086,7 @@ impl<'a> Checker<'a> {
                 t
             }
             ExprKind::Block(b) => self.check_block(b),
-            ExprKind::Tuple(items) => {
-                Ty::Tuple(items.iter().map(|i| self.check_expr(i)).collect())
-            }
+            ExprKind::Tuple(items) => Ty::Tuple(items.iter().map(|i| self.check_expr(i)).collect()),
             ExprKind::Array(items) => {
                 if items.is_empty() {
                     Ty::List(Box::new(Ty::Unknown))
@@ -2203,16 +2213,18 @@ impl<'a> Checker<'a> {
         // Type name used as a constructor/static receiver.
         if let Some(entry) = self.resolved.types.get(name) {
             return match entry {
-                TypeTableEntry::Class(t) => {
-                    Ty::Class(t.name.clone(), t.generics.iter().cloned().map(Ty::Var).collect())
-                }
+                TypeTableEntry::Class(t) => Ty::Class(
+                    t.name.clone(),
+                    t.generics.iter().cloned().map(Ty::Var).collect(),
+                ),
                 TypeTableEntry::Struct(t) => Ty::Struct(
                     t.name.clone(),
                     t.generics.iter().cloned().map(Ty::Var).collect(),
                 ),
-                TypeTableEntry::Enum(t) => {
-                    Ty::Enum(t.name.clone(), t.generics.iter().cloned().map(Ty::Var).collect())
-                }
+                TypeTableEntry::Enum(t) => Ty::Enum(
+                    t.name.clone(),
+                    t.generics.iter().cloned().map(Ty::Var).collect(),
+                ),
                 TypeTableEntry::Interface(t) => Ty::Interface(
                     t.name.clone(),
                     t.generics.iter().cloned().map(Ty::Var).collect(),
@@ -2281,7 +2293,10 @@ impl<'a> Checker<'a> {
                 return Ty::Unknown;
             };
             if self.named_ctor_delegated {
-                self.err(e.span, "a named constructor may only delegate to `this(...)` once");
+                self.err(
+                    e.span,
+                    "a named constructor may only delegate to `this(...)` once",
+                );
             }
             self.named_ctor_delegated = true;
             self.check_args(e, &params, args);
@@ -2348,12 +2363,23 @@ impl<'a> Checker<'a> {
             }
             // `stream_open_read/write/append(path)`: buffered file streams
             // as `Stream?`.
-            if bname == "stream_open_read" || bname == "stream_open_write" || bname == "stream_open_append" {
+            if bname == "stream_open_read"
+                || bname == "stream_open_write"
+                || bname == "stream_open_append"
+            {
                 return self.check_stream_open(e, bname, args);
             }
             // `stdout_stream()` / `stderr_stream()`: write-only console streams.
             if bname == "stdout_stream" || bname == "stderr_stream" {
                 return self.check_stream_singleton(e, bname, args);
+            }
+            // `args()`: the program's command-line arguments.
+            if bname == "args" {
+                return self.check_args_builtin(e, args);
+            }
+            // `exit(code)`: terminate the process with a numeric code.
+            if bname == "exit" {
+                return self.check_exit(e, args);
             }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
@@ -2362,10 +2388,7 @@ impl<'a> Checker<'a> {
         }
         // `expect(v).toEqual(w)` / `.not().toBe(w)` / ... chains.
         if let ExprKind::Member { object, name } = &callee.kind {
-            if name != "not"
-                && is_expect_method(name)
-                && self.expect_chain_depth(object) > 0
-            {
+            if name != "not" && is_expect_method(name) && self.expect_chain_depth(object) > 0 {
                 if let Some(src) = self.expect_source(object) {
                     return self.check_expect_method(e, src, name, args);
                 }
@@ -2460,7 +2483,10 @@ impl<'a> Checker<'a> {
                     .zip(arg_tys.iter().cloned())
                     .collect();
                 let params: Vec<Ty> = if let Some(ctor) = &table.ctor {
-                    ctor.params.iter().map(|p| self.subst(&p.ty, &map)).collect()
+                    ctor.params
+                        .iter()
+                        .map(|p| self.subst(&p.ty, &map))
+                        .collect()
                 } else {
                     self.synthesized_ctor_param_tys(name)
                         .iter()
@@ -2482,9 +2508,10 @@ impl<'a> Checker<'a> {
         if let ExprKind::Ident(cname) = &callee.kind {
             if let Some(entry) = self.resolved.types.get(cname) {
                 let ct = match entry {
-                    TypeTableEntry::Class(c) => {
-                        Ty::Class(c.name.clone(), c.generics.iter().cloned().map(Ty::Var).collect())
-                    }
+                    TypeTableEntry::Class(c) => Ty::Class(
+                        c.name.clone(),
+                        c.generics.iter().cloned().map(Ty::Var).collect(),
+                    ),
                     TypeTableEntry::Struct(s) => Ty::Struct(
                         s.name.clone(),
                         s.generics.iter().cloned().map(Ty::Var).collect(),
@@ -2496,8 +2523,7 @@ impl<'a> Checker<'a> {
                 };
                 if let Some((cn, _)) = self.type_key(&ct) {
                     if let Some(m) = self.find_method(&cn, cname) {
-                        let params: Vec<Ty> =
-                            m.params.iter().map(|p| p.ty.clone()).collect();
+                        let params: Vec<Ty> = m.params.iter().map(|p| p.ty.clone()).collect();
                         self.check_args(e, &params, args);
                         return m.ret.clone();
                     }
@@ -2742,20 +2768,20 @@ impl<'a> Checker<'a> {
     }
 
     /// Validate an `expect(v).<method>(...)` assertion.
-    fn check_expect_method(
-        &mut self,
-        e: &Expr,
-        src: &Expr,
-        method: &str,
-        args: &[CallArg],
-    ) -> Ty {
+    fn check_expect_method(&mut self, e: &Expr, src: &Expr, method: &str, args: &[CallArg]) -> Ty {
         for a in args {
             if a.spread {
-                self.err(a.span, "spread arguments are not supported in an expectation");
+                self.err(
+                    a.span,
+                    "spread arguments are not supported in an expectation",
+                );
                 return Ty::Empty;
             }
             if a.name.is_some() {
-                self.err(a.span, "named arguments are not supported in an expectation");
+                self.err(
+                    a.span,
+                    "named arguments are not supported in an expectation",
+                );
                 return Ty::Empty;
             }
         }
@@ -2764,10 +2790,7 @@ impl<'a> Checker<'a> {
         match method {
             "toBe" | "toEqual" => {
                 if args.len() != 1 {
-                    self.err(
-                        e.span,
-                        format!("`.{method}(expected)` takes one argument"),
-                    );
+                    self.err(e.span, format!("`.{method}(expected)` takes one argument"));
                     for a in args {
                         let _ = self.check_expr(&a.value);
                     }
@@ -2806,7 +2829,12 @@ impl<'a> Checker<'a> {
                     ),
                 }
                 let lt = self.check_expr(&args[0].value);
-                self.check_assignable(&Ty::Int, &lt, args[0].value.span, "`.toHaveLength()` argument");
+                self.check_assignable(
+                    &Ty::Int,
+                    &lt,
+                    args[0].value.span,
+                    "`.toHaveLength()` argument",
+                );
             }
             "toContain" => {
                 if args.len() != 1 {
@@ -2830,12 +2858,9 @@ impl<'a> Checker<'a> {
                         args[0].value.span,
                         "`.toContain()` argument",
                     ),
-                    Ty::Map(k, _) => self.check_assignable(
-                        k,
-                        &at,
-                        args[0].value.span,
-                        "`.toContain()` argument",
-                    ),
+                    Ty::Map(k, _) => {
+                        self.check_assignable(k, &at, args[0].value.span, "`.toContain()` argument")
+                    }
                     Ty::Unknown => {}
                     other => self.err(
                         src.span,
@@ -2971,11 +2996,7 @@ impl<'a> Checker<'a> {
         if position < params.len() {
             self.err(
                 e.span,
-                format!(
-                    "expected {} argument(s), found {}",
-                    params.len(),
-                    position
-                ),
+                format!("expected {} argument(s), found {}", params.len(), position),
             );
         }
     }
@@ -2986,12 +3007,7 @@ impl<'a> Checker<'a> {
     /// telling the caller to write the type arguments explicitly. The
     /// substituted signature is checked exactly once (arguments are not
     /// re-checked), and the substituted return type is returned.
-    fn infer_generic_call(
-        &mut self,
-        e: &Expr,
-        f: &CallableInfo,
-        args: &[CallArg],
-    ) -> Option<Ty> {
+    fn infer_generic_call(&mut self, e: &Expr, f: &CallableInfo, args: &[CallArg]) -> Option<Ty> {
         let mut map: HashMap<String, Ty> = HashMap::new();
         let mut got: HashMap<Span, Ty> = HashMap::new();
         for (position, a) in args.iter().enumerate() {
@@ -3003,7 +3019,11 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let missing: Vec<&String> = f.generics.iter().filter(|g| !map.contains_key(*g)).collect();
+        let missing: Vec<&String> = f
+            .generics
+            .iter()
+            .filter(|g| !map.contains_key(*g))
+            .collect();
         if !missing.is_empty() {
             let plural = if missing.len() == 1 { "" } else { "s" };
             let names = missing
@@ -3066,23 +3086,20 @@ impl<'a> Checker<'a> {
         if position < params.len() {
             self.err(
                 e.span,
-                format!(
-                    "expected {} argument(s), found {}",
-                    params.len(),
-                    position
-                ),
+                format!("expected {} argument(s), found {}", params.len(), position),
             );
         }
     }
 
     /// Variadic-aware argument checking against `ParamInfo`s. Params flagged
     /// `rest` absorb any remaining positional arguments without arity errors.
-    fn check_args_info(&mut self, e: &Expr, params: &[crate::resolve::ParamInfo], args: &[CallArg]) {
-        let rest_ty = params
-            .iter()
-            .rev()
-            .find(|p| p.rest)
-            .map(|p| p.ty.clone());
+    fn check_args_info(
+        &mut self,
+        e: &Expr,
+        params: &[crate::resolve::ParamInfo],
+        args: &[CallArg],
+    ) {
+        let rest_ty = params.iter().rev().find(|p| p.rest).map(|p| p.ty.clone());
         let fixed = params.iter().filter(|p| !p.rest).count();
         let mut position = 0usize;
         for a in args {
@@ -3209,10 +3226,7 @@ impl<'a> Checker<'a> {
                         return Ty::Unknown;
                     }
                 }
-                self.err(
-                    e.span,
-                    format!("no member `{name}` on type `{tname}`"),
-                );
+                self.err(e.span, format!("no member `{name}` on type `{tname}`"));
                 return Ty::Unknown;
             }
         }
@@ -3240,10 +3254,7 @@ impl<'a> Checker<'a> {
                 "push" => Ty::Fn(vec![inner.as_ref().clone()], Box::new(Ty::Empty)),
                 "pop" => Ty::Fn(vec![], Box::new(inner.as_ref().clone())),
                 "remove" => Ty::Fn(vec![Ty::Int], Box::new(inner.as_ref().clone())),
-                "insert" => Ty::Fn(
-                    vec![Ty::Int, inner.as_ref().clone()],
-                    Box::new(Ty::Empty),
-                ),
+                "insert" => Ty::Fn(vec![Ty::Int, inner.as_ref().clone()], Box::new(Ty::Empty)),
                 "sort" if is_list_sortable(inner) => Ty::Fn(vec![], Box::new(Ty::Empty)),
                 "sort" => {
                     self.err(
@@ -3288,7 +3299,10 @@ impl<'a> Checker<'a> {
         if let Ty::Stream = ot {
             // Builtin stream methods (buffered I/O).
             return match name {
-                "read" => Ty::Fn(vec![Ty::Int], Box::new(Ty::Option(Box::new(Ty::List(Box::new(Ty::Byte)))))),
+                "read" => Ty::Fn(
+                    vec![Ty::Int],
+                    Box::new(Ty::Option(Box::new(Ty::List(Box::new(Ty::Byte))))),
+                ),
                 "write" => Ty::Fn(vec![Ty::List(Box::new(Ty::Byte))], Box::new(Ty::Int)),
                 "flush" => Ty::Fn(vec![], Box::new(Ty::Bool)),
                 "close" => Ty::Fn(vec![], Box::new(Ty::Bool)),
@@ -3331,10 +3345,7 @@ impl<'a> Checker<'a> {
                         return Ty::Unknown;
                     }
                     return Ty::Fn(
-                        m.params
-                            .iter()
-                            .map(|p| self.subst(&p.ty, &imap))
-                            .collect(),
+                        m.params.iter().map(|p| self.subst(&p.ty, &imap)).collect(),
                         Box::new(self.subst(&m.ty, &imap)),
                     );
                 }
@@ -3385,7 +3396,10 @@ impl<'a> Checker<'a> {
         }
         if let Some(m) = self.find_method(&class, name) {
             return Ty::Fn(
-                m.params.iter().map(|p| self.subst(&p.ty, &args_map)).collect(),
+                m.params
+                    .iter()
+                    .map(|p| self.subst(&p.ty, &args_map))
+                    .collect(),
                 Box::new(self.subst(&m.ret, &args_map)),
             );
         }
@@ -3416,7 +3430,10 @@ impl<'a> Checker<'a> {
             self.subst(&p.ty, &args_map)
         } else if let Some(m) = self.find_method(&class, name) {
             Ty::Fn(
-                m.params.iter().map(|p| self.subst(&p.ty, &args_map)).collect(),
+                m.params
+                    .iter()
+                    .map(|p| self.subst(&p.ty, &args_map))
+                    .collect(),
                 Box::new(self.subst(&m.ret, &args_map)),
             )
         } else {
@@ -3464,10 +3481,7 @@ impl<'a> Checker<'a> {
         // value itself, a scalar referent is addressed like a pointer element.
         let ot = match &ot0 {
             Ty::Ref(inner)
-                if !matches!(
-                    inner.as_ref(),
-                    Ty::Int | Ty::Float | Ty::Bool | Ty::Char
-                ) =>
+                if !matches!(inner.as_ref(), Ty::Int | Ty::Float | Ty::Bool | Ty::Char) =>
             {
                 (**inner).clone()
             }
@@ -3506,9 +3520,7 @@ impl<'a> Checker<'a> {
                     other => {
                         self.err(
                             e.span,
-                            format!(
-                                "indexing a pointer to a `{other}` value is not supported yet"
-                            ),
+                            format!("indexing a pointer to a `{other}` value is not supported yet"),
                         );
                         Ty::Unknown
                     }
@@ -3525,10 +3537,7 @@ impl<'a> Checker<'a> {
             }
             Ty::Unknown => Ty::Unknown,
             other => {
-                self.err(
-                    e.span,
-                    format!("cannot index a value of type `{other}`"),
-                );
+                self.err(e.span, format!("cannot index a value of type `{other}`"));
                 Ty::Unknown
             }
         }
@@ -3623,16 +3632,11 @@ impl<'a> Checker<'a> {
     /// types (a generic `T`) skip the gate; the emitter sees them only under
     /// a concrete substitution.
     fn check_comparison(&mut self, e: &Expr, op: BinOp, lt: &Ty, rt: &Ty) {
-        if *lt == Ty::Unknown
-            || *rt == Ty::Unknown
-            || lt.has_var()
-            || rt.has_var()
-        {
+        if *lt == Ty::Unknown || *rt == Ty::Unknown || lt.has_var() || rt.has_var() {
             return;
         }
         let eq_only = matches!(op, BinOp::Eq | BinOp::Ne);
-        let scalar = lt.is_numeric() && rt.is_numeric()
-            || matches!((lt, rt), (Ty::Char, Ty::Char));
+        let scalar = lt.is_numeric() && rt.is_numeric() || matches!((lt, rt), (Ty::Char, Ty::Char));
         if scalar {
             return;
         }
@@ -3681,9 +3685,7 @@ impl<'a> Checker<'a> {
         } else {
             self.err(
                 e.span,
-                format!(
-                    "operator `{op:?}` requires comparable operands, found `{lt}` and `{rt}`"
-                ),
+                format!("operator `{op:?}` requires comparable operands, found `{lt}` and `{rt}`"),
             );
         }
     }
@@ -3693,19 +3695,28 @@ impl<'a> Checker<'a> {
         match op {
             UnOp::Neg => {
                 if t != Ty::Unknown && !t.is_numeric() {
-                    self.err(e.span, format!("unary `-` requires a numeric operand, found `{t}`"));
+                    self.err(
+                        e.span,
+                        format!("unary `-` requires a numeric operand, found `{t}`"),
+                    );
                 }
                 t
             }
             UnOp::Not => {
                 if t != Ty::Unknown && t != Ty::Bool {
-                    self.err(e.span, format!("unary `!` requires a `bool` operand, found `{t}`"));
+                    self.err(
+                        e.span,
+                        format!("unary `!` requires a `bool` operand, found `{t}`"),
+                    );
                 }
                 Ty::Bool
             }
             UnOp::BitNot => {
                 if t != Ty::Unknown && t != Ty::Int {
-                    self.err(e.span, format!("unary `~` requires an `int` operand, found `{t}`"));
+                    self.err(
+                        e.span,
+                        format!("unary `~` requires an `int` operand, found `{t}`"),
+                    );
                 }
                 Ty::Int
             }
@@ -3719,10 +3730,7 @@ impl<'a> Checker<'a> {
                     }
                     Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => {
                         if !matches!(&operand.kind, ExprKind::Ident(_)) {
-                            self.err(
-                                e.span,
-                                "`&` of a scalar requires a local variable",
-                            );
+                            self.err(e.span, "`&` of a scalar requires a local variable");
                             return Ty::Unknown;
                         }
                         Ty::Ptr(Box::new(t))
@@ -3779,7 +3787,9 @@ impl<'a> Checker<'a> {
                             self.err_note(
                                 target.span,
                                 format!("cannot overwrite `#[manualAlloc]` binding `{name}`"),
-                                format!("`free()` `{name}` first, then bind a new value with `let`"),
+                                format!(
+                                    "`free()` `{name}` first, then bind a new value with `let`"
+                                ),
                             );
                         } else if let Some(src) = &moved_from {
                             self.err_note(
@@ -3863,52 +3873,52 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Member { object, name } => {
-    // Type-qualified static property assignment: `Type.prop = v`.
-    if let ExprKind::Ident(tname) = &object.kind {
-        if let Some(entry) = self.resolved.types.get(tname) {
-            let gname = entry.name().to_string();
-            if let Some(f) = self.find_field(&gname, name, &HashMap::new()) {
-                if !f.0.is_static {
-                    self.err(
-                        target.span,
-                        format!(
+                // Type-qualified static property assignment: `Type.prop = v`.
+                if let ExprKind::Ident(tname) = &object.kind {
+                    if let Some(entry) = self.resolved.types.get(tname) {
+                        let gname = entry.name().to_string();
+                        if let Some(f) = self.find_field(&gname, name, &HashMap::new()) {
+                            if !f.0.is_static {
+                                self.err(
+                                    target.span,
+                                    format!(
                             "instance field `{name}` must be assigned on an instance of `{gname}`"
                         ),
-                    );
-                } else if !f.0.mutable {
-                    self.err(
-                        target.span,
-                        format!("cannot assign to immutable static field `{name}`"),
-                    );
-                }
-                self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
-                return Ty::Empty;
-            }
-            if let Some(p) = self.find_property(&gname, name) {
-                if !p.is_static {
-                    self.err(
+                                );
+                            } else if !f.0.mutable {
+                                self.err(
+                                    target.span,
+                                    format!("cannot assign to immutable static field `{name}`"),
+                                );
+                            }
+                            self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
+                            return Ty::Empty;
+                        }
+                        if let Some(p) = self.find_property(&gname, name) {
+                            if !p.is_static {
+                                self.err(
                         target.span,
                         format!(
                             "instance property `{name}` must be assigned on an instance of `{gname}`"
                         ),
                     );
-                } else if !p.has_set {
-                    self.err(
-                        target.span,
-                        format!("static property `{name}` has no setter"),
-                    );
+                            } else if !p.has_set {
+                                self.err(
+                                    target.span,
+                                    format!("static property `{name}` has no setter"),
+                                );
+                            }
+                            self.check_assignable(&p.ty, &vt, target.span, "assignment");
+                            return Ty::Empty;
+                        }
+                        self.err(
+                            target.span,
+                            format!("no assignable member `{name}` on `{tname}`"),
+                        );
+                        return Ty::Empty;
+                    }
                 }
-                self.check_assignable(&p.ty, &vt, target.span, "assignment");
-                return Ty::Empty;
-            }
-            self.err(
-                target.span,
-                format!("no assignable member `{name}` on `{tname}`"),
-            );
-            return Ty::Empty;
-        }
-    }
-    let ot = self.check_expr(object);
+                let ot = self.check_expr(object);
                 let ot = match ot {
                     Ty::Ptr(inner) => {
                         if self.unsafe_depth == 0 {
@@ -3962,10 +3972,7 @@ impl<'a> Checker<'a> {
                         self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
                     } else if let Some(p) = self.find_property(&class, name) {
                         if !p.has_set {
-                            self.err(
-                                target.span,
-                                format!("property `{name}` has no setter"),
-                            );
+                            self.err(target.span, format!("property `{name}` has no setter"));
                         }
                         self.check_assignable(
                             &self.subst(&p.ty, &args_map),
@@ -3980,7 +3987,10 @@ impl<'a> Checker<'a> {
                         );
                     }
                 } else {
-                    self.err(target.span, "cannot assign to a member of a non-class value");
+                    self.err(
+                        target.span,
+                        "cannot assign to a member of a non-class value",
+                    );
                 }
             }
             ExprKind::Index { object, index } => {
@@ -4019,7 +4029,9 @@ impl<'a> Checker<'a> {
                             );
                         }
                         match inner.as_ref() {
-                            Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => (**inner).clone(),
+                            Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte => {
+                                (**inner).clone()
+                            }
                             other => {
                                 self.err(
                                     target.span,
@@ -4050,7 +4062,10 @@ impl<'a> Checker<'a> {
                 self.check_assign_rhs(&elem_ty, &vt, value, target.span, "assignment");
             }
             _ => {
-                self.err(target.span, "assignment target must be a variable, member, or index");
+                self.err(
+                    target.span,
+                    "assignment target must be a variable, member, or index",
+                );
             }
         }
         let _ = e.span;
@@ -4129,7 +4144,10 @@ impl<'a> Checker<'a> {
     /// the result has that type.
     fn check_minmax(&mut self, e: &Expr, bname: &str, args: &[CallArg]) -> Ty {
         if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
-            self.err(e.span, format!("`{bname}(a, b)` takes exactly two arguments"));
+            self.err(
+                e.span,
+                format!("`{bname}(a, b)` takes exactly two arguments"),
+            );
             for a in args {
                 let _ = self.check_expr(&a.value);
             }
@@ -4260,7 +4278,10 @@ impl<'a> Checker<'a> {
     /// and returns `true` on success, `false` on failure.
     fn check_write_file(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
         if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
-            self.err(e.span, "`write_file(path, text)` takes exactly two arguments");
+            self.err(
+                e.span,
+                "`write_file(path, text)` takes exactly two arguments",
+            );
             for a in args {
                 let _ = self.check_expr(&a.value);
             }
@@ -4357,7 +4378,10 @@ impl<'a> Checker<'a> {
     /// returning `Stream?` (`none` when the path cannot be opened).
     fn check_stream_open(&mut self, e: &Expr, bname: &str, args: &[CallArg]) -> Ty {
         if args.len() != 1 || args[0].name.is_some() || args[0].spread {
-            self.err(e.span, format!("`{bname}(path)` takes exactly one argument"));
+            self.err(
+                e.span,
+                format!("`{bname}(path)` takes exactly one argument"),
+            );
             for a in args {
                 let _ = self.check_expr(&a.value);
             }
@@ -4365,7 +4389,10 @@ impl<'a> Checker<'a> {
         }
         let at = self.check_expr(&args[0].value);
         if !matches!(at, Ty::String | Ty::Unknown) {
-            self.err(args[0].value.span, format!("`{bname}` requires a `string` path"));
+            self.err(
+                args[0].value.span,
+                format!("`{bname}` requires a `string` path"),
+            );
             return Ty::Unknown;
         }
         Ty::Option(Box::new(Ty::Stream))
@@ -4383,13 +4410,37 @@ impl<'a> Checker<'a> {
         Ty::Stream
     }
 
-    fn check_if(
-        &mut self,
-        e: &Expr,
-        cond: &IfCond,
-        then: &Block,
-        else_else: Option<&Expr>,
-    ) -> Ty {
+    /// `args()`: the program's command-line arguments (excluding the program
+    /// name) as a `List<string>`.
+    fn check_args_builtin(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if !args.is_empty() {
+            self.err(e.span, "`args()` takes no arguments");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        Ty::List(Box::new(Ty::String))
+    }
+
+    /// `exit(code)`: terminate the process with a numeric exit code.
+    fn check_exit(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if args.len() != 1 || args[0].name.is_some() || args[0].spread {
+            self.err(e.span, "`exit(code)` takes exactly one argument");
+            for a in args {
+                let _ = self.check_expr(&a.value);
+            }
+            return Ty::Unknown;
+        }
+        let at = self.check_expr(&args[0].value);
+        if !matches!(at, Ty::Int | Ty::Unknown) {
+            self.err(args[0].value.span, "`exit` requires an `int` exit code");
+            return Ty::Unknown;
+        }
+        Ty::Empty
+    }
+
+    fn check_if(&mut self, e: &Expr, cond: &IfCond, then: &Block, else_else: Option<&Expr>) -> Ty {
         // For `if (let pattern = value)` the binding stays in scope for the
         // then-block only: a failing pattern skips the binding entirely, so
         // the else branch must not see it.
@@ -4511,34 +4562,32 @@ impl<'a> Checker<'a> {
         }
         match p {
             Pattern::Wildcard | Pattern::Binding { .. } => {}
-            Pattern::Tuple(parts) => {
-                match st {
-                    Ty::Tuple(tys) => {
-                        if tys.len() != parts.len() {
-                            self.err_note(
-                                span,
-                                format!(
-                                    "a {}-element tuple pattern cannot match a {}-tuple",
-                                    parts.len(),
-                                    tys.len()
-                                ),
-                                "tuple patterns must line up with the scrutinee's arity",
-                            );
-                        } else {
-                            for (part, t) in parts.iter().zip(tys.iter()) {
-                                self.check_match_pattern(part, t, span);
-                            }
-                        }
-                    }
-                    other => {
+            Pattern::Tuple(parts) => match st {
+                Ty::Tuple(tys) => {
+                    if tys.len() != parts.len() {
                         self.err_note(
                             span,
-                            format!("a tuple pattern cannot match a value of type `{other}`"),
-                            "tuple patterns require a tuple scrutinee",
+                            format!(
+                                "a {}-element tuple pattern cannot match a {}-tuple",
+                                parts.len(),
+                                tys.len()
+                            ),
+                            "tuple patterns must line up with the scrutinee's arity",
                         );
+                    } else {
+                        for (part, t) in parts.iter().zip(tys.iter()) {
+                            self.check_match_pattern(part, t, span);
+                        }
                     }
                 }
-            }
+                other => {
+                    self.err_note(
+                        span,
+                        format!("a tuple pattern cannot match a value of type `{other}`"),
+                        "tuple patterns require a tuple scrutinee",
+                    );
+                }
+            },
             Pattern::Or(alts) => {
                 for a in alts {
                     self.check_match_pattern(a, st, span);
@@ -4570,13 +4619,13 @@ impl<'a> Checker<'a> {
                 }
                 // A variant path on a non-enum, non-option scrutinee is a
                 // mismatch; enum variants are validated while binding.
-                if !st.is_option()
-                    && !matches!(st, Ty::Enum(..))
-                    && path.len() >= 2
-                {
+                if !st.is_option() && !matches!(st, Ty::Enum(..)) && path.len() >= 2 {
                     self.err(
                         span,
-                        format!("variant pattern `{}` cannot match a value of type `{st}`", path.join(".")),
+                        format!(
+                            "variant pattern `{}` cannot match a value of type `{st}`",
+                            path.join(".")
+                        ),
                     );
                 }
                 if st.is_option() && !(path.len() == 1 && path[0] == "some") {

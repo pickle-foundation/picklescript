@@ -1,0 +1,36 @@
+# PickleScript workspace manifest.
+#
+# The loader reads only `[workspace] members` today; the remaining tables
+# (package metadata, paths, registry, dependencies) define the layout that the
+# future package manager will use.
+
+[package]
+name = "picklescript"
+version = "0.1.0"
+description = "The PickleScript language toolchain."
+authors = ["PickleScript team"]
+license = "MIT"
+
+[workspace]
+members = [
+    { name = "compiler", path = "compiler-selfhost" },
+    { name = "cli", path = "cli-selfhost" },
+    { name = "runtime", path = "runtime-selfhost" },
+]
+
+# Where the package manager keeps its state.
+[paths]
+packages = ".pickle/packages"
+cache = ".pickle/cache"
+registry = ".pickle/registry"
+
+# Default registry for `author/package` dependency names.
+[registry]
+default = "pickle"
+
+# Expected dependency shape once the package manager lands, e.g.:
+# [dependencies]
+# pickle-lang/runtime = "0.1.0"
+#
+# [dev-dependencies]
+# pickle-lang/devtools = "0.1.0"

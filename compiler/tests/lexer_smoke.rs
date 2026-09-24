@@ -1,4 +1,4 @@
-﻿use pickle_compiler::diag::{DiagnosticSink, FileId, SourceMap};
+use pickle_compiler::diag::{DiagnosticSink, FileId, SourceMap};
 use pickle_compiler::lexer::lex;
 use pickle_compiler::token::{LexedToken, StrSeg, Tok};
 
@@ -63,7 +63,10 @@ fn expr_tokens(t: &LexedToken) -> Vec<&LexedToken> {
 }
 
 fn str_tokens(l: &Lex) -> Vec<&LexedToken> {
-    l.tokens.iter().filter(|t| matches!(t.token.kind, Tok::Str(_))).collect()
+    l.tokens
+        .iter()
+        .filter(|t| matches!(t.token.kind, Tok::Str(_)))
+        .collect()
 }
 
 #[test]
@@ -110,11 +113,20 @@ fn typed_number_suffixes_lex_as_one_number_token() {
         .collect();
     assert_eq!(
         num_suffix,
-        vec![Some(&"u8".to_string()), Some(&"i32".to_string()), Some(&"f32".to_string())],
+        vec![
+            Some(&"u8".to_string()),
+            Some(&"i32".to_string()),
+            Some(&"f32".to_string())
+        ],
         "suffixes must be captured whole (u8, i32, f32), not one letter"
     );
 
-    let last = &l.tokens[l.tokens.iter().position(|t| matches!(t.token.kind, Tok::Number)).unwrap() + 1];
+    let last = &l.tokens[l
+        .tokens
+        .iter()
+        .position(|t| matches!(t.token.kind, Tok::Number))
+        .unwrap()
+        + 1];
     let f32_token = l
         .tokens
         .iter()
@@ -133,11 +145,23 @@ fn operators_inside_interpolation() {
     assert!(
         find_ref(&exprs, &Tok::Shl),
         "interpolation must lex `<<` ({:?})",
-        exprs.iter().map(|t| t.token.kind.clone()).collect::<Vec<_>>()
+        exprs
+            .iter()
+            .map(|t| t.token.kind.clone())
+            .collect::<Vec<_>>()
     );
-    assert!(find_ref(&exprs, &Tok::RangeIncl), "interpolation must lex `..=`");
-    assert!(find_ref(&exprs, &Tok::QuestionColon), "interpolation must lex `?:`");
-    assert!(find_ref(&exprs, &Tok::SendOp), "interpolation must lex `<-`");
+    assert!(
+        find_ref(&exprs, &Tok::RangeIncl),
+        "interpolation must lex `..=`"
+    );
+    assert!(
+        find_ref(&exprs, &Tok::QuestionColon),
+        "interpolation must lex `?:`"
+    );
+    assert!(
+        find_ref(&exprs, &Tok::SendOp),
+        "interpolation must lex `<-`"
+    );
     assert!(find_ref(&exprs, &Tok::Range), "interpolation must lex `..`");
 }
 
@@ -150,7 +174,10 @@ fn insane_operators_lex_top_level() {
     assert!(find(&l.tokens, &Tok::RangeIncl));
     assert!(find(&l.tokens, &Tok::QuestionColon));
     assert!(find(&l.tokens, &Tok::SendOp), "`<-` must lex at top level");
-    assert!(find(&l.tokens, &Tok::Ellipsis), "`...` must lex as Ellipsis");
+    assert!(
+        find(&l.tokens, &Tok::Ellipsis),
+        "`...` must lex as Ellipsis"
+    );
     assert!(
         !find(&l.tokens, &Tok::Range),
         "`x...y` must not lex as Range followed by Dot"
@@ -178,7 +205,7 @@ fn multiline_string_with_interpolation_and_newline() {
     assert!(l.msgs.is_empty(), "unexpected errors: {:?}", l.msgs);
     let strs = str_tokens(&l);
     assert_eq!(strs.len(), 1);
-let t = strs[0];
+    let t = strs[0];
     let exprs = expr_tokens(t);
     let expr_count = if let Tok::Str(lit) = &t.token.kind {
         lit.segments
@@ -188,7 +215,10 @@ let t = strs[0];
     } else {
         0
     };
-    assert_eq!(expr_count, 1, "expected one interpolation inside triple string");
+    assert_eq!(
+        expr_count, 1,
+        "expected one interpolation inside triple string"
+    );
     assert!(matches!(exprs[0].token.kind, Tok::Ident(_)));
     if let Tok::Str(lit) = &t.token.kind {
         let text = lit.segments.iter().find_map(|s| match s {
@@ -207,8 +237,14 @@ fn nested_braces_in_interpolation() {
     assert!(l.msgs.is_empty(), "unexpected errors: {:?}", l.msgs);
     let strs = str_tokens(&l);
     let exprs = expr_tokens(strs[0]);
-    assert!(find_ref(&exprs, &Tok::LBrace), "nested `{{` must lex inside interpolation");
-    assert!(find_ref(&exprs, &Tok::RBrace), "nested `}}` must lex inside interpolation");
+    assert!(
+        find_ref(&exprs, &Tok::LBrace),
+        "nested `{{` must lex inside interpolation"
+    );
+    assert!(
+        find_ref(&exprs, &Tok::RBrace),
+        "nested `}}` must lex inside interpolation"
+    );
     assert!(
         !find(&l.tokens, &Tok::RBrace),
         "the interpolation's own closing brace must not leak as a top-level token"
@@ -221,7 +257,10 @@ fn newline_inside_interpolation_parens_continues() {
     assert!(l.msgs.is_empty(), "unexpected errors: {:?}", l.msgs);
     let strs = str_tokens(&l);
     let exprs = expr_tokens(strs[0]);
-    assert!(find_ref(&exprs, &Tok::Plus), "multi-line parenthesized expr must lex");
+    assert!(
+        find_ref(&exprs, &Tok::Plus),
+        "multi-line parenthesized expr must lex"
+    );
 }
 
 #[test]
@@ -267,11 +306,16 @@ fn doc_newline_does_not_steal_doc() {
 fn unterminated_block_comment_is_reported() {
     let l = lex_str("let x = 1 /* never closed\n");
     assert!(
-        l.msgs.iter().any(|m| m.contains("unterminated block comment")),
+        l.msgs
+            .iter()
+            .any(|m| m.contains("unterminated block comment")),
         "expected unterminated block comment diagnostic, got: {:?}",
         l.msgs
     );
-    assert!(find(&l.tokens, &Tok::Ident(String::from("x"))), "tokens before the comment survive");
+    assert!(
+        find(&l.tokens, &Tok::Ident(String::from("x"))),
+        "tokens before the comment survive"
+    );
 }
 
 #[test]
@@ -282,7 +326,12 @@ fn bad_characters_are_skipped_and_lexing_continues() {
         .iter()
         .filter(|m| m.starts_with("unexpected character"))
         .collect();
-assert_eq!(errs.len(), 2, "one diagnostic per bad character, got: {:?}", l.msgs);
+    assert_eq!(
+        errs.len(),
+        2,
+        "one diagnostic per bad character, got: {:?}",
+        l.msgs
+    );
     assert!(find(&l.tokens, &Tok::Ident(String::from("x"))));
     assert!(
         find_after(&l.tokens, 0, &Tok::Ident(String::from("y"))),
@@ -308,7 +357,9 @@ fn real_nul_byte_is_an_error_but_does_not_truncate() {
 fn unterminated_interpolation_is_reported() {
     let l = lex_str("let s = \"{x\"\n");
     assert!(
-        l.msgs.iter().any(|m| m.contains("unterminated interpolation")),
+        l.msgs
+            .iter()
+            .any(|m| m.contains("unterminated interpolation")),
         "expected unterminated interpolation diagnostic, got: {:?}",
         l.msgs
     );
@@ -320,10 +371,16 @@ fn unterminated_string_and_raw_string_are_reported() {
     assert!(bad.msgs.iter().any(|m| m.contains("unterminated string")));
 
     let raw = lex_str("let s = r\"abc\n");
-    assert!(raw.msgs.iter().any(|m| m.contains("unterminated raw string")));
+    assert!(raw
+        .msgs
+        .iter()
+        .any(|m| m.contains("unterminated raw string")));
 
     let multi = lex_str("let s = \"\"\"abc\n");
-    assert!(multi.msgs.iter().any(|m| m.contains("unterminated multi-line string")));
+    assert!(multi
+        .msgs
+        .iter()
+        .any(|m| m.contains("unterminated multi-line string")));
 }
 
 #[test]
@@ -332,19 +389,63 @@ fn char_empty_and_unterminated_reported() {
     assert!(l.msgs.iter().any(|m| m.contains("empty character literal")));
 
     let u = lex_str("let a = 'x\n");
-    assert!(u.msgs.iter().any(|m| m.contains("unterminated character literal")));
+    assert!(u
+        .msgs
+        .iter()
+        .any(|m| m.contains("unterminated character literal")));
 }
 
 #[test]
 fn keyword_lookup_is_complete() {
     // The match-based keyword table must keep covering every reserved word.
-for s in [
-        "module", "import", "class", "struct", "enum", "interface", "fn",
-        "constructor", "property", "get", "set", "static", "override", "let", "var",
-        "const", "public", "private", "protected", "if", "else", "while", "for", "in",
-        "break", "continue", "return", "match", "case", "true", "false", "none", "async",
-        "await", "task", "channel", "unsafe", "extends", "implements", "is", "as", "from",
-        "this", "super", "init", "deinit", "operator",
+    for s in [
+        "module",
+        "import",
+        "class",
+        "struct",
+        "enum",
+        "interface",
+        "fn",
+        "constructor",
+        "property",
+        "get",
+        "set",
+        "static",
+        "override",
+        "let",
+        "var",
+        "const",
+        "public",
+        "private",
+        "protected",
+        "if",
+        "else",
+        "while",
+        "for",
+        "in",
+        "break",
+        "continue",
+        "return",
+        "match",
+        "case",
+        "true",
+        "false",
+        "none",
+        "async",
+        "await",
+        "task",
+        "channel",
+        "unsafe",
+        "extends",
+        "implements",
+        "is",
+        "as",
+        "from",
+        "this",
+        "super",
+        "init",
+        "deinit",
+        "operator",
     ] {
         assert!(
             Tok::keyword(s).is_some(),

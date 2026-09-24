@@ -7,7 +7,10 @@ use pickle_compiler::error::ErrorCode;
 use pickle_compiler::front::frontend_checked;
 
 fn fixture(name: &str) -> String {
-    format!("{}/tests/fixtures/modules/{name}", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/tests/fixtures/modules/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 fn ws_fixture(name: &str) -> String {
@@ -93,11 +96,7 @@ fn aliased_collision_compiles_clean() {
 #[test]
 fn missing_module_is_reported() {
     let path = fixture("missing_main.pkl");
-    std::fs::write(
-        &path,
-        "import does.not.exist\n\nfn main() {}\n",
-    )
-    .expect("write fixture");
+    std::fs::write(&path, "import does.not.exist\n\nfn main() {}\n").expect("write fixture");
     let (ok, diags, _map) = check_file(&path);
     let _ = std::fs::remove_file(&path);
     assert!(ok.is_some(), "loader continues after module errors");
@@ -113,11 +112,7 @@ fn missing_module_is_reported() {
 #[test]
 fn unexported_item_is_reported() {
     let path = fixture("unexported_main.pkl");
-    std::fs::write(
-        &path,
-        "import nope from math.ops\n\nfn main() {}\n",
-    )
-    .expect("write fixture");
+    std::fs::write(&path, "import nope from math.ops\n\nfn main() {}\n").expect("write fixture");
     let (ok, diags, _map) = check_file(&path);
     let _ = std::fs::remove_file(&path);
     assert!(ok.is_some(), "loader continues after module errors");
@@ -183,10 +178,7 @@ fn module_decl_single_file_still_compiles() {
 
 #[test]
 fn pub_import_reexports_namespace_and_items() {
-    let base = format!(
-        "{}/tests/fixtures/modules/std",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let base = format!("{}/tests/fixtures/modules/std", env!("CARGO_MANIFEST_DIR"));
     std::fs::create_dir_all(&base).ok();
     std::fs::write(
         format!("{base}/json.pkl"),
@@ -231,10 +223,7 @@ fn pub_import_reexports_namespace_and_items() {
 
 #[test]
 fn package_dir_imports_union_of_members() {
-    let base = format!(
-        "{}/tests/fixtures/modules/pkg",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let base = format!("{}/tests/fixtures/modules/pkg", env!("CARGO_MANIFEST_DIR"));
     std::fs::create_dir_all(&base).ok();
     std::fs::write(
         format!("{base}/vec.pkl"),

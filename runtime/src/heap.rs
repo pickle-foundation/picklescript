@@ -243,11 +243,12 @@ impl Heap {
                         heap.push_free(dead_start as *mut PickleObject, dead_len);
                     }
                 };
-                let flush_dead = |heap: &mut Heap, dead_start: &mut *mut u8, dead_len: &mut usize| {
-                    flush(heap, *dead_start, *dead_len);
-                    *dead_start = std::ptr::null_mut();
-                    *dead_len = 0;
-                };
+                let flush_dead =
+                    |heap: &mut Heap, dead_start: &mut *mut u8, dead_len: &mut usize| {
+                        flush(heap, *dead_start, *dead_len);
+                        *dead_start = std::ptr::null_mut();
+                        *dead_len = 0;
+                    };
 
                 while cur < top {
                     let obj = cur as *mut PickleObject;
@@ -268,6 +269,19 @@ impl Heap {
                             flush_dead(self, &mut dead_start, &mut dead_len);
                             deferred.push(obj);
                         } else {
+                            if std::env::var_os("PKL_GC_TRACE").is_some()
+                                && (*obj).class_id == crate::object::PICKLE_CLASS_BOX_INT
+                            {
+                                eprintln!("GCBOX - {:p} swept", obj);
+                            }
+                            if std::env::var_os("PKL_GC_TRACE").is_some() {
+                                let cid = (*obj).class_id;
+                                if cid == crate::object::PICKLE_CLASS_LIST
+                                    || cid == crate::object::PICKLE_CLASS_MAP
+                                {
+                                    eprintln!("GCRAW - {:p} class={} swept", obj, cid);
+                                }
+                            }
                             if dead_start.is_null() {
                                 dead_start = cur;
                             }

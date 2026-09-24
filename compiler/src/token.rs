@@ -1,4 +1,4 @@
-﻿use crate::diag::Span;
+use crate::diag::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrSeg {
@@ -571,15 +571,16 @@ fn parse_int_literal(text: &str) -> Option<i128> {
         Some(_) => ("-", &clean[1..]),
         None => ("", clean.as_str()),
     };
-    let (radix, digits) = if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-        (16, h)
-    } else if let Some(h) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
-        (2, h)
-    } else if let Some(h) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
-        (8, h)
-    } else {
-        (10, body)
-    };
+    let (radix, digits) =
+        if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            (16, h)
+        } else if let Some(h) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+            (2, h)
+        } else if let Some(h) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
+            (8, h)
+        } else {
+            (10, body)
+        };
     if digits.is_empty() {
         return None;
     }
@@ -590,4 +591,3 @@ fn parse_int_literal(text: &str) -> Option<i128> {
         Some(v)
     }
 }
-

@@ -20,7 +20,9 @@ static CELLS: Mutex<Vec<Vec<usize>>> = Mutex::new(Vec::new());
 /// Look up (allocating on first use) the cell for `(class_id, slot)`, returning
 /// its address as `usize`.
 fn cell_bits(class_id: u32, slot: u32) -> usize {
-    let mut cells = CELLS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cells = CELLS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cid = class_id as usize;
     let s = slot as usize;
     if cells.len() <= cid {
@@ -48,7 +50,10 @@ fn cell_bits(class_id: u32, slot: u32) -> usize {
 /// old cells must not be reused. Cells are leaked (they were turned into raw
 /// boxes and registered as GC roots), matching the existing cell lifecycle.
 pub(crate) fn reset() {
-    CELLS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    CELLS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 /// Read the managed value held in static cell `(class_id, slot)`; null when the

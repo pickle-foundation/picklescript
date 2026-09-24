@@ -3,7 +3,7 @@
 //! caches keep parsing and new surfaces keep diffing.
 
 use pickle_compiler::ast::{TypeExpr, TypeExprKind};
-use pickle_compiler::diag::{FileId, SourceMap, Span, DiagnosticSink};
+use pickle_compiler::diag::{DiagnosticSink, FileId, SourceMap, Span};
 use pickle_compiler::front::frontend;
 use pickle_compiler::history::{
     diff_surfaces, extract_surface, fnv1a64, transit_label, type_expr_to_string, PublicItem,
@@ -21,8 +21,8 @@ fn ty(kind: TypeExprKind) -> TypeExpr {
 fn parse_program(src: &str) -> pickle_compiler::ast::Program {
     let diags = DiagnosticSink::new();
     let mut map = SourceMap::default();
-    let out = frontend("test.pk", src, &mut map, &diags)
-        .expect("parse should succeed for the fixture");
+    let out =
+        frontend("test.pk", src, &mut map, &diags).expect("parse should succeed for the fixture");
     out.program
 }
 
@@ -84,18 +84,24 @@ fn type_expr_renders_all_kinds() {
                 ty(TypeExprKind::Path(vec!["string".into()])),
                 ty(TypeExprKind::Generic(
                     Box::new(ty(TypeExprKind::Path(vec!["List".into()]))),
-                    vec![ty(TypeExprKind::Option(Box::new(ty(TypeExprKind::Path(vec!["int".into()])))))]
+                    vec![ty(TypeExprKind::Option(Box::new(ty(TypeExprKind::Path(
+                        vec!["int".into()]
+                    )))))]
                 ))
             ]
         ))),
         "Map<string, List<int?>>"
     );
     assert_eq!(
-        type_expr_to_string(&ty(TypeExprKind::Pointer(Box::new(ty(TypeExprKind::Path(vec!["T".into()])))))),
+        type_expr_to_string(&ty(TypeExprKind::Pointer(Box::new(ty(
+            TypeExprKind::Path(vec!["T".into()])
+        ))))),
         "*T"
     );
     assert_eq!(
-        type_expr_to_string(&ty(TypeExprKind::Ref(Box::new(ty(TypeExprKind::Path(vec!["T".into()])))))),
+        type_expr_to_string(&ty(TypeExprKind::Ref(Box::new(ty(TypeExprKind::Path(
+            vec!["T".into()]
+        )))))),
         "&T"
     );
     assert_eq!(
@@ -121,14 +127,35 @@ fn surface_extraction_has_flat_membership() {
     let p = parse_program(USER_V1);
     assert!(check_str(USER_V1), "fixture must type-check");
     let items = extract_surface(&p);
-    let names: Vec<String> = items.iter().map(|i| format!("{}:{}", i.kind, i.name)).collect();
-    assert!(names.contains(&"class:User".to_string()), "missing class: {names:?}");
-    assert!(names.contains(&"field:User.name".to_string()), "missing field");
-    assert!(names.contains(&"field:User.age".to_string()), "missing field");
-    assert!(names.contains(&"ctor:User.<init>".to_string()), "missing ctor");
-    assert!(names.contains(&"method:User.greet".to_string()), "missing method");
+    let names: Vec<String> = items
+        .iter()
+        .map(|i| format!("{}:{}", i.kind, i.name))
+        .collect();
+    assert!(
+        names.contains(&"class:User".to_string()),
+        "missing class: {names:?}"
+    );
+    assert!(
+        names.contains(&"field:User.name".to_string()),
+        "missing field"
+    );
+    assert!(
+        names.contains(&"field:User.age".to_string()),
+        "missing field"
+    );
+    assert!(
+        names.contains(&"ctor:User.<init>".to_string()),
+        "missing ctor"
+    );
+    assert!(
+        names.contains(&"method:User.greet".to_string()),
+        "missing method"
+    );
     assert!(names.contains(&"fn:main".to_string()), "missing fn");
-    let name = items.iter().find(|i| i.kind == "field" && i.name == "User.name").unwrap();
+    let name = items
+        .iter()
+        .find(|i| i.kind == "field" && i.name == "User.name")
+        .unwrap();
     assert_eq!(name.sig, "name: string");
     // Sorted by (kind, name).
     for w in items.windows(2) {
@@ -161,7 +188,10 @@ fn surface_covers_enums_interfaces_structs_consts() {
 "#;
     let p = parse_program(src);
     let items = extract_surface(&p);
-    let names: Vec<String> = items.iter().map(|i| format!("{}:{}", i.kind, i.name)).collect();
+    let names: Vec<String> = items
+        .iter()
+        .map(|i| format!("{}:{}", i.kind, i.name))
+        .collect();
     for want in [
         "enum:Color",
         "variant:Color.Red",
@@ -173,11 +203,20 @@ fn surface_covers_enums_interfaces_structs_consts() {
         "field:Point.y",
         "const:VERSION",
     ] {
-        assert!(names.contains(&want.to_string()), "missing {want}: {names:?}");
+        assert!(
+            names.contains(&want.to_string()),
+            "missing {want}: {names:?}"
+        );
     }
-    let rgb = items.iter().find(|i| i.kind == "variant" && i.name == "Color.Rgb").unwrap();
+    let rgb = items
+        .iter()
+        .find(|i| i.kind == "variant" && i.name == "Color.Rgb")
+        .unwrap();
     assert_eq!(rgb.sig, "(r: int, g: int, b: int)");
-    let cst = items.iter().find(|i| i.kind == "const" && i.name == "VERSION").unwrap();
+    let cst = items
+        .iter()
+        .find(|i| i.kind == "const" && i.name == "VERSION")
+        .unwrap();
     assert_eq!(cst.sig, "VERSION: int");
 }
 
@@ -191,21 +230,39 @@ fn diff_reports_add_remove_change() {
         .filter(|c| c.status == "~")
         .map(|c| c.name.clone())
         .collect();
-    assert_eq!(changed, vec!["User.name".to_string()], "only name became nullable: {changes:?}");
+    assert_eq!(
+        changed,
+        vec!["User.name".to_string()],
+        "only name became nullable: {changes:?}"
+    );
     let change = changes.iter().find(|c| c.status == "~").unwrap();
     assert_eq!(change.before.as_deref(), Some("name: string"));
     assert_eq!(change.after.as_deref(), Some("name: string?"));
-    assert!(changes.iter().any(|c| c.status == "+" && c.name == "User.admin"));
-    assert!(!changes.iter().any(|c| c.status == "-"), "nothing removed: {changes:?}");
+    assert!(changes
+        .iter()
+        .any(|c| c.status == "+" && c.name == "User.admin"));
+    assert!(
+        !changes.iter().any(|c| c.status == "-"),
+        "nothing removed: {changes:?}"
+    );
 }
 
 #[test]
 fn transit_labels_are_honest() {
-    assert_eq!(transit_label("name: string", "name: string?"), Some("made nullable"));
-    assert_eq!(transit_label("name: string?", "name: string"), Some("no longer optional"));
+    assert_eq!(
+        transit_label("name: string", "name: string?"),
+        Some("made nullable")
+    );
+    assert_eq!(
+        transit_label("name: string?", "name: string"),
+        Some("no longer optional")
+    );
     assert_eq!(transit_label("a: int", "a: float"), None);
     // Wrapping in `?` only: still honestly nullable, whatever the payload.
-    assert_eq!(transit_label("xs: List<int>", "xs: List<int>?"), Some("made nullable"));
+    assert_eq!(
+        transit_label("xs: List<int>", "xs: List<int>?"),
+        Some("made nullable")
+    );
     // A `?` that moves around (payload also changed) is not named.
     assert_eq!(transit_label("xs: List<int?>", "xs: List<int>?"), None);
     // A rename that also flips nullability is not "made nullable".
@@ -215,8 +272,18 @@ fn transit_labels_are_honest() {
 #[test]
 fn snapshot_json_round_trips() {
     let items = vec![
-        PublicItem { kind: "field", name: "User.name".into(), vis: "def", sig: "name: string?".into() },
-        PublicItem { kind: "fn", name: "say\"hi\"_\u{2603}".into(), vis: "pub", sig: "say\"hi\"(s: string) -> string".into() },
+        PublicItem {
+            kind: "field",
+            name: "User.name".into(),
+            vis: "def",
+            sig: "name: string?".into(),
+        },
+        PublicItem {
+            kind: "fn",
+            name: "say\"hi\"_\u{2603}".into(),
+            vis: "pub",
+            sig: "say\"hi\"(s: string) -> string".into(),
+        },
     ];
     let snap = Snapshot {
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
@@ -251,7 +318,12 @@ fn snapshot_json_with_errors_and_unknown_kind() {
         ok: false,
         codes: vec!["E0308".into(), "E0351".into()],
         deps: vec![],
-        items: vec![PublicItem { kind: "field", name: "A.b".into(), vis: "priv", sig: "b: int".into() }],
+        items: vec![PublicItem {
+            kind: "field",
+            name: "A.b".into(),
+            vis: "priv",
+            sig: "b: int".into(),
+        }],
     };
     let json = snap.to_json();
     let back = Snapshot::from_json(&json).unwrap();

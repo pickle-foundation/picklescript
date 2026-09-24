@@ -91,10 +91,7 @@ pub extern "C" fn pickle_tuple_set_field(
 
 /// A payload field; null when out of bounds.
 #[no_mangle]
-pub extern "C" fn pickle_tuple_field(
-    obj: *const PickleObject,
-    index: usize,
-) -> *mut PickleObject {
+pub extern "C" fn pickle_tuple_field(obj: *const PickleObject, index: usize) -> *mut PickleObject {
     tuple_field(obj, index)
 }
 

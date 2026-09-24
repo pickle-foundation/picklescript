@@ -194,7 +194,10 @@ fn parses_struct_enum_import() {
         }
         _ => panic!("expected module import"),
     }
-    assert!(matches!(&p.items[0].kind, ItemKind::Struct(StructDecl { .. })));
+    assert!(matches!(
+        &p.items[0].kind,
+        ItemKind::Struct(StructDecl { .. })
+    ));
     match &p.items[1].kind {
         ItemKind::Enum(e) => {
             assert_eq!(e.variants.len(), 4);
@@ -285,7 +288,11 @@ fn parses_trailing_expr_after_newline() {
         FnBody::Block(b) => b,
         FnBody::Expr(_) => panic!("expected block body"),
     };
-    assert!(block.expr.is_some(), "tail expr lost, stmts={}", block.stmts.len());
+    assert!(
+        block.expr.is_some(),
+        "tail expr lost, stmts={}",
+        block.stmts.len()
+    );
     let kinds: Vec<&str> = block
         .stmts
         .iter()
@@ -294,7 +301,11 @@ fn parses_trailing_expr_after_newline() {
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["let"], "the trailing `sum` must not be a statement");
+    assert_eq!(
+        kinds,
+        vec!["let"],
+        "the trailing `sum` must not be a statement"
+    );
 }
 
 #[test]
@@ -357,7 +368,13 @@ fn parses_nested_generic_types() {
     let kinds = p
         .items
         .iter()
-        .map(|i| if matches!(&i.kind, ItemKind::Fn(_)) { "fn" } else { "other" })
+        .map(|i| {
+            if matches!(&i.kind, ItemKind::Fn(_)) {
+                "fn"
+            } else {
+                "other"
+            }
+        })
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["fn", "fn", "fn"]);
 }

@@ -39,18 +39,34 @@ pub fn type_expr_to_string(ty: &TypeExpr) -> String {
         TypeExprKind::Path(parts) => parts.join("."),
         TypeExprKind::Generic(inner, args) => {
             let inner = type_expr_to_string(inner);
-            let args = args.iter().map(type_expr_to_string).collect::<Vec<_>>().join(", ");
+            let args = args
+                .iter()
+                .map(type_expr_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{inner}<{args}>")
         }
         TypeExprKind::Pointer(inner) => format!("*{}", type_expr_to_string(inner)),
         TypeExprKind::Ref(inner) => format!("&{}", type_expr_to_string(inner)),
         TypeExprKind::Option(inner) => format!("{}?", type_expr_to_string(inner)),
         TypeExprKind::Tuple(items) => {
-            let items = items.iter().map(type_expr_to_string).collect::<Vec<_>>().join(", ");
+            let items = items
+                .iter()
+                .map(type_expr_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({items})")
         }
-        TypeExprKind::Fn { params, ret, is_async } => {
-            let params = params.iter().map(type_expr_to_string).collect::<Vec<_>>().join(", ");
+        TypeExprKind::Fn {
+            params,
+            ret,
+            is_async,
+        } => {
+            let params = params
+                .iter()
+                .map(type_expr_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             let prefix = if *is_async { "async " } else { "" };
             match ret {
                 Some(ret) => format!("{prefix}({params}) -> {}", type_expr_to_string(ret)),
@@ -65,7 +81,11 @@ fn generics_of(generics: &[crate::ast::GenericParam]) -> String {
     if generics.is_empty() {
         String::new()
     } else {
-        let names = generics.iter().map(|g| g.name.clone()).collect::<Vec<_>>().join(", ");
+        let names = generics
+            .iter()
+            .map(|g| g.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
         format!("<{names}>")
     }
 }
@@ -86,7 +106,11 @@ fn param_to_string(p: &crate::ast::Param) -> String {
 }
 
 fn params_to_string(params: &[crate::ast::Param]) -> String {
-    let ps = params.iter().map(param_to_string).collect::<Vec<_>>().join(", ");
+    let ps = params
+        .iter()
+        .map(param_to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("({ps})")
 }
 
@@ -133,7 +157,10 @@ fn push(out: &mut Vec<PublicItem>, item: PublicItem) {
     // The flat key must be unique; a duplicate (same kind + dotted name)
     // would corrupt set-diffs. Keep the first and note duplicates would have
     // been rejected by the resolver earlier.
-    if !out.iter().any(|i| i.kind == item.kind && i.name == item.name) {
+    if !out
+        .iter()
+        .any(|i| i.kind == item.kind && i.name == item.name)
+    {
         out.push(item);
     }
 }
@@ -152,7 +179,10 @@ fn surface_item(out: &mut Vec<PublicItem>, item: &Item) {
                     kind: "fn",
                     name: f.name.clone(),
                     vis: vis_of(f.visibility),
-                    sig: format!("{flags}{}", fn_sig(&f.name, &f.generics, &f.params, &f.return_ty)),
+                    sig: format!(
+                        "{flags}{}",
+                        fn_sig(&f.name, &f.generics, &f.params, &f.return_ty)
+                    ),
                 },
             );
         }
@@ -163,7 +193,10 @@ fn surface_item(out: &mut Vec<PublicItem>, item: &Item) {
                     kind: "fn",
                     name: f.name.clone(),
                     vis: vis_of(f.visibility),
-                    sig: format!("test {}", fn_sig(&f.name, &f.generics, &f.params, &f.return_ty)),
+                    sig: format!(
+                        "test {}",
+                        fn_sig(&f.name, &f.generics, &f.params, &f.return_ty)
+                    ),
                 },
             );
         }
@@ -218,7 +251,11 @@ fn surface_item(out: &mut Vec<PublicItem>, item: &Item) {
                         kind: "variant",
                         name: format!("{}.{}", e.name, v.name),
                         vis: "def",
-                        sig: if fields.is_empty() { String::new() } else { format!("({fields})") },
+                        sig: if fields.is_empty() {
+                            String::new()
+                        } else {
+                            format!("({fields})")
+                        },
                     },
                 );
             }
@@ -294,7 +331,11 @@ fn type_head(
         s.push_str(&format!(" extends {}", type_expr_to_string(ex)));
     }
     if !implements.is_empty() {
-        let ifaces = implements.iter().map(type_expr_to_string).collect::<Vec<_>>().join(", ");
+        let ifaces = implements
+            .iter()
+            .map(type_expr_to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         s.push_str(&format!(" implements {ifaces}"));
     }
     s
@@ -303,7 +344,14 @@ fn type_head(
 fn surface_member(out: &mut Vec<PublicItem>, owner: &str, m: &crate::ast::ClassMember) {
     use crate::ast::ClassMember::*;
     match m {
-        Field { name, ty, visibility, is_static, const_, .. } => {
+        Field {
+            name,
+            ty,
+            visibility,
+            is_static,
+            const_,
+            ..
+        } => {
             let mut flags = String::new();
             if *is_static {
                 flags.push_str("static ");
@@ -384,7 +432,12 @@ fn surface_member(out: &mut Vec<PublicItem>, owner: &str, m: &crate::ast::ClassM
                 },
             );
         }
-        Const { name, visibility, ty, .. } => push(
+        Const {
+            name,
+            visibility,
+            ty,
+            ..
+        } => push(
             out,
             PublicItem {
                 kind: "const",
@@ -632,12 +685,19 @@ impl Snapshot {
             for v in arr.as_arr() {
                 if let Some(o) = v.as_obj() {
                     if let (Some(kind), Some(name), Some(vis), Some(sig)) = (
-                        o.get("kind").and_then(Json::as_str_opt).and_then(static_kind),
+                        o.get("kind")
+                            .and_then(Json::as_str_opt)
+                            .and_then(static_kind),
                         o.get("name").and_then(Json::as_str_owned),
                         o.get("vis").and_then(Json::as_str_opt).and_then(static_vis),
                         o.get("sig").and_then(Json::as_str_owned),
                     ) {
-                        items.push(PublicItem { kind, name, vis, sig });
+                        items.push(PublicItem {
+                            kind,
+                            name,
+                            vis,
+                            sig,
+                        });
                     }
                 }
             }
@@ -744,7 +804,9 @@ mod json {
 
     impl<'a> Parser<'a> {
         fn ws(&mut self) {
-            while self.i < self.bytes.len() && matches!(self.bytes[self.i], b' ' | b'\t' | b'\r' | b'\n') {
+            while self.i < self.bytes.len()
+                && matches!(self.bytes[self.i], b' ' | b'\t' | b'\r' | b'\n')
+            {
                 self.i += 1;
             }
         }
@@ -780,7 +842,9 @@ mod json {
                 self.i += 1;
             }
             let text = std::str::from_utf8(&self.bytes[start..self.i]).map_err(|_| "bad number")?;
-            let n: i64 = text.parse().map_err(|_| format!("number too large: `{text}`"))?;
+            let n: i64 = text
+                .parse()
+                .map_err(|_| format!("number too large: `{text}`"))?;
             Ok(Json::Num(n))
         }
         fn object(&mut self) -> Result<Json, String> {

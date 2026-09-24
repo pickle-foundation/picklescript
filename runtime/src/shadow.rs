@@ -65,14 +65,21 @@ std::thread_local! {
 
 fn assert_ptr_empty(p: *mut u8, len: usize) {
     for i in 0..len {
-        assert_eq!(unsafe { *p.add(i) }, 0, "frame slot memory not zeroed at offset {i}");
+        assert_eq!(
+            unsafe { *p.add(i) },
+            0,
+            "frame slot memory not zeroed at offset {i}"
+        );
     }
 }
 
 impl ShadowFrame {
     /// Pointer to the first slot.
     pub fn slots_ptr(&self) -> *mut *mut PickleObject {
-        unsafe { (self as *const ShadowFrame as *mut u8).add(FRAME_HEADER_BYTES) as *mut *mut PickleObject }
+        unsafe {
+            (self as *const ShadowFrame as *mut u8).add(FRAME_HEADER_BYTES)
+                as *mut *mut PickleObject
+        }
     }
 
     /// Direct access to a slot.

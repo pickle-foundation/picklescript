@@ -76,9 +76,7 @@ pub extern "C" fn pickle_panic_bytes(ptr: *const u8, len: usize) -> ! {
     let msg = if ptr.is_null() || len == 0 {
         String::new()
     } else {
-        unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
-        }
+        unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned() }
     };
     if is_capturing() {
         record_panic(msg);

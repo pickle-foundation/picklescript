@@ -27,6 +27,9 @@ fn new_box(class_id: u32, bits: i64) -> *mut PickleObject {
     unsafe {
         *payload(obj) = bits;
     }
+    if std::env::var_os("PKL_GC_TRACE").is_some() {
+        eprintln!("GCBOX + {:p} class={} bits={}", obj, class_id, bits);
+    }
     obj
 }
 
@@ -71,6 +74,9 @@ pub extern "C" fn pickle_box_char(v: i32) -> *mut PickleObject {
 pub(crate) fn unbox_bits(obj: *const PickleObject, what: &str) -> i64 {
     if obj.is_null() {
         panic!("pickle: cannot unbox null as {what}");
+    }
+    if std::env::var_os("PKL_GC_TRACE").is_some() {
+        eprintln!("GCBOX ! unbox {:p} as {}", obj, what);
     }
     box_bits(obj)
 }
@@ -132,10 +138,22 @@ mod tests {
         crate::pickle_runtime_init();
         let i = pickle_box_i64(7);
         assert_eq!(unsafe { (*i).class_id }, PICKLE_CLASS_BOX_INT);
-        assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_INT), Some(&b"int"[..]));
-        assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_FLOAT), Some(&b"float"[..]));
-        assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_BOOL), Some(&b"bool"[..]));
-        assert_eq!(crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_CHAR), Some(&b"char"[..]));
+        assert_eq!(
+            crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_INT),
+            Some(&b"int"[..])
+        );
+        assert_eq!(
+            crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_FLOAT),
+            Some(&b"float"[..])
+        );
+        assert_eq!(
+            crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_BOOL),
+            Some(&b"bool"[..])
+        );
+        assert_eq!(
+            crate::gc::gc_mut().class_name(PICKLE_CLASS_BOX_CHAR),
+            Some(&b"char"[..])
+        );
         let c = pickle_box_char(b'x' as i32);
         assert_eq!(unsafe { (*c).class_id }, PICKLE_CLASS_BOX_CHAR);
         // Class ids must match the descriptor registration order: the enum,

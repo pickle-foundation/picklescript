@@ -64,13 +64,16 @@ pub fn git_root(cwd: &Path) -> Result<PathBuf> {
 /// files. Git's `--name-only` gives exactly the changed paths, so unchanged
 /// files at a commit are not recomputed.
 fn pkl_history(root: &Path) -> Result<Vec<CommitEntry>> {
-    let out = run_git(root, &[
-        "log",
-        "--name-only",
-        "--format=%x1f%H%x1f%ci%x1f%s",
-        "--",
-        "*.pkl",
-    ])?;
+    let out = run_git(
+        root,
+        &[
+            "log",
+            "--name-only",
+            "--format=%x1f%H%x1f%ci%x1f%s",
+            "--",
+            "*.pkl",
+        ],
+    )?;
     let mut entries: Vec<CommitEntry> = Vec::new();
     for line in out.lines() {
         if let Some(rest) = line.strip_prefix('\u{1f}') {
@@ -108,7 +111,9 @@ fn cache_path(root: &Path) -> PathBuf {
 
 fn read_cache(root: &Path) -> Vec<Snapshot> {
     let path = cache_path(root);
-    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
     text.lines().filter_map(Snapshot::from_json).collect()
 }
 
@@ -136,8 +141,7 @@ fn write_cache(root: &Path, snapshots: Vec<Snapshot>) -> Result<()> {
 fn build_snapshot(e: &CommitEntry, file: &str, content: &str) -> Snapshot {
     let mut map = SourceMap::default();
     let diags = DiagnosticSink::new();
-    let out =
-        pickle_compiler::front::frontend_checked(file, content, &mut map, &diags);
+    let out = pickle_compiler::front::frontend_checked(file, content, &mut map, &diags);
     if let (Some(prog), Some(res)) = (
         out.as_ref().map(|o| &o.program),
         out.as_ref().map(|o| &o.resolved),
@@ -146,8 +150,11 @@ fn build_snapshot(e: &CommitEntry, file: &str, content: &str) -> Snapshot {
     }
     let codes = {
         let ds = diags.diagnostics.borrow();
-        let mut codes: Vec<String> =
-            ds.iter().filter_map(|d| d.code).map(|c| c.id().to_string()).collect();
+        let mut codes: Vec<String> = ds
+            .iter()
+            .filter_map(|d| d.code)
+            .map(|c| c.id().to_string())
+            .collect();
         codes.sort();
         codes.dedup();
         codes
@@ -281,7 +288,15 @@ pub fn render_builds(snapshots: &[Snapshot], limit: usize) {
     let limit = limit.max(1);
     let mut rows: Vec<(&str, &str, &str, bool, &[String])> = snapshots
         .iter()
-        .map(|s| (s.date.as_str(), s.short.as_str(), s.file.as_str(), s.ok, s.codes.as_slice()))
+        .map(|s| {
+            (
+                s.date.as_str(),
+                s.short.as_str(),
+                s.file.as_str(),
+                s.ok,
+                s.codes.as_slice(),
+            )
+        })
         .collect();
     rows.sort_by(|a, b| (b.0, &b.2).cmp(&(a.0, &a.2)));
     rows.truncate(limit);
@@ -302,14 +317,24 @@ pub fn render_builds(snapshots: &[Snapshot], limit: usize) {
 /// `pickle explain <CODE> --history`: every version (oldest first) where the
 /// code fired.
 pub fn render_explain_history(snapshots: &[Snapshot], code: &str) {
-    let hits: Vec<&Snapshot> = snapshots.iter().filter(|s| s.codes.iter().any(|c| c == code)).collect();
+    let hits: Vec<&Snapshot> = snapshots
+        .iter()
+        .filter(|s| s.codes.iter().any(|c| c == code))
+        .collect();
     if hits.is_empty() {
-        println!("error[{code}] has never been produced by any committed version of a `*.pkl` file");
+        println!(
+            "error[{code}] has never been produced by any committed version of a `*.pkl` file"
+        );
         return;
     }
     println!("error[{code}] -- produced by committed versions (oldest first):");
     for s in &hits {
-        println!("  {}  {}  {}", s.short, s.date, s.message.lines().next().unwrap_or(""));
+        println!(
+            "  {}  {}  {}",
+            s.short,
+            s.date,
+            s.message.lines().next().unwrap_or("")
+        );
     }
     println!("first seen: {} ({})", hits[0].short, hits[0].file);
 }

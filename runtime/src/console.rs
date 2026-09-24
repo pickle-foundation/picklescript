@@ -5,8 +5,8 @@
 use crate::layout::{enum_tag, list_len, map_len, str_bytes, str_len, tuple_field_count};
 use crate::object::{
     PickleObject, PICKLE_CLASS_BOX_BOOL, PICKLE_CLASS_BOX_CHAR, PICKLE_CLASS_BOX_FLOAT,
-    PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP, PICKLE_CLASS_STRING,
-    PICKLE_CLASS_TUPLE,
+    PICKLE_CLASS_BOX_INT, PICKLE_CLASS_ENUM, PICKLE_CLASS_LIST, PICKLE_CLASS_MAP,
+    PICKLE_CLASS_STRING, PICKLE_CLASS_TUPLE,
 };
 #[cfg(not(test))]
 use std::io::Write;
@@ -167,8 +167,14 @@ fn print_obj_raw(obj: *mut PickleObject) {
             pickle_print_byte(b')' as i64);
         }
         PICKLE_CLASS_BOX_INT => pickle_print_i64(crate::boxscalar::box_bits(obj)),
-        PICKLE_CLASS_BOX_FLOAT => pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64)),
-        PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 { b"true\0".as_ptr() } else { b"false\0".as_ptr() }),
+        PICKLE_CLASS_BOX_FLOAT => {
+            pickle_print_f64(f64::from_bits(crate::boxscalar::box_bits(obj) as u64))
+        }
+        PICKLE_CLASS_BOX_BOOL => pickle_print_cstr(if crate::boxscalar::box_bits(obj) != 0 {
+            b"true\0".as_ptr()
+        } else {
+            b"false\0".as_ptr()
+        }),
         PICKLE_CLASS_BOX_CHAR => pickle_print_char(crate::boxscalar::box_bits(obj) as i32),
         _ => {
             let gc = crate::gc::gc_mut();
@@ -193,7 +199,10 @@ pub(crate) fn fmt_obj_to(buf: &mut Vec<u8>, obj: *mut PickleObject) {
         PICKLE_CLASS_STRING => {
             // SAFETY: pointer/length come straight from the managed string.
             let bytes = unsafe {
-                std::slice::from_raw_parts(crate::strings::string_bytes_ptr(obj), crate::strings::string_bytes_len(obj))
+                std::slice::from_raw_parts(
+                    crate::strings::string_bytes_ptr(obj),
+                    crate::strings::string_bytes_len(obj),
+                )
             };
             buf.extend_from_slice(bytes);
         }
@@ -232,16 +241,26 @@ pub(crate) fn fmt_obj_to(buf: &mut Vec<u8>, obj: *mut PickleObject) {
             }
             buf.push(b')');
         }
-        PICKLE_CLASS_BOX_INT => buf.extend_from_slice(crate::boxscalar::box_bits(obj).to_string().as_bytes()),
+        PICKLE_CLASS_BOX_INT => {
+            buf.extend_from_slice(crate::boxscalar::box_bits(obj).to_string().as_bytes())
+        }
         PICKLE_CLASS_BOX_FLOAT => {
-            let s =
-                crate::strings::float64_to_string(f64::from_bits(crate::boxscalar::box_bits(obj) as u64));
+            let s = crate::strings::float64_to_string(f64::from_bits(
+                crate::boxscalar::box_bits(obj) as u64,
+            ));
             let bytes = unsafe {
-                std::slice::from_raw_parts(crate::strings::string_bytes_ptr(s), crate::strings::string_bytes_len(s))
+                std::slice::from_raw_parts(
+                    crate::strings::string_bytes_ptr(s),
+                    crate::strings::string_bytes_len(s),
+                )
             };
             buf.extend_from_slice(bytes);
         }
-        PICKLE_CLASS_BOX_BOOL => buf.extend_from_slice(if crate::boxscalar::box_bits(obj) != 0 { b"true" } else { b"false" }),
+        PICKLE_CLASS_BOX_BOOL => buf.extend_from_slice(if crate::boxscalar::box_bits(obj) != 0 {
+            b"true"
+        } else {
+            b"false"
+        }),
         PICKLE_CLASS_BOX_CHAR => buf.push(crate::boxscalar::box_bits(obj) as u8),
         _ => {
             let gc = crate::gc::gc_mut();

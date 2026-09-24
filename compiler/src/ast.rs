@@ -84,7 +84,10 @@ pub enum Visibility {
 
 impl Visibility {
     pub fn is_explicitly_private(&self) -> bool {
-        matches!(self, Visibility::Private | Visibility::Protected | Visibility::Public)
+        matches!(
+            self,
+            Visibility::Private | Visibility::Protected | Visibility::Public
+        )
     }
 }
 
@@ -297,10 +300,7 @@ pub enum IfCond {
     /// `if (cond)`
     Cond(Box<Expr>),
     /// `if (let pattern = expr)`
-    Binding {
-        pattern: Pattern,
-        value: Box<Expr>,
-    },
+    Binding { pattern: Pattern, value: Box<Expr> },
 }
 
 #[derive(Debug, Clone)]

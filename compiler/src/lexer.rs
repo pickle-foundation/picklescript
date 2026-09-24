@@ -22,7 +22,7 @@ struct Lexer<'a> {
     /// `test("...", { ... })`), while newlines inside parentheses/brackets
     /// *within* the block stay suppressed for line-continuation.
     block_frames: Vec<usize>,
-// `src` is retained for diagnostics when reporting invalid characters.
+    // `src` is retained for diagnostics when reporting invalid characters.
     #[allow(dead_code)]
     src: &'a str,
     diags: &'a DiagnosticSink,
@@ -592,7 +592,10 @@ impl<'a> Lexer<'a> {
                     self.bump();
                 }
                 None => {
-                    self.err(self.span(start, self.pos), "unterminated raw string literal");
+                    self.err(
+                        self.span(start, self.pos),
+                        "unterminated raw string literal",
+                    );
                     let lit = StrLit {
                         segments: vec![StrSeg::Text { text }],
                     };
@@ -650,7 +653,10 @@ impl<'a> Lexer<'a> {
                         self.bump();
                     }
                     None => {
-                        self.err(self.span(start, self.pos), "unterminated multi-line string literal");
+                        self.err(
+                            self.span(start, self.pos),
+                            "unterminated multi-line string literal",
+                        );
                         segments.push(StrSeg::Text { text });
                         let lit = StrLit { segments };
                         return LexedToken::new(Tok::Str(lit), self.span(start, self.pos));
@@ -692,7 +698,9 @@ impl<'a> Lexer<'a> {
                         self.bump();
                         match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                             Some(ch) => text.push(ch),
-                            None => self.err(esc_span, format!("invalid unicode escape '\\u{{{hex}}}'")),
+                            None => {
+                                self.err(esc_span, format!("invalid unicode escape '\\u{{{hex}}}'"))
+                            }
                         }
                     } else {
                         self.err(esc_span, "unterminated unicode escape".to_string());
@@ -859,7 +867,10 @@ impl<'a> Lexer<'a> {
                 break;
             }
             if self.at().is_none() {
-                self.err(self.span(start, self.pos), "unterminated interpolation expression");
+                self.err(
+                    self.span(start, self.pos),
+                    "unterminated interpolation expression",
+                );
                 break;
             }
             let t = self.next_token();
@@ -868,7 +879,10 @@ impl<'a> Lexer<'a> {
                 Tok::RBrace => brace_depth -= 1,
                 Tok::Newline => continue,
                 Tok::Eof => {
-                    self.err(self.span(start, self.pos), "unterminated interpolation expression");
+                    self.err(
+                        self.span(start, self.pos),
+                        "unterminated interpolation expression",
+                    );
                     break;
                 }
                 _ => {}

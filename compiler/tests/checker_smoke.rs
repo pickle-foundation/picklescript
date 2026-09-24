@@ -260,7 +260,10 @@ fn rejects_unpinned_generic_function_value() {
             print(str(y + 1))
         }"#,
     );
-    assert!(has_errors(&d), "expected an error for an unpinned generic fn value");
+    assert!(
+        has_errors(&d),
+        "expected an error for an unpinned generic fn value"
+    );
     let msgs = error_msgs(&d);
     assert!(
         msgs.contains("requires numeric or string operands"),
@@ -279,7 +282,10 @@ fn rejects_generic_function_value_arity() {
             let f = id<int, string>
         }"#,
     );
-    assert!(has_errors(&d), "expected an arity error for the generic fn value");
+    assert!(
+        has_errors(&d),
+        "expected an arity error for the generic fn value"
+    );
     assert!(
         error_msgs(&d).contains("takes 1 type argument(s), found 2"),
         "wrong diagnostics:\n{}",
@@ -653,7 +659,11 @@ fn rejects_string_ordering() {
             let b = "a" < "b"
         }"#,
     );
-    assert!(has_errors(&d), "expected an error for string ordering, got:\n{}", error_msgs(&d));
+    assert!(
+        has_errors(&d),
+        "expected an error for string ordering, got:\n{}",
+        error_msgs(&d)
+    );
     assert!(
         error_msgs(&d).contains("operator `Lt` is not supported for `string` operands"),
         "wrong diagnostics:\n{}",
@@ -668,7 +678,11 @@ fn rejects_bool_ordering() {
             let b = false > true
         }"#,
     );
-    assert!(has_errors(&d), "expected an error for bool ordering, got:\n{}", error_msgs(&d));
+    assert!(
+        has_errors(&d),
+        "expected an error for bool ordering, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -691,11 +705,7 @@ fn accepts_valid_comparisons() {
             print(a, b, c, d, e, f)
         }"#,
     );
-    assert!(
-        !has_errors(&d),
-        "unexpected errors:\n{}",
-        error_msgs(&d)
-    );
+    assert!(!has_errors(&d), "unexpected errors:\n{}", error_msgs(&d));
 }
 
 #[test]
@@ -882,7 +892,11 @@ fn accepts_static_property_accessors() {
             println(Config.limit)
         }"#,
     );
-    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -958,7 +972,11 @@ fn accepts_guarded_match_arms() {
             }
         }"#,
     );
-    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1011,7 +1029,11 @@ fn accepts_static_field_access() {
             println(Counter.bump(3))
         }"#,
     );
-    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1085,7 +1107,11 @@ fn accepts_class_const_access() {
             let x: int = Config.BASE * 10
         }"#,
     );
-    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1164,7 +1190,11 @@ fn accepts_named_constructor() {
             println(d.w)
         }"#,
     );
-    assert!(!has_errors(&d), "expected clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1226,7 +1256,11 @@ fn accepts_deinit_using_this() {
             println(w.value)
         }"#,
     );
-    assert!(!has_errors(&d), "expected a clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected a clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1242,7 +1276,10 @@ fn rejects_deinit_unknown_member() {
     );
     let msgs = error_msgs(&d);
     assert!(has_errors(&d), "expected an error, got none");
-    assert!(msgs.contains("missing"), "expected a member diagnostic, got:\n{msgs}");
+    assert!(
+        msgs.contains("missing"),
+        "expected a member diagnostic, got:\n{msgs}"
+    );
 }
 
 #[test]
@@ -1304,7 +1341,11 @@ fn accepts_inheritance_and_hierarchy_casts() {
             println(back.breed)
         }"#,
     );
-    assert!(!has_errors(&d), "expected a clean program, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected a clean program, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1660,7 +1701,11 @@ fn accepts_owned_param_from_move() {
             consume(w)
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1678,7 +1723,11 @@ fn accepts_owned_param_from_fresh_allocation() {
             consume(Widget(1))
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1722,7 +1771,11 @@ fn accepts_manual_return_consumed_by_binding() {
             w.free()
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1766,7 +1819,11 @@ fn accepts_returning_owned_call_from_manual_fn() {
             return make()
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1785,7 +1842,11 @@ fn accepts_owned_field_from_fresh_allocation() {
             h.free()
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1806,7 +1867,11 @@ fn accepts_owned_field_from_manual_binding() {
             h.free()
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -1962,7 +2027,10 @@ fn rejects_unknown_member_in_subclass() {
     );
     let msgs = error_msgs(&d);
     assert!(has_errors(&d), "expected an error, got none");
-    assert!(msgs.contains("missing"), "expected a member diagnostic, got:\n{msgs}");
+    assert!(
+        msgs.contains("missing"),
+        "expected a member diagnostic, got:\n{msgs}"
+    );
 }
 
 #[test]
@@ -1990,7 +2058,11 @@ fn accepts_unsafe_raw_pointer_access() {
             v.free()
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -2065,7 +2137,11 @@ fn accepts_scalar_raw_pointer_store_through() {
             }
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]
@@ -2118,7 +2194,11 @@ fn accepts_raw_buffer_alloc_free_and_index() {
             }
         }"#,
     );
-    assert!(!has_errors(&d), "expected no errors, got:\n{}", error_msgs(&d));
+    assert!(
+        !has_errors(&d),
+        "expected no errors, got:\n{}",
+        error_msgs(&d)
+    );
 }
 
 #[test]

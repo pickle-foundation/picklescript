@@ -2,16 +2,16 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::{
-    types, AbiParam, ExternalName, Function, GlobalValueData, InstBuilder, Signature, UserExternalName,
-    UserFuncName,
+    types, AbiParam, ExternalName, Function, GlobalValueData, InstBuilder, Signature,
+    UserExternalName, UserFuncName,
 };
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{builder as settings_builder, Configurable, Flags};
 use cranelift_codegen::Context as ClifContext;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{
-    DataDescription, DataId as ModDataId, FuncId as ModFuncId, Linkage, Module,
-    default_libcall_names,
+    default_libcall_names, DataDescription, DataId as ModDataId, FuncId as ModFuncId, Linkage,
+    Module,
 };
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use pickle_compiler::ir::{FuncId as IrFuncId, IrModule};
@@ -111,8 +111,11 @@ fn rewrite_symbol_names(
     func_ids: &HashMap<String, (ModFuncId, bool)>,
     data_ids: &HashMap<String, (ModDataId, bool)>,
 ) {
-    let gvs: Vec<(cranelift_codegen::ir::GlobalValue, GlobalValueData)> =
-        f.global_values.iter().map(|(k, v)| (k, v.clone())).collect();
+    let gvs: Vec<(cranelift_codegen::ir::GlobalValue, GlobalValueData)> = f
+        .global_values
+        .iter()
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
     let mut user_refs: HashMap<String, cranelift_codegen::ir::UserExternalNameRef> = HashMap::new();
     for (key, data) in gvs {
         let GlobalValueData::Symbol {
@@ -124,7 +127,9 @@ fn rewrite_symbol_names(
         else {
             continue;
         };
-        let ExternalName::TestCase(tc) = name else { continue };
+        let ExternalName::TestCase(tc) = name else {
+            continue;
+        };
         let sym = String::from_utf8_lossy(tc.raw()).into_owned();
         let (ns, idx, col) = if let Some((id, c)) = func_ids.get(&sym) {
             (0u32, id.as_u32(), *c)
@@ -134,7 +139,10 @@ fn rewrite_symbol_names(
             continue;
         };
         let r = user_refs.entry(sym.clone()).or_insert_with(|| {
-            f.declare_imported_user_function(UserExternalName { namespace: ns, index: idx })
+            f.declare_imported_user_function(UserExternalName {
+                namespace: ns,
+                index: idx,
+            })
         });
         f.global_values[key] = GlobalValueData::Symbol {
             name: ExternalName::user(*r),
@@ -205,7 +213,11 @@ pub fn link_object(
     rlib: &std::path::Path,
     out: &std::path::Path,
 ) -> Result<()> {
-    let ext = if cfg!(target_os = "windows") { "obj" } else { "o" };
+    let ext = if cfg!(target_os = "windows") {
+        "obj"
+    } else {
+        "o"
+    };
     let obj_path = object_dir.join(format!("pickle_program.{ext}"));
     std::fs::write(&obj_path, object).context("cannot write object file")?;
 
@@ -214,6 +226,7 @@ pub fn link_object(
         &shim,
         "unsafe extern \"C\" {\n".to_string()
             + "    fn pickle_main();\n"
+            + "    fn pickle_args_set(argc: usize, argv: *const *const u8);\n"
             + "    fn pickle_runtime_init() -> u32;\n"
             + "    fn pickle_runtime_shutdown();\n"
             + "    fn pickle_flush();\n"
@@ -223,7 +236,23 @@ pub fn link_object(
             + "extern crate pickle_runtime;\n"
             + "\n"
             + "fn main() {\n"
+            + "    let args: Vec<std::ffi::CString> = {\n"
+            + "        let mut v = vec![std::ffi::CString::new(\"pickle\").unwrap()];\n"
+            + "        for a in std::env::args_os().skip(1) {\n"
+            + "            match a.into_string() {\n"
+            + "                Ok(s) => match std::ffi::CString::new(s) {\n"
+            + "                    Ok(c) => v.push(c),\n"
+            + "                    Err(_) => v.push(std::ffi::CString::new(\"\").unwrap()),\n"
+            + "                },\n"
+            + "                Err(_) => v.push(std::ffi::CString::new(\"\").unwrap()),\n"
+            + "            }\n"
+            + "        }\n"
+            + "        v\n"
+            + "    };\n"
+            + "    let ptrs: Vec<*const u8> =\n"
+            + "        args.iter().map(|c| c.as_ptr() as *const u8).collect();\n"
             + "    unsafe {\n"
+            + "        pickle_args_set(ptrs.len(), ptrs.as_ptr());\n"
             + "        pickle_runtime_init();\n"
             + "        pickle_main();\n"
             + "        pickle_flush();\n"

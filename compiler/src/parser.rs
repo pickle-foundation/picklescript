@@ -110,7 +110,10 @@ impl<'a> Parser<'a> {
             Tok::Newline => "end of line".to_string(),
             other => format!("`{}`", other.punct()),
         };
-        self.err_at(span, format!("expected {expected}, found {}", self.kind().describe()));
+        self.err_at(
+            span,
+            format!("expected {expected}, found {}", self.kind().describe()),
+        );
     }
 
     fn err_at(&mut self, span: Span, msg: impl Into<String>) {
@@ -272,10 +275,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             let found = self.kind().clone();
-            self.err_here(format!(
-                "expected end of line, found {}",
-                found.describe()
-            ));
+            self.err_here(format!("expected end of line, found {}", found.describe()));
             Err(())
         }
     }
@@ -482,7 +482,12 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
-                Tok::Fn | Tok::Class | Tok::Struct | Tok::Enum | Tok::Interface | Tok::Const
+                Tok::Fn
+                | Tok::Class
+                | Tok::Struct
+                | Tok::Enum
+                | Tok::Interface
+                | Tok::Const
                 | Tok::Hash
                     if depth == 0 =>
                 {
@@ -596,10 +601,7 @@ impl<'a> Parser<'a> {
             }
         }
         if interpolated {
-            self.err_at(
-                start,
-                "interpolation is not allowed in a test description",
-            );
+            self.err_at(start, "interpolation is not allowed in a test description");
         }
         Ok(out)
     }
@@ -729,7 +731,10 @@ impl<'a> Parser<'a> {
                 let (extends, implements) = (c.extends, c.implements);
                 if implements.is_empty() {
                     if let Some(ext) = extends {
-                        self.err_at(ext.span, "structs cannot inherit from other types; use composition");
+                        self.err_at(
+                            ext.span,
+                            "structs cannot inherit from other types; use composition",
+                        );
                     }
                 }
                 let s = StructDecl {
@@ -856,9 +861,7 @@ impl<'a> Parser<'a> {
                         _ => {
                             self.err_at(
                                 e.span,
-                                format!(
-                                    "`{callee}()` needs a `(\"description\", {{ ... }})` body"
-                                ),
+                                format!("`{callee}()` needs a `(\"description\", {{ ... }})` body"),
                             );
                             return Err(());
                         }
@@ -949,10 +952,7 @@ impl<'a> Parser<'a> {
         let b = match args.first().map(|a| block_of(&a.value)) {
             Some(Some(b)) => b.clone(),
             _ => {
-                self.err_at(
-                    e.span,
-                    format!("`{hook}()` needs a `{{ ... }}` body block"),
-                );
+                self.err_at(e.span, format!("`{hook}()` needs a `{{ ... }}` body block"));
                 return Err(());
             }
         };
@@ -987,7 +987,10 @@ impl<'a> Parser<'a> {
                     match seg {
                         StrPart::Text(text) => out.push_str(text),
                         StrPart::Expr(_) => {
-                            self.err_at(e.span, "interpolation is not allowed in a test description");
+                            self.err_at(
+                                e.span,
+                                "interpolation is not allowed in a test description",
+                            );
                             return Err(());
                         }
                     }
@@ -1234,9 +1237,7 @@ impl<'a> Parser<'a> {
             Tok::Return => {
                 let start = self.span();
                 self.bump();
-                let value = if self.at(&Tok::Newline)
-                    || self.at(&Tok::RBrace)
-                    || self.at(&Tok::Eof)
+                let value = if self.at(&Tok::Newline) || self.at(&Tok::RBrace) || self.at(&Tok::Eof)
                 {
                     None
                 } else {
@@ -1589,7 +1590,8 @@ impl<'a> Parser<'a> {
         let span = self.span();
         let t = &mut self.tokens[self.pos];
         t.token = crate::token::Token::new(Tok::Gt, span);
-        self.tokens.insert(self.pos + 1, LexedToken::new(Tok::Gt, span));
+        self.tokens
+            .insert(self.pos + 1, LexedToken::new(Tok::Gt, span));
     }
 
     fn consume_gt(&mut self, n: u32) -> PResult<()> {
@@ -1602,10 +1604,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Shr => self.split_shift_as_two_gt(),
                 other => {
-                    self.err_here(format!(
-                        "expected `>` or `>>`, found {}",
-                        other.describe()
-                    ));
+                    self.err_here(format!("expected `>` or `>>`, found {}", other.describe()));
                     return Err(());
                 }
             }
@@ -2012,7 +2011,11 @@ impl<'a> Parser<'a> {
             Tok::Number => {
                 let t = self.advance();
                 let kind = if t.data.is_float
-                    || t.data.suffix.as_deref().map(|s| s.starts_with('f')).unwrap_or(false)
+                    || t.data
+                        .suffix
+                        .as_deref()
+                        .map(|s| s.starts_with('f'))
+                        .unwrap_or(false)
                 {
                     ExprKind::Lit(Lit::Float {
                         value: t.data.float.unwrap_or(0.0),
@@ -2103,7 +2106,10 @@ impl<'a> Parser<'a> {
                 })
             }
             Tok::Ident(_) => {
-                if matches!(self.generic_call_flavor(), Some(GenericCallFlavor::Call | GenericCallFlavor::Value)) {
+                if matches!(
+                    self.generic_call_flavor(),
+                    Some(GenericCallFlavor::Call | GenericCallFlavor::Value)
+                ) {
                     return self.parse_generic_call(start);
                 }
                 let name = self.expect_ident("expression")?;
@@ -2381,7 +2387,11 @@ impl<'a> Parser<'a> {
             match &t.token.kind {
                 Tok::Lt => depth += 1,
                 Tok::Gt | Tok::Shr => {
-                    let closings = if matches!(t.token.kind, Tok::Shr) { 2 } else { 1 };
+                    let closings = if matches!(t.token.kind, Tok::Shr) {
+                        2
+                    } else {
+                        1
+                    };
                     if depth < closings {
                         // `>>` closes more levels than are open: this is not a
                         // generic call (comparison/shift), not a nested type.
@@ -2433,7 +2443,9 @@ impl<'a> Parser<'a> {
             });
         }
         let call_args = self.parse_call_args_internal()?;
-        let callee_span = start.to(self.prev_span()).to(call_args.last().map(|a| a.span).unwrap_or(start));
+        let callee_span = start
+            .to(self.prev_span())
+            .to(call_args.last().map(|a| a.span).unwrap_or(start));
         let span = start.to(self.prev_span());
         let callee = Expr {
             span: callee_span,
@@ -2459,7 +2471,10 @@ impl<'a> Parser<'a> {
             self.continuation_after(&Tok::Assign);
             let value = self.parse_expr()?;
             self.expect(&Tok::RParen)?;
-            IfCond::Binding { pattern: pat, value: Box::new(value) }
+            IfCond::Binding {
+                pattern: pat,
+                value: Box::new(value),
+            }
         } else {
             let c = self.parse_expr()?;
             self.expect(&Tok::RParen)?;
@@ -2580,7 +2595,11 @@ impl<'a> Parser<'a> {
     fn parse_type_decl(&mut self, is_class: bool) -> PResult<ClassDecl> {
         let start = self.span();
         self.bump(); // class | struct
-        let name = self.expect_ident(if is_class { "class name" } else { "struct name" })?;
+        let name = self.expect_ident(if is_class {
+            "class name"
+        } else {
+            "struct name"
+        })?;
         let generics = self.parse_generic_params()?;
         let mut extends = None;
         let mut implements = Vec::new();
@@ -2653,10 +2672,7 @@ impl<'a> Parser<'a> {
                         let fname = self.expect_ident("variant field")?;
                         self.expect(&Tok::Colon)?;
                         let ty = self.parse_type()?;
-                        fields.push(EnumField {
-                            name: fname,
-                            ty,
-                        });
+                        fields.push(EnumField { name: fname, ty });
                         if self.eat(&Tok::Comma) {
                             self.continuation_after(&Tok::Comma);
                             if self.at(&Tok::RParen) {
@@ -2744,10 +2760,10 @@ impl<'a> Parser<'a> {
                     let span = pstart.to(self.prev_span());
                     members.push(InterfaceMember::Property {
                         name,
-ty: ty.unwrap_or(TypeExpr {
-                        span,
-                        kind: TypeExprKind::Infer,
-                    }),
+                        ty: ty.unwrap_or(TypeExpr {
+                            span,
+                            kind: TypeExprKind::Infer,
+                        }),
                         span,
                     });
                 }
@@ -2811,7 +2827,7 @@ ty: ty.unwrap_or(TypeExpr {
         Ok(members)
     }
 
-fn parse_class_member(&mut self) -> PResult<ClassMember> {
+    fn parse_class_member(&mut self) -> PResult<ClassMember> {
         let start = self.span();
         let attrs = self.parse_attributes()?;
         let mut visibility = Visibility::Default;
@@ -2883,8 +2899,9 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                     span,
                 })
             }
-            (false, k) if matches!(&k, Tok::Constructor)
-                && matches!(self.peek_at(1), Tok::LParen | Tok::Dot) =>
+            (false, k)
+                if matches!(&k, Tok::Constructor)
+                    && matches!(self.peek_at(1), Tok::LParen | Tok::Dot) =>
             {
                 self.bump();
                 let name = if self.at(&Tok::Dot) {
@@ -2918,7 +2935,9 @@ fn parse_class_member(&mut self) -> PResult<ClassMember> {
                 let m = self.parse_operator_method(start, is_override)?;
                 Ok(ClassMember::Method(m))
             }
-            (false, k) if matches!(&k, Tok::Init | Tok::Deinit) && self.peek_at(1) == &Tok::LBrace => {
+            (false, k)
+                if matches!(&k, Tok::Init | Tok::Deinit) && self.peek_at(1) == &Tok::LBrace =>
+            {
                 self.bump();
                 let body = self.parse_block()?;
                 if matches!(k, Tok::Init) {

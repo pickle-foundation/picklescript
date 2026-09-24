@@ -34,72 +34,171 @@ fn error_msgs(diags: &DiagnosticSink) -> String {
 fn classifier_pins_message_to_code() {
     use ErrorCode as C;
     let cases = [
-        ("type mismatch in return value: expected `int`, found `string`", C::TypeMismatch),
-        ("type mismatch in binding: expected `int`, found `string?`", C::TypeMismatch),
+        (
+            "type mismatch in return value: expected `int`, found `string`",
+            C::TypeMismatch,
+        ),
+        (
+            "type mismatch in binding: expected `int`, found `string?`",
+            C::TypeMismatch,
+        ),
         ("use of undeclared name `foo`", C::UndeclaredName),
         ("no member `bar` on `User`", C::NoMember),
         ("no member `push2` on `List<int>`", C::NoMember),
-        ("cannot access member `name` on value of type `int`", C::MemberOnNonClass),
-        ("cannot access member `name` on value of type `string?`", C::MemberOnNonClass),
+        (
+            "cannot access member `name` on value of type `int`",
+            C::MemberOnNonClass,
+        ),
+        (
+            "cannot access member `name` on value of type `string?`",
+            C::MemberOnNonClass,
+        ),
         ("cannot assign to immutable binding `x`", C::Assignment),
         ("cannot assign to immutable field `x`", C::Assignment),
-        ("cannot assign to a member of a non-class value", C::NonClassMemberAssign),
-        ("operator `Mul` requires numeric or string operands, found `string` and `int`", C::Operator),
+        (
+            "cannot assign to a member of a non-class value",
+            C::NonClassMemberAssign,
+        ),
+        (
+            "operator `Mul` requires numeric or string operands, found `string` and `int`",
+            C::Operator,
+        ),
         ("bitwise operators require `int` operands", C::Operator),
-        ("unary `!` requires a `bool` operand, found `int`", C::Operator),
+        (
+            "unary `!` requires a `bool` operand, found `int`",
+            C::Operator,
+        ),
         ("left side of `??` is not an `Option`", C::Operator),
         ("`?.` on a non-option value of type `int`", C::Operator),
         ("condition must be a `bool`", C::ConditionNotBool),
-        ("`for (x in ...)` requires a sequence (List, string, Map, or range), found `int`", C::ForSequence),
+        (
+            "`for (x in ...)` requires a sequence (List, string, Map, or range), found `int`",
+            C::ForSequence,
+        ),
         ("map keys must be `string` values", C::MapKeyString),
         ("index must be an `int`", C::Index),
         ("map index must be a `string`", C::Index),
         ("cannot index a value of type `bool`", C::Index),
-        ("`break`/`continue` used outside of a loop", C::BreakOutsideLoop),
-        ("cannot return a value from a function with no return type", C::ReturnValue),
-        ("`if` branches have mismatched types: `int` and `string`", C::ReturnValue),
-        ("match arms produce inconsistent types: `int` and `string`", C::ReturnValue),
+        (
+            "`break`/`continue` used outside of a loop",
+            C::BreakOutsideLoop,
+        ),
+        (
+            "cannot return a value from a function with no return type",
+            C::ReturnValue,
+        ),
+        (
+            "`if` branches have mismatched types: `int` and `string`",
+            C::ReturnValue,
+        ),
+        (
+            "match arms produce inconsistent types: `int` and `string`",
+            C::ReturnValue,
+        ),
         ("`this` used outside of a class body", C::ThisSuper),
         ("`super` used outside of a class body", C::ThisSuper),
-        ("`this(...)` can only be used as a named constructor's delegation", C::ThisSuper),
+        (
+            "`this(...)` can only be used as a named constructor's delegation",
+            C::ThisSuper,
+        ),
         ("enum `Color` has no variant `Purple`", C::EnumVariant),
-        ("variant `Point` carries 2 payload field(s); use `Point(...)`", C::EnumVariant),
+        (
+            "variant `Point` carries 2 payload field(s); use `Point(...)`",
+            C::EnumVariant,
+        ),
         ("`Color` cannot be constructed directly", C::CannotConstruct),
-        ("`User` declares `implements Runnable` but has no method `run`", C::InterfaceConformance),
+        (
+            "`User` declares `implements Runnable` but has no method `run`",
+            C::InterfaceConformance,
+        ),
         ("`x is int` can never succeed", C::Cast),
         ("cannot cast `string` to `int`", C::Cast),
         ("unknown attribute `#[wat]`", C::Attribute),
-        ("attributes on declarations are not lowered yet (`#[wat]`)", C::NotLowered),
+        (
+            "attributes on declarations are not lowered yet (`#[wat]`)",
+            C::NotLowered,
+        ),
         ("`#[manualAlloc]` takes no arguments", C::ManualAlloc),
         ("duplicate `#[manualAlloc]` attribute", C::ManualAlloc),
-        ("`#[manualAlloc]` is not supported on static fields", C::ManualAlloc),
-        ("`#[manualAlloc]` requires an allocation initializer", C::ManualAlloc),
-        ("owned field `cursor` must be initialized where it is declared", C::ManualAlloc),
+        (
+            "`#[manualAlloc]` is not supported on static fields",
+            C::ManualAlloc,
+        ),
+        (
+            "`#[manualAlloc]` requires an allocation initializer",
+            C::ManualAlloc,
+        ),
+        (
+            "owned field `cursor` must be initialized where it is declared",
+            C::ManualAlloc,
+        ),
         ("use of `p` after `free()`", C::UseAfterFree),
         ("use of `p` after it was moved", C::UseAfterFree),
         ("`p` was already freed", C::DoubleFree),
-        ("`free` is only available on a `#[manualAlloc]` binding", C::FreeOnNonManual),
-        ("cannot bind `#[manualAlloc]` value `p` to a managed binding", C::OwnedPosition),
-        ("cannot store `#[manualAlloc]` value `p` in managed field `f`", C::OwnedPosition),
-        ("cannot store `#[manualAlloc]` value `p` in a managed collection", C::OwnedPosition),
-        ("cannot overwrite `#[manualAlloc]` binding `p`", C::OverwriteManual),
-        ("cannot return `#[manualAlloc]` value `p` from a function that does not own its result", C::OverwriteManual),
-        ("`alloc` may only be used inside an `unsafe` block", C::UnsafeRequired),
-        ("`&` may only be used inside an `unsafe` block", C::UnsafeRequired),
-        ("`*` may only be used inside an `unsafe` block", C::UnsafeRequired),
-        ("pointer indexing may only be used inside an `unsafe` block", C::UnsafeRequired),
+        (
+            "`free` is only available on a `#[manualAlloc]` binding",
+            C::FreeOnNonManual,
+        ),
+        (
+            "cannot bind `#[manualAlloc]` value `p` to a managed binding",
+            C::OwnedPosition,
+        ),
+        (
+            "cannot store `#[manualAlloc]` value `p` in managed field `f`",
+            C::OwnedPosition,
+        ),
+        (
+            "cannot store `#[manualAlloc]` value `p` in a managed collection",
+            C::OwnedPosition,
+        ),
+        (
+            "cannot overwrite `#[manualAlloc]` binding `p`",
+            C::OverwriteManual,
+        ),
+        (
+            "cannot return `#[manualAlloc]` value `p` from a function that does not own its result",
+            C::OverwriteManual,
+        ),
+        (
+            "`alloc` may only be used inside an `unsafe` block",
+            C::UnsafeRequired,
+        ),
+        (
+            "`&` may only be used inside an `unsafe` block",
+            C::UnsafeRequired,
+        ),
+        (
+            "`*` may only be used inside an `unsafe` block",
+            C::UnsafeRequired,
+        ),
+        (
+            "pointer indexing may only be used inside an `unsafe` block",
+            C::UnsafeRequired,
+        ),
         ("`alloc(T, count)` takes two arguments", C::RawBuffer),
         ("`alloc` element type must be a type name", C::RawBuffer),
         ("`alloc` count must be an `int`", C::RawBuffer),
         ("`free(p)` takes one argument", C::RawBuffer),
-        ("`free` expects a pointer argument, found `int`", C::RawBuffer),
+        (
+            "`free` expects a pointer argument, found `int`",
+            C::RawBuffer,
+        ),
         ("`free()` takes no arguments", C::RawBuffer),
-        ("named argument `x` is not supported for this call", C::CallArity),
+        (
+            "named argument `x` is not supported for this call",
+            C::CallArity,
+        ),
         ("too many arguments in call", C::CallArity),
         ("expected 2 argument(s), found 3", C::CallArity),
         ("missing arguments for parameters `a`, `b`", C::CallArity),
-        ("attempt to call a non-function value of type `int`", C::CallNonFunction),
-        ("`&T` references are supported only as function parameter types (a field)", C::RefParamOnly),
+        (
+            "attempt to call a non-function value of type `int`",
+            C::CallNonFunction,
+        ),
+        (
+            "`&T` references are supported only as function parameter types (a field)",
+            C::RefParamOnly,
+        ),
         ("tuple values are not lowered yet", C::NotLowered),
     ];
     for (msg, want) in cases {
@@ -141,7 +240,10 @@ fn catalogue_entries_are_unique_and_stable() {
         let id = entry.code.id();
         assert_eq!(id.len(), 5, "id `{id}` must be 5 chars");
         assert!(id.starts_with('E'), "id `{id}` must start with E");
-        assert!(id[1..].chars().all(|c| c.is_ascii_digit()), "id `{id}` must be E + 4 digits");
+        assert!(
+            id[1..].chars().all(|c| c.is_ascii_digit()),
+            "id `{id}` must be E + 4 digits"
+        );
         assert_eq!(explain(id).map(|e| e.code), Some(entry.code));
         assert_eq!(code_from_id(id), Some(entry.code));
     }
@@ -261,13 +363,19 @@ fn parse_and_lex_errors_get_e0111_and_e0101() {
     let d = check_str("fn main() { let = }");
     let msgs = error_msgs(&d);
     assert!(
-        d.diagnostics.borrow().iter().any(|d| d.code == Some(ErrorCode::Syntax)),
+        d.diagnostics
+            .borrow()
+            .iter()
+            .any(|d| d.code == Some(ErrorCode::Syntax)),
         "expected an E0111 syntax diagnostic, got:\n{msgs}"
     );
 
     let d = check_str("let s = \"unterminated");
     assert!(
-        d.diagnostics.borrow().iter().any(|d| d.code == Some(ErrorCode::Lex)),
+        d.diagnostics
+            .borrow()
+            .iter()
+            .any(|d| d.code == Some(ErrorCode::Lex)),
         "expected an E0101 lexical diagnostic"
     );
 }
@@ -289,7 +397,10 @@ fn codegen_not_lowered_gets_e0900_only_when_it_says_so() {
     let diags = d2.diagnostics.borrow();
     let tuple = diags
         .iter()
-        .find(|d| d.message.contains("destructuring patterns are not lowered yet"))
+        .find(|d| {
+            d.message
+                .contains("destructuring patterns are not lowered yet")
+        })
         .expect("expected a codegen error about unlowered tuple destructuring");
     assert_eq!(tuple.code, Some(ErrorCode::NotLowered));
 }
@@ -310,7 +421,11 @@ fn generic_class_lambda_is_e0900() {
             println(b.make()(2))
         }";
     let d = check_str(src);
-    assert!(!d.any_error(), "should type-check cleanly:\n{}", error_msgs(&d));
+    assert!(
+        !d.any_error(),
+        "should type-check cleanly:\n{}",
+        error_msgs(&d)
+    );
     let d2 = DiagnosticSink::new();
     let mut map = SourceMap::default();
     let out = pickle_compiler::front::frontend("test.pk", src, &mut map, &d).unwrap();
@@ -338,7 +453,11 @@ fn lambda_assigning_to_captured_var_is_e0900() {
             println(inc())
         }";
     let d = check_str(src);
-    assert!(!d.any_error(), "should type-check cleanly:\n{}", error_msgs(&d));
+    assert!(
+        !d.any_error(),
+        "should type-check cleanly:\n{}",
+        error_msgs(&d)
+    );
     let d2 = DiagnosticSink::new();
     let mut map = SourceMap::default();
     let out = pickle_compiler::front::frontend("test.pk", src, &mut map, &d).unwrap();

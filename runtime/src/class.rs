@@ -9,11 +9,11 @@
 //! copies the class name and the managed-mask words into stable memory.
 
 use crate::gc::Gc;
+use crate::object::pickle_header_size;
 use crate::object::{
     builtin_nop_finalizer, ClassDescriptor, PickleObject, PICKLE_CLASS_FLAG_FINALIZER,
     PICKLE_CLASS_USER_BASE,
 };
-use crate::object::pickle_header_size;
 
 /// Total byte size of a class instance with `field_count` managed slots.
 pub fn class_object_size(field_count: usize) -> usize {
@@ -95,7 +95,9 @@ pub extern "C" fn pickle_class_register(
     finalizer: usize,
     parent: u32,
 ) -> u32 {
-    class_register(name_ptr, name_len, slot_count, mask, owned_mask, finalizer, parent)
+    class_register(
+        name_ptr, name_len, slot_count, mask, owned_mask, finalizer, parent,
+    )
 }
 
 fn class_register(
@@ -112,7 +114,9 @@ fn class_register(
     } else {
         // SAFETY: the caller (compiler-emitted code) passes a module string's
         // bytes with a matching length.
-        unsafe { std::slice::from_raw_parts(name_ptr, name_len) }.to_vec().into_boxed_slice()
+        unsafe { std::slice::from_raw_parts(name_ptr, name_len) }
+            .to_vec()
+            .into_boxed_slice()
     };
     let nwords = slot_count.div_ceil(32);
     let mut words = vec![0u32; nwords];
@@ -175,7 +179,11 @@ pub fn class_is(obj: *const PickleObject, target: u32) -> bool {
 #[no_mangle]
 pub extern "C" fn pickle_class_new(class_id: i64, slot_count: i64) -> *mut PickleObject {
     let gc = crate::gc::gc_mut();
-    let n = if slot_count < 0 { 0 } else { slot_count as usize };
+    let n = if slot_count < 0 {
+        0
+    } else {
+        slot_count as usize
+    };
     let id = if class_id < PICKLE_CLASS_USER_BASE as i64 {
         PICKLE_CLASS_USER_BASE as u64
     } else {
@@ -186,20 +194,13 @@ pub extern "C" fn pickle_class_new(class_id: i64, slot_count: i64) -> *mut Pickl
 
 /// A field slot (managed pointer); null when out of bounds.
 #[no_mangle]
-pub extern "C" fn pickle_obj_slot_get(
-    obj: *const PickleObject,
-    slot: i64,
-) -> *mut PickleObject {
+pub extern "C" fn pickle_obj_slot_get(obj: *const PickleObject, slot: i64) -> *mut PickleObject {
     class_slot(obj, slot)
 }
 
 /// Write a field slot.
 #[no_mangle]
-pub extern "C" fn pickle_obj_slot_set(
-    obj: *mut PickleObject,
-    slot: i64,
-    value: *mut PickleObject,
-) {
+pub extern "C" fn pickle_obj_slot_set(obj: *mut PickleObject, slot: i64, value: *mut PickleObject) {
     class_set_slot(obj, slot, value)
 }
 
@@ -376,7 +377,10 @@ mod tests {
         crate::pickle_runtime_init();
         let name = b"Hero".to_vec();
         let id = pickle_class_register(name.as_ptr(), name.len(), 4, 0b1111, 0, 0, 0);
-        assert!(id >= PICKLE_CLASS_USER_BASE, "user classes come after the builtins");
+        assert!(
+            id >= PICKLE_CLASS_USER_BASE,
+            "user classes come after the builtins"
+        );
         let g = crate::gc::gc_mut();
         assert_eq!(g.class_name(id).map(|b| b.to_vec()), Some(b"Hero".to_vec()));
         let d = g.descriptors.get(id).unwrap();
@@ -446,7 +450,10 @@ mod tests {
         let a = class_new(animal as u64, 1, gc);
         assert!(class_is(d, dog), "an instance is its own class");
         assert!(class_is(d, animal), "a subclass instance is-an ancestor");
-        assert!(!class_is(a, dog), "a superclass instance is not the subclass");
+        assert!(
+            !class_is(a, dog),
+            "a superclass instance is not the subclass"
+        );
         assert!(!class_is(a, 0), "id 0 is never a user ancestor");
         assert!(pickle_class_is(d, dog as i64));
         assert!(!pickle_class_is(a, dog as i64));
@@ -483,7 +490,11 @@ mod tests {
         assert!(pickle_class_implements(d, 1));
         assert!(!pickle_class_implements(a, 4));
         assert_eq!(pickle_iface_method(d, 1, 1), 0x2222);
-        assert_eq!(pickle_iface_method(d, 1, 9), 0, "missing method index resolves 0");
+        assert_eq!(
+            pickle_iface_method(d, 1, 9),
+            0,
+            "missing method index resolves 0"
+        );
         assert_eq!(pickle_class_cast(d, animal as i64), d);
         assert_eq!(pickle_iface_cast(d, 2), d);
     }

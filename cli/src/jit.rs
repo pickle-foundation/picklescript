@@ -1,10 +1,10 @@
-﻿use cranelift_codegen::binemit::Reloc;
+use cranelift_codegen::binemit::Reloc;
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Imm64, Offset32};
 use cranelift_codegen::ir::{
     types, AbiParam, Block, BlockArg, ExternalName, Function, GlobalValue, GlobalValueData,
-    InstBuilder, MemFlags, Signature, SigRef, StackSlot, StackSlotData, StackSlotKind, TrapCode,
+    InstBuilder, MemFlags, SigRef, Signature, StackSlot, StackSlotData, StackSlotKind, TrapCode,
     UserFuncName, Value,
 };
 use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
@@ -20,7 +20,6 @@ use pickle_compiler::ir::{
 };
 
 use pickle_runtime::abi;
-
 
 /// Bytes of the fixed `ShadowFrame` header: `prev`(8) + `slot_count: u32` +
 /// padding `u32`.
@@ -382,9 +381,7 @@ fn write_through(
 ) {
     if let Some(&cell) = plan.temp_cell.get(&dst) {
         let fr = frame.expect("managed temp implies shadow frame");
-        builder
-            .ins()
-            .stack_store(v, fr, cell_offset(cell));
+        builder.ins().stack_store(v, fr, cell_offset(cell));
     }
 }
 
@@ -417,8 +414,7 @@ impl Jit {
             .set("is_pic", "false")
             .with_context(|| "cannot set is_pic=false")?;
         let flags = Flags::new(flag_builder);
-        let isa_builder =
-            cranelift_native::builder().map_err(|e| anyhow!("host ISA: {e}"))?;
+        let isa_builder = cranelift_native::builder().map_err(|e| anyhow!("host ISA: {e}"))?;
         let isa = isa_builder.finish(flags).map_err(anyhow::Error::msg)?;
         Ok(Jit { isa })
     }
@@ -513,9 +509,7 @@ pub(crate) fn lower_func(
             builder.ins().stack_store(zero, fr, cell_offset(c));
         }
         let n = builder.ins().iconst(types::I32, plan.ncells as i64);
-        builder
-            .ins()
-            .stack_store(n, fr, Offset32::new(8));
+        builder.ins().stack_store(n, fr, Offset32::new(8));
     }
 
     // Params already live in slots 0..n in the IR; seed those slots.
@@ -553,9 +547,27 @@ pub(crate) fn lower_func(
             current = Some(blk);
         }
         for ins in &b.instrs {
-            lower_instr(module, func, &plan, &mut builder, frame, &slot_ss, &mut values, &mut call_cache, ins)?;
+            lower_instr(
+                module,
+                func,
+                &plan,
+                &mut builder,
+                frame,
+                &slot_ss,
+                &mut values,
+                &mut call_cache,
+                ins,
+            )?;
         }
-        lower_term(func, &mut builder, frame, &blocks, &values, &mut call_cache, &b.term)?;
+        lower_term(
+            func,
+            &mut builder,
+            frame,
+            &blocks,
+            &values,
+            &mut call_cache,
+            &b.term,
+        )?;
     }
     builder.seal_all_blocks();
 
@@ -604,9 +616,10 @@ fn lower_instr(
                         IrTy::Ptr,
                     );
                     let data = builder.ins().symbol_value(types::I64, gv);
-                    let len = builder
-                        .ins()
-                        .iconst(types::I64, module.strings.get(sid.0).map_or(0, Vec::len) as i64);
+                    let len = builder.ins().iconst(
+                        types::I64,
+                        module.strings.get(sid.0).map_or(0, Vec::len) as i64,
+                    );
                     let (fs, fgv) = extern_pair(
                         builder,
                         call_cache,
@@ -622,7 +635,7 @@ fn lower_instr(
                         .copied()
                         .unwrap_or_else(|| unit_value(builder))
                 }
-            IrConst::StrAddr(sid) => {
+                IrConst::StrAddr(sid) => {
                     let (_s, gv) = extern_pair(
                         builder,
                         call_cache,
@@ -632,7 +645,7 @@ fn lower_instr(
                     );
                     builder.ins().symbol_value(types::I64, gv)
                 }
-            IrConst::FuncAddr(fid) => {
+                IrConst::FuncAddr(fid) => {
                     let f = &module.funcs[fid.0];
                     let params: Vec<IrTy> = f.params.iter().map(|p| p.ty).collect();
                     let (_s, gv) = extern_pair(builder, call_cache, &f.symbol, &params, f.ret);
@@ -660,6 +673,7 @@ fn lower_instr(
                 UnOp::BitNot => builder.ins().bnot(x),
             };
             values.insert(dst.0, vv);
+            write_through(builder, plan, frame, dst.0, vv);
         }
         IrInstr::BinOp { dst, op, a, b } => {
             let av = *values.get(&a.0).context("binop lhs")?;
@@ -746,6 +760,7 @@ fn lower_instr(
                 }
             };
             values.insert(dst.0, vv);
+            write_through(builder, plan, frame, dst.0, vv);
         }
         IrInstr::Copy { dst, v } => {
             let x = *values.get(&v.0).context("copy operand")?;
@@ -837,7 +852,13 @@ fn lower_instr(
                 }
             }
         }
-        IrInstr::CallInd { dst, fn_addr, params, ret, args } => {
+        IrInstr::CallInd {
+            dst,
+            fn_addr,
+            params,
+            ret,
+            args,
+        } => {
             let mut iargs: Vec<Value> = Vec::with_capacity(args.len());
             for a in args {
                 iargs.push(*values.get(&a.0).context("callind arg")?);
@@ -876,9 +897,7 @@ fn load_slot(
         let fr = frame.context("managed slot implies frame")?;
         Ok(builder.ins().stack_load(types::I64, fr, cell_offset(cell)))
     } else if let Some(ss) = slot_ss.get(&slot.0) {
-        Ok(builder
-            .ins()
-            .stack_load(clif_ty(ty), *ss, Offset32::new(0)))
+        Ok(builder.ins().stack_load(clif_ty(ty), *ss, Offset32::new(0)))
     } else {
         Ok(unit_value(builder))
     }
@@ -916,9 +935,7 @@ fn lower_term(
 ) -> Result<()> {
     match term {
         IrTerm::Branch { target } => {
-            builder
-                .ins()
-                .jump(blocks[&target.0], &[] as &[BlockArg]);
+            builder.ins().jump(blocks[&target.0], &[] as &[BlockArg]);
         }
         IrTerm::BranchIf { cond, then, else_ } => {
             let c = *values.get(&cond.0).context("branch cond")?;
@@ -1017,6 +1034,8 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_delete" => abi::pickle_delete as *const () as usize,
         "pickle_mkdir" => abi::pickle_mkdir as *const () as usize,
         "pickle_list_dir" => abi::pickle_list_dir as *const () as usize,
+        "pickle_args" => abi::pickle_args as *const () as usize,
+        "pickle_exit" => abi::pickle_exit as *const () as usize,
         "pickle_stream_open_read" => abi::pickle_stream_open_read as *const () as usize,
         "pickle_stream_open_write" => abi::pickle_stream_open_write as *const () as usize,
         "pickle_stream_open_append" => abi::pickle_stream_open_append as *const () as usize,
@@ -1078,11 +1097,128 @@ fn runtime_addr(name: &str) -> Option<usize> {
     Some(a)
 }
 
+/// Register every runtime ABI function into the crash reporter so native
+/// pickle_* frames get names in backtraces. Call once at startup.
+pub fn register_runtime_symbols() {
+    let names = [
+        "pickle_runtime_init",
+        "pickle_runtime_shutdown",
+        "pickle_print_byte",
+        "pickle_print_bytes",
+        "pickle_print_bool",
+        "pickle_print_char",
+        "pickle_print_cstr",
+        "pickle_print_f64",
+        "pickle_print_i64",
+        "pickle_print_newline",
+        "pickle_print_obj",
+        "pickle_print_u64",
+        "pickle_str_cmp",
+        "pickle_str_concat",
+        "pickle_str_from_bytes",
+        "pickle_str_from_bool",
+        "pickle_str_from_byte",
+        "pickle_str_from_char",
+        "pickle_str_from_f64",
+        "pickle_str_from_i64",
+        "pickle_str_from_list",
+        "pickle_str_to_bytes",
+        "pickle_str_get",
+        "pickle_str_set",
+        "pickle_str_len",
+        "pickle_box_i64",
+        "pickle_box_f64",
+        "pickle_box_bool",
+        "pickle_box_char",
+        "pickle_unbox_i64",
+        "pickle_unbox_f64",
+        "pickle_unbox_bool",
+        "pickle_unbox_char",
+        "pickle_list_new",
+        "pickle_list_len",
+        "pickle_list_get",
+        "pickle_list_set",
+        "pickle_list_push",
+        "pickle_list_pop",
+        "pickle_list_remove",
+        "pickle_list_insert",
+        "pickle_list_sort",
+        "pickle_range",
+        "pickle_read_file",
+        "pickle_write_file",
+        "pickle_file_exists",
+        "pickle_delete",
+        "pickle_mkdir",
+        "pickle_list_dir",
+        "pickle_args",
+        "pickle_exit",
+        "pickle_stream_open_read",
+        "pickle_stream_open_write",
+        "pickle_stream_open_append",
+        "pickle_stdout_stream",
+        "pickle_stderr_stream",
+        "pickle_stream_read",
+        "pickle_stream_write",
+        "pickle_stream_flush",
+        "pickle_stream_close",
+        "pickle_shadow_push",
+        "pickle_shadow_pop",
+        "pickle_shadow_get",
+        "pickle_shadow_set",
+        "pickle_map_new",
+        "pickle_map_set",
+        "pickle_map_get",
+        "pickle_map_get_boxed",
+        "pickle_map_has",
+        "pickle_map_remove",
+        "pickle_map_len",
+        "pickle_map_keys",
+        "pickle_map_values",
+        "pickle_enum_new",
+        "pickle_enum_set_field",
+        "pickle_enum_tag",
+        "pickle_enum_field",
+        "pickle_enum_eq",
+        "pickle_tuple_new",
+        "pickle_tuple_set_field",
+        "pickle_tuple_field",
+        "pickle_class_register",
+        "pickle_class_new",
+        "pickle_class_is",
+        "pickle_class_cast",
+        "pickle_class_add_interface",
+        "pickle_class_add_iface_method",
+        "pickle_class_implements",
+        "pickle_iface_method",
+        "pickle_iface_cast",
+        "pickle_panic_no_iface_method",
+        "pickle_obj_slot_get",
+        "pickle_obj_slot_set",
+        "pickle_manual_adopt",
+        "pickle_manual_free",
+        "pickle_raw_alloc",
+        "pickle_raw_free",
+        "pickle_static_get",
+        "pickle_static_set",
+        "pickle_panic_no_match",
+        "pickle_panic_none_unwrap",
+        "pickle_test_fail_obj",
+        "pickle_expect_obj_eq",
+        "pickle_expect_display",
+        "pickle_expect_str_contains",
+        "pickle_expect_list_contains",
+        "pickle_fmod",
+    ];
+    for name in names {
+        if let Some(a) = runtime_addr(name) {
+            crate::iced::register_native(name, a);
+        }
+    }
+}
+
 fn external_name_of(name: &ExternalName) -> Option<String> {
     match name {
-        ExternalName::TestCase(t) => {
-            Some(String::from_utf8_lossy(t.raw()).into_owned())
-        }
+        ExternalName::TestCase(t) => Some(String::from_utf8_lossy(t.raw()).into_owned()),
         _ => None,
     }
 }
@@ -1141,6 +1277,11 @@ pub struct JitProgram {
     symbols: HashMap<String, usize>,
 }
 
+// SAFETY: the mapping is fully initialised by `compile` and read-only
+// afterwards (`run` never mutates it), so ownership may move to a single
+// worker thread; drop of the final owner frees the pages exactly once.
+unsafe impl Send for JitProgram {}
+
 impl Drop for JitProgram {
     fn drop(&mut self) {
         // SAFETY: `base`/`len` come from `mem::alloc`; matched by `mem::free`.
@@ -1159,9 +1300,8 @@ impl JitProgram {
     pub unsafe fn run(&self) {
         // SAFETY: `entry` points at the compiled pickle_main, a no-arg
         // void-returning function with the host C calling convention.
-        let f: unsafe extern "C" fn() = unsafe {
-            std::mem::transmute::<usize, unsafe extern "C" fn()>(self.entry)
-        };
+        let f: unsafe extern "C" fn() =
+            unsafe { std::mem::transmute::<usize, unsafe extern "C" fn()>(self.entry) };
         unsafe {
             f();
         }
@@ -1222,7 +1362,11 @@ impl Jit {
         for (i, f) in cf.iter().enumerate() {
             // SAFETY: `base + func_offs[i]` is inside the mapping.
             unsafe {
-                std::ptr::copy_nonoverlapping(f.bytes.as_ptr(), base.add(func_offs[i]), f.bytes.len());
+                std::ptr::copy_nonoverlapping(
+                    f.bytes.as_ptr(),
+                    base.add(func_offs[i]),
+                    f.bytes.len(),
+                );
             }
         }
         for (i, s) in module.strings.iter().enumerate() {
@@ -1268,6 +1412,7 @@ impl Jit {
         // The entry symbol is required for `main`-centric use but not for the
         // test runner, which addresses each test directly by symbol.
         let entry = symbols.get("pickle_main").copied().unwrap_or(0);
+        crate::iced::register_code_range(base as usize, total, symbols.clone());
         Ok(JitProgram {
             base,
             len: total,
@@ -1440,8 +1585,15 @@ mod tests {
             .flat_map(|b| &b.instrs)
             .filter(|i| matches!(i, IrInstr::CallInd { .. }))
             .count();
-        assert_eq!(callinds, 4, "4 dynamic calls (same, by, mul, add via wrap):\n{dump}");
-        let tramps = m.funcs.iter().filter(|f| f.symbol.starts_with("pkl_tramp_")).count();
+        assert_eq!(
+            callinds, 4,
+            "4 dynamic calls (same, by, mul, add via wrap):\n{dump}"
+        );
+        let tramps = m
+            .funcs
+            .iter()
+            .filter(|f| f.symbol.starts_with("pkl_tramp_"))
+            .count();
         assert_eq!(tramps, 1, "one fn-value trampoline for `base`:\n{dump}");
     }
 }

@@ -3,13 +3,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pickle_compiler::diag::DiagnosticSink;
-use pickle_compiler::front::{frontend, frontend_checked};
 use pickle_compiler::diag::SourceMap;
+use pickle_compiler::front::{frontend, frontend_checked};
 
 use std::io::IsTerminal;
 
 mod build;
 mod history_cli;
+mod iced;
 mod jit;
 
 #[derive(Parser)]
@@ -49,6 +50,22 @@ enum Command {
         /// Source file to lower
         file: PathBuf,
     },
+    /// Lower a checked module to the lossless, round-trippable IRX text
+    /// format and print it. Unlike `ir`, IRX includes the full extern and
+    /// string tables plus per-func slots/tags/entry, and re-parses back into
+    /// exactly the same module via `run-irx`.
+    Irx {
+        /// Source file to lower
+        file: PathBuf,
+    },
+    /// Parse an IRX file back into a module and run its `main` with the JIT
+    IrxRun {
+        /// IRX file to run
+        file: PathBuf,
+        /// Extra arguments surfaced to the program via `args()`
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Explain a stable error code (e.g. `E0308`); with no code, list every
     /// code in the catalogue
     Explain {
@@ -79,6 +96,9 @@ enum Command {
     Run {
         /// Source file to run
         file: PathBuf,
+        /// Extra arguments surfaced to the program via `args()`
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Run the `test fn` items of one or more modules
     Test {
@@ -94,6 +114,7 @@ enum Command {
         tag: Vec<String>,
     },
     /// Compile a module to a native executable, linking the runtime
+    /// Compile a module to a native executable, linking the runtime
     Build {
         /// Source file to compile
         file: PathBuf,
@@ -101,11 +122,14 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// 🥒
+    #[command(hide = true)]
+    Jar,
 }
 
 fn read_source(path: &PathBuf) -> Result<String> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     Ok(text)
 }
 
@@ -120,8 +144,31 @@ fn default_output(file: &Path) -> PathBuf {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "pickle_program".to_string());
-    let name = if cfg!(windows) { format!("{stem}.exe") } else { stem };
+    let name = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem
+    };
     dir.join(name)
+}
+
+/// Forward the CLI `--` arguments to the runtime so `args()` in compiled
+/// pickle code sees them (argv[0] is the tool name and is skipped, matching
+/// the runtime contract). Must run after the runtime is initialised.
+fn forward_program_args(args: &[String]) {
+    let mut cstrings: Vec<std::ffi::CString> = vec![std::ffi::CString::new("pickle").unwrap()];
+    for a in args {
+        // NUL in a CLI arg is pathological; drop it rather than fail the run.
+        match std::ffi::CString::new(a.as_str()) {
+            Ok(c) => cstrings.push(c),
+            Err(_) => cstrings.push(std::ffi::CString::new("").unwrap()),
+        }
+    }
+    let ptrs: Vec<*const u8> = cstrings.iter().map(|c| c.as_ptr() as *const u8).collect();
+    // SAFETY: `ptrs` outlives the call; `pickle_args_set` copies the bytes.
+    unsafe {
+        pickle_runtime::abi::pickle_args_set(ptrs.len(), ptrs.as_ptr());
+    }
 }
 
 fn load(file: &PathBuf) -> Result<(String, SourceMap, DiagnosticSink)> {
@@ -161,10 +208,7 @@ fn run() -> Result<()> {
         }
         Command::Explain { code, history } => match code {
             Some(code) => {
-                let id = format!(
-                    "E{}",
-                    code.trim().to_uppercase().trim_start_matches('E')
-                );
+                let id = format!("E{}", code.trim().to_uppercase().trim_start_matches('E'));
                 let entry = pickle_compiler::error::explain(&id);
                 if *history {
                     if let Some(entry) = entry {
@@ -204,11 +248,7 @@ fn run() -> Result<()> {
             }
             None => {
                 for entry in pickle_compiler::error::CATALOGUE {
-                    println!(
-                        "error[{}] -- {}",
-                        entry.code.id(),
-                        entry.title
-                    );
+                    println!("error[{}] -- {}", entry.code.id(), entry.title);
                 }
             }
         },
@@ -262,8 +302,10 @@ fn run() -> Result<()> {
         }
         Command::Ir { file } => {
             let (source, mut map, diags) = load(file)?;
-            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
-                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let module =
+                frontend(&file.display().to_string(), &source, &mut map, &diags).and_then(|out| {
+                    pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags)
+                });
             let rendered = diags.render_all(&map, colored);
             if !rendered.is_empty() {
                 eprint!("{rendered}");
@@ -273,23 +315,81 @@ fn run() -> Result<()> {
                 None => std::process::exit(1),
             }
         }
-    Command::Run { file } => {
+        Command::Irx { file } => {
             let (source, mut map, diags) = load(file)?;
-            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
-                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let module =
+                frontend(&file.display().to_string(), &source, &mut map, &diags).and_then(|out| {
+                    pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags)
+                });
+            let rendered = diags.render_all(&map, colored);
+            if !rendered.is_empty() {
+                eprint!("{rendered}");
+            }
+            match module {
+                Some(m) => print!("{}", pickle_compiler::ir::irx_serialize(&m)),
+                None => std::process::exit(1),
+            }
+        }
+        Command::IrxRun { file, args } => {
+            let text = read_source(file)?;
+            let module = pickle_compiler::ir::IrModule::from_irx(&text)
+                .map_err(anyhow::Error::msg)
+                .context("parsing IRX")?;
+            let runner = jit::Jit::new().with_context(|| "while setting up the JIT")?;
+            jit::register_runtime_symbols();
+            // Compiled pickle_* calls need the heap etc. alive while we run.
+            pickle_runtime::abi::pickle_runtime_init();
+            forward_program_args(args);
+            let program = runner
+                .compile(&module)
+                .with_context(|| "while JIT-compiling")?;
+            // SAFETY: runtime is initialised and pickle_main is a no-arg
+            // void-returning host-convention function.
+            let res = std::thread::Builder::new()
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || unsafe {
+                    program.run();
+                })
+                .with_context(|| "while spawning run thread")?
+                .join();
+            if res.is_err() {
+                eprintln!("[main] run thread panicked (res.is_err)");
+                std::process::exit(101);
+            }
+            pickle_runtime::abi::pickle_runtime_shutdown();
+        }
+        Command::Run { file, args } => {
+            let (source, mut map, diags) = load(file)?;
+            let module =
+                frontend(&file.display().to_string(), &source, &mut map, &diags).and_then(|out| {
+                    pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags)
+                });
             let rendered = diags.render_all(&map, colored);
             if !rendered.is_empty() {
                 eprint!("{rendered}");
             }
             let module = module.context("frontend failed")?;
             let runner = jit::Jit::new().with_context(|| "while setting up the JIT")?;
+            jit::register_runtime_symbols();
             // Compiled pickle_* calls need the heap etc. alive while we run.
             pickle_runtime::abi::pickle_runtime_init();
-            let program = runner.compile(&module).with_context(|| "while JIT-compiling")?;
+            forward_program_args(args);
+            let program = runner
+                .compile(&module)
+                .with_context(|| "while JIT-compiling")?;
             // SAFETY: runtime is initialised and pickle_main is a no-arg
             // void-returning host-convention function.
-            unsafe {
-                program.run();
+            let res = std::thread::Builder::new()
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || unsafe {
+                    program.run();
+                })
+                .with_context(|| "while spawning run thread")?
+                .join();
+            if res.is_err() {
+                // TEMP: identify whether the 101 comes from a panic here.
+                eprintln!("[main] run thread panicked (res.is_err)");
+                std::process::exit(101);
             }
             pickle_runtime::abi::pickle_runtime_shutdown();
         }
@@ -353,7 +453,8 @@ fn run() -> Result<()> {
                     .copied()
                     .filter(|f| {
                         let name_ok = filter.is_none_or(|p| f.name.contains(p));
-                        let tag_ok = tags.is_empty() || tags.iter().any(|t| f.tags.iter().any(|g| g == t));
+                        let tag_ok =
+                            tags.is_empty() || tags.iter().any(|t| f.tags.iter().any(|g| g == t));
                         name_ok && tag_ok
                     })
                     .collect::<Vec<_>>();
@@ -375,10 +476,8 @@ fn run() -> Result<()> {
                         unsafe { std::mem::transmute::<usize, unsafe extern "C" fn()>(addr) };
                     unsafe { setup() };
                 }
-                let names: Vec<Vec<u8>> = tests
-                    .iter()
-                    .map(|f| f.name.as_bytes().to_vec())
-                    .collect();
+                let names: Vec<Vec<u8>> =
+                    tests.iter().map(|f| f.name.as_bytes().to_vec()).collect();
                 let descriptors: Vec<pickle_runtime::abi::PickleTest> = tests
                     .iter()
                     .enumerate()
@@ -386,9 +485,8 @@ fn run() -> Result<()> {
                         let addr = program
                             .symbol_addr(&f.symbol)
                             .unwrap_or_else(|| panic!("missing compiled symbol {}", f.symbol));
-                        let body: extern "C" fn() = unsafe {
-                            std::mem::transmute::<usize, extern "C" fn()>(addr)
-                        };
+                        let body: extern "C" fn() =
+                            unsafe { std::mem::transmute::<usize, extern "C" fn()>(addr) };
                         pickle_runtime::abi::PickleTest {
                             name: names[i].as_ptr(),
                             name_len: names[i].len() as u32,
@@ -418,9 +516,8 @@ fn run() -> Result<()> {
                         let addr = program
                             .symbol_addr(&f.symbol)
                             .unwrap_or_else(|| panic!("missing compiled symbol {}", f.symbol));
-                        let body: extern "C" fn() = unsafe {
-                            std::mem::transmute::<usize, extern "C" fn()>(addr)
-                        };
+                        let body: extern "C" fn() =
+                            unsafe { std::mem::transmute::<usize, extern "C" fn()>(addr) };
                         let (_, kind) = decode_hook(&f.name);
                         pickle_runtime::abi::PickleHook {
                             group: hook_groups[i].as_ptr(),
@@ -448,8 +545,10 @@ fn run() -> Result<()> {
         }
         Command::Build { file, output } => {
             let (source, mut map, diags) = load(file)?;
-            let module = frontend(&file.display().to_string(), &source, &mut map, &diags)
-                .and_then(|out| pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags));
+            let module =
+                frontend(&file.display().to_string(), &source, &mut map, &diags).and_then(|out| {
+                    pickle_compiler::emit::emit_ir(&out.program, &out.resolved, &diags)
+                });
             let rendered = diags.render_all(&map, colored);
             if !rendered.is_empty() {
                 eprint!("{rendered}");
@@ -458,10 +557,9 @@ fn run() -> Result<()> {
             if module.funcs.iter().all(|f| !f.is_main) {
                 anyhow::bail!("no `main` in this module; nothing to build");
             }
-            let object = build::emit_object(&module).with_context(|| "while compiling to machine code")?;
-            let out = output
-                .clone()
-                .unwrap_or_else(|| default_output(file));
+            let object =
+                build::emit_object(&module).with_context(|| "while compiling to machine code")?;
+            let out = output.clone().unwrap_or_else(|| default_output(file));
             let target_dir = std::env::temp_dir().join("pickle-aot");
             let rlib = build::build_runtime_rlib(&target_dir)
                 .with_context(|| "while building the runtime for AOT")?;
@@ -469,11 +567,23 @@ fn run() -> Result<()> {
                 .with_context(|| format!("while linking {}", out.display()))?;
             println!("built {}", out.display());
         }
+        Command::Jar => {
+            println!("🥒 Pickle Jar Diagnostics");
+            println!();
+            println!("Compiler: healthy");
+            println!("Parser: fermented");
+            println!("Resolver: brined");
+            println!("Emitter: still soaking");
+            println!();
+            println!("Vinegar: ██████████ 100%");
+            println!("Jar integrity: acceptable");
+        }
     }
     Ok(())
 }
 
 fn main() {
+    iced::install();
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
