@@ -1019,7 +1019,7 @@ mod unix {
         }
         unsafe {
             let uc = &*(ucontext as *const libc::ucontext_t);
-            uc.uc_mcontext.gregs[libc::REG_RSP] as usize
+            uc.uc_mcontext.gregs[libc::REG_RSP as usize] as usize
         }
     }
 
