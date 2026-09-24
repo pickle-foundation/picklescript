@@ -1,0 +1,129 @@
+module std.collections.set
+
+/// A `Set<T>` seed over a `List<T>` with linear membership (`==` equality;
+/// no hash). Because an empty `List<T>` cannot be staged from a bare `[]`
+/// (that literal infers `List<?>`), the constructor takes a *typed proto*
+/// value (`Set<int](0)`, `Set<string]("")`) which is consumed to construct
+/// the backing list and then dropped (`[proto]` then `remove(0)`). This is
+/// the "typed proto-value" staging workaround (PORT-CHECKLIST §8).
+class Set<T> {
+    var items: List<T>
+    var proto: T
+
+    constructor(proto: T) {
+        this.proto = proto
+        this.items = [proto]
+        this.items.remove(0)
+    }
+
+    /// Add `v` when not already present (idempotent).
+    fn add(v: T) {
+        if (this.contains(v)) {
+            return
+        }
+        this.items.push(v)
+    }
+
+    /// Whether `v` is a member.
+    fn contains(v: T) -> bool {
+        for (x in this.items) {
+            if (x == v) {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Number of members.
+    fn size() -> int {
+        len(this.items)
+    }
+
+    /// Remove the first occurrence of `v`; `false` when not present.
+    fn remove(v: T) -> bool {
+        var i = 0
+        while (i < len(this.items)) {
+            if (this.items[i] == v) {
+                this.items.remove(i)
+                return true
+            }
+            i = i + 1
+        }
+        false
+    }
+
+    /// Clear all members (restages an empty backing list).
+    fn clear() {
+        this.items = [this.proto]
+        this.items.remove(0)
+    }
+
+    /// The members as a fresh list copy (safe to mutate/hold). When empty,
+    /// returns the (already empty, correctly-typed) backing list.
+    fn toList() -> List<T> {
+        if (len(this.items) == 0) {
+            return this.items
+        }
+        var out: List<T> = [this.items[0]]
+        var i = 1
+        while (i < len(this.items)) {
+            out.push(this.items[i])
+            i = i + 1
+        }
+        out
+    }
+}
+
+/// A new set containing the members of both `a` and `b`.
+fn union<K>(a: Set<K>, b: Set<K>) -> Set<K> {
+    let la = a.toList()
+    let lb = b.toList()
+    if (len(la) == 0) {
+        if (len(lb) == 0) {
+            return a
+        }
+        let s = Set<K>(lb[0])
+        for (x in lb) {
+            s.add(x)
+        }
+        return s
+    }
+    let s = Set<K>(la[0])
+    for (x in la) {
+        s.add(x)
+    }
+    for (x in lb) {
+        s.add(x)
+    }
+    s
+}
+
+/// The members of `a` that are also in `b`.
+fn intersect<K>(a: Set<K>, b: Set<K>) -> Set<K> {
+    let la = a.toList()
+    if (len(la) == 0) {
+        return a
+    }
+    let s = Set<K>(la[0])
+    for (x in la) {
+        if (b.contains(x)) {
+            s.add(x)
+        }
+    }
+    s
+}
+
+/// The members of `a` that are not in `b`.
+fn difference<K>(a: Set<K>, b: Set<K>) -> Set<K> {
+    let la = a.toList()
+    if (len(la) == 0) {
+        return a
+    }
+    let s = Set<K>(la[0])
+    for (x in la) {
+        if (!b.contains(x)) {
+            s.add(x)
+        }
+    }
+    s
+}
