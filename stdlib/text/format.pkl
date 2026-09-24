@@ -1,0 +1,206 @@
+module std.text.format
+
+import { StringBuilder } from std.text.stringbuilder
+import { cpLen, decodeCp, hexVal, scalarCount } from std.text.utf8
+
+/// Number of scalars in `s` (byte-exact walk; `char` is a scalar).
+fn countChars(s: string) -> int {
+    scalarCount(bytes(s))
+}
+
+/// `s` repeated `count` times (`""` when `count <= 0`; empty when `s` empty).
+fn repeat(s: string, count: int) -> string {
+    let sb = StringBuilder()
+    var i = 0
+    while (i < count) {
+        sb.append(s)
+        i = i + 1
+    }
+    sb.toString()
+}
+
+/// Left-pad `s` with `fill` (a single scalar, typically `" "`) to `width`
+/// scalars total.
+fn padLeft(s: string, width: int, fill: string) -> string {
+    let need = width - countChars(s)
+    if (need <= 0) {
+        return s
+    }
+    repeat(fill, need) + s
+}
+
+/// Right-pad `s` with `fill` (a single scalar) to `width` scalars total.
+fn padRight(s: string, width: int, fill: string) -> string {
+    let need = width - countChars(s)
+    if (need <= 0) {
+        return s
+    }
+    s + repeat(fill, need)
+}
+
+/// The first `n` scalars of `s` (byte-exact; copies to a string boundary).
+fn truncate(s: string, n: int) -> string {
+    let bs = bytes(s)
+    let sb = StringBuilder()
+    var i = 0
+    var k = 0
+    while (i < len(bs) && k < n) {
+        let l = cpLen(bs[i] as int)
+        var j = 0
+        while (j < l) {
+            sb.appendByte(bs[i + j])
+            j = j + 1
+        }
+        i = i + l
+        k = k + 1
+    }
+    sb.toString()
+}
+
+/// The bytes of `s` from byte offset `lo` to `hi` as a string; clamped to
+/// `[0, len(bytes(s))]` and to `lo <= hi`.
+fn sliceRange(s: string, lo: int, hi: int) -> string {
+    let bs = bytes(s)
+    var a = lo
+    var b = hi
+    if (a < 0) {
+        a = 0
+    }
+    if (b > len(bs)) {
+        b = len(bs)
+    }
+    if (a >= b) {
+        return ""
+    }
+    let sb = StringBuilder()
+    var i = a
+    while (i < b) {
+        sb.appendByte(bs[i])
+        i = i + 1
+    }
+    sb.toString()
+}
+
+/// The bytes of `s` from the first scalar boundary at or after `start` to the
+/// end, as a string; `""` when `start >= len(bytes(s))`.
+fn tail(s: string, start: int) -> string {
+    sliceRange(s, start, len(bytes(s)))
+}
+
+/// Whether `s` begins with `prefix` (byte-prefix compare).
+fn startsWith(s: string, prefix: string) -> bool {
+    let bs = bytes(s)
+    let bp = bytes(prefix)
+    if (len(bp) > len(bs)) {
+        return false
+    }
+    var i = 0
+    while (i < len(bp)) {
+        if (bs[i] != bp[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    true
+}
+
+/// Whether `s` ends with `suffix` (byte-suffix compare).
+fn endsWith(s: string, suffix: string) -> bool {
+    let bs = bytes(s)
+    let bp = bytes(suffix)
+    if (len(bp) > len(bs)) {
+        return false
+    }
+    let m = len(bs) - len(bp)
+    var i = 0
+    while (i < len(bp)) {
+        if (bs[m + i] != bp[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    true
+}
+
+/// Byte offset of the first occurrence of `sub` in `s`, or -1.
+fn indexOf(s: string, sub: string) -> int {
+    if (sub == "") {
+        return 0
+    }
+    let bs = bytes(s)
+    let bp = bytes(sub)
+    let limit = len(bs) - len(bp)
+    var i = 0
+    while (i <= limit) {
+        var j = 0
+        while (j < len(bp) && bs[i + j] == bp[j]) {
+            j = j + 1
+        }
+        if (j == len(bp)) {
+            return i
+        }
+        i = i + 1
+    }
+    -1
+}
+
+/// Whether `s` contains `sub`.
+fn contains(s: string, sub: string) -> bool {
+    indexOf(s, sub) >= 0
+}
+
+/// The scalars of `s` in reverse order.
+fn reverse(s: string) -> string {
+    let bs = bytes(s)
+    let sb = StringBuilder()
+    var i = len(bs) - 1
+    while (i >= 0) {
+        var lead = i
+        while (lead >= 0 && ((bs[lead] as int) & 0xC0) == 0x80) {
+            lead = lead - 1
+        }
+        if (lead >= 0) {
+            match (decodeCp(bs, lead)) {
+                case some(cp) -> sb.appendChar(cp as char)
+                case none -> {}
+            }
+            i = lead - 1
+        } else {
+            i = -1
+        }
+    }
+    sb.toString()
+}
+
+/// `n` in lowercase hexadecimal (digits low-to-high then reversed); `"0"` for
+/// zero; `-` prefix for negatives.
+fn toHex(n: int) -> string {
+    if (n == 0) {
+        return "0"
+    }
+    if (n < 0) {
+        return "-" + toHex(-n)
+    }
+    let digits = "0123456789abcdef"
+    var sb = StringBuilder()
+    var v = n
+    while (v > 0) {
+        sb.appendChar(digits[v % 16] as char)
+        v = v / 16
+    }
+    reverse(sb.toString())
+}
+
+/// The int value of a lowercase/uppercase hex string, or -1 on any non-hex
+/// digit (`fromHex` is lenient the way `indexOf` is: -1 doubles as sentinel).
+fn fromHex(s: string) -> int {
+    var v = 0
+    for (c in bytes(s)) {
+        let hv = hexVal(c as int)
+        if (hv < 0) {
+            return -1
+        }
+        v = v * 16 + hv
+    }
+    v
+}

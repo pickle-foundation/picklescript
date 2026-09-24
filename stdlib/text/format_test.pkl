@@ -1,0 +1,78 @@
+module std.text.format_test
+
+import { countChars, repeat, padLeft, padRight, truncate, sliceRange, tail, startsWith, endsWith, indexOf, contains, reverse, toHex, fromHex } from std.text.format
+
+test fn count_chars_scalar_aware() {
+    expect(countChars("a¢€😀")).toBe(4)
+    expect(countChars("")).toBe(0)
+    expect(countChars("hello")).toBe(5)
+}
+
+test fn repeat_and_pad() {
+    expect(repeat("ab", 3)).toBe("ababab")
+    expect(repeat("ab", 0)).toBe("")
+    expect(padLeft("7", 4, "0")).toBe("0007")
+    expect(padRight("7", 4, "0")).toBe("7000")
+    expect(padLeft("hello", 4, " ")).toBe("hello")
+    expect(padRight("x", 3, "-")).toBe("x--")
+}
+
+test fn pad_scalar_aware() {
+    expect(padLeft("¢", 3, " ")).toBe("  ¢")
+    expect(countChars(padLeft("😀", 5, "a"))).toBe(5)
+}
+
+test fn truncate_and_slice() {
+    expect(truncate("hello world", 5)).toBe("hello")
+    expect(truncate("a¢€😀", 2)).toBe("a¢")
+    expect(truncate("ab", 10)).toBe("ab")
+    expect(sliceRange("hello", 1, 3)).toBe("el")
+    expect(sliceRange("hello", -3, 2)).toBe("he")
+    expect(sliceRange("hello", 3, 1)).toBe("")
+    expect(tail("hello", 2)).toBe("llo")
+    expect(tail("hello", 99)).toBe("")
+}
+
+test fn starts_with_ends_with() {
+    expect(startsWith("hello", "he")).toBe(true)
+    expect(startsWith("hello", "heo")).toBe(false)
+    expect(startsWith("hello", "hello")).toBe(true)
+    expect(startsWith("hello", "hello world")).toBe(false)
+    expect(endsWith("hello", "lo")).toBe(true)
+    expect(endsWith("hello", "ol")).toBe(false)
+    expect(endsWith("hello", "hello")).toBe(true)
+    expect(endsWith("a", "ba")).toBe(false)
+}
+
+test fn index_of_contains() {
+    expect(indexOf("hello world", "world")).toBe(6)
+    expect(indexOf("hello", "l")).toBe(2)
+    expect(indexOf("hello", "x")).toBe(-1)
+    expect(indexOf("hello", "")).toBe(0)
+    expect(contains("hello", "ell")).toBe(true)
+    expect(contains("hello", "xyz")).toBe(false)
+}
+
+test fn reverse_scalar_aware() {
+    expect(reverse("abc")).toBe("cba")
+    expect(reverse("a¢€😀")).toBe("😀€¢a")
+    expect(reverse("")).toBe("")
+    expect(reverse("radar")).toBe("radar")
+}
+
+test fn hex_roundtrip() {
+    expect(toHex(0)).toBe("0")
+    expect(toHex(255)).toBe("ff")
+    expect(toHex(0x1F600)).toBe("1f600")
+    expect(toHex(-9)).toBe("-9")
+    expect(fromHex("1f600")).toBe(0x1F600)
+    expect(fromHex("FF")).toBe(255)
+    expect(fromHex("10")).toBe(16)
+    expect(fromHex("gg")).toBe(-1)
+}
+
+test fn chained_scalar_slice() {
+    let s = padLeft("x", 3, " ")
+    expect(s).toBe("  x")
+    expect(countChars(truncate(s, 2))).toBe(2)
+}
