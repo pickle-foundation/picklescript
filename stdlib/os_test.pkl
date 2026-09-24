@@ -1,0 +1,8 @@
+module std.os_test
+
+import { argv } from std.os
+
+test fn argv_is_a_list() {
+    let a = argv()
+    expect(len(a) >= 0).toBe(true)
+}

@@ -1,0 +1,161 @@
+module std.fs
+
+import { sliceRange } from std.text.format
+
+/// Whole-file and stream I/O seeds (`std.fs`). Path helpers are POSIX-style
+/// (`/` separator, no drive letters); `File`/`Dir` wrap the read/write/delete/
+/// mkdir/list_dir/stream intrinsics. Whole-file intrinsics report failure as
+/// `none`/`false` — errors are values.
+
+/// Join two path segments with a single `/`.
+fn pathJoin(a: string, b: string) -> string {
+    if (a == "") {
+        return b
+    }
+    if (b == "") {
+        return a
+    }
+    if ((a[len(a) - 1] as int) == 0x2F) {
+        return a + b
+    }
+    a + "/" + b
+}
+
+/// The final path segment of `p` (trailing slashes ignored); `""` when the
+/// path is empty or all slashes.
+fn pathName(p: string) -> string {
+    var end = len(p) - 1
+    while (end >= 0 && (p[end] as int) == 0x2F) {
+        end = end - 1
+    }
+    if (end < 0) {
+        return ""
+    }
+    var start = end
+    while (start >= 0 && (p[start] as int) != 0x2F) {
+        start = start - 1
+    }
+    sliceRange(p, start + 1, end + 1)
+}
+
+/// The directory portion of `p` (trailing slashes ignored), or `""` when it
+/// has no `/`.
+fn pathDir(p: string) -> string {
+    var end = len(p) - 1
+    while (end >= 0 && (p[end] as int) == 0x2F) {
+        end = end - 1
+    }
+    var i = end
+    while (i >= 0 && (p[i] as int) != 0x2F) {
+        i = i - 1
+    }
+    if (i < 0) {
+        return ""
+    }
+    sliceRange(p, 0, i)
+}
+
+/// A POSIX-style path wrapper.
+class Path {
+    var p: string
+
+    constructor(path: string) {
+        this.p = path
+    }
+
+    /// The path as text.
+    fn text() -> string {
+        this.p
+    }
+
+    /// `this` joined with `rel`.
+    fn join(rel: string) -> Path {
+        Path(pathJoin(this.p, rel))
+    }
+
+    /// The final segment.
+    fn name() -> string {
+        pathName(this.p)
+    }
+
+    /// The parent directory portion.
+    fn dir() -> string {
+        pathDir(this.p)
+    }
+
+    /// Whether the path exists on disk.
+    fn exists() -> bool {
+        file_exists(this.p)
+    }
+}
+
+/// A whole-file wrapper bound to one path.
+class File {
+    var p: string
+
+    constructor(path: string) {
+        this.p = path
+    }
+
+    /// The bound path.
+    fn path() -> string {
+        this.p
+    }
+
+    /// The whole file's bytes as a string; `none` when unreadable.
+    fn read() -> string? {
+        read_file(this.p)
+    }
+
+    /// Overwrite the file; `false` when the write fails.
+    fn write(text: string) -> bool {
+        write_file(this.p, text)
+    }
+
+    fn exists() -> bool {
+        file_exists(this.p)
+    }
+
+    /// Remove the file (or empty directory); `false` when it cannot be.
+    fn remove() -> bool {
+        delete(this.p)
+    }
+
+    /// A buffered read stream; `none` when the file cannot be opened.
+    fn openRead() -> Stream? {
+        stream_open_read(this.p)
+    }
+}
+
+/// A directory wrapper bound to one path.
+class Dir {
+    var p: string
+
+    constructor(path: string) {
+        this.p = path
+    }
+
+    /// The bound path.
+    fn path() -> string {
+        this.p
+    }
+
+    /// Full child paths in host order; `none` when unreadable/missing.
+    fn list() -> List<string>? {
+        list_dir(this.p)
+    }
+
+    fn exists() -> bool {
+        file_exists(this.p)
+    }
+
+    /// Create the directory (single level; fails when it already exists).
+    fn create() -> bool {
+        mkdir(this.p)
+    }
+
+    /// Remove the empty directory; `false` when it cannot be.
+    fn remove() -> bool {
+        delete(this.p)
+    }
+}

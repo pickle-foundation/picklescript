@@ -1,0 +1,114 @@
+module std.fs_test
+
+import { pathJoin, pathName, pathDir, Path, File, Dir } from std.fs
+
+test fn path_joins() {
+    expect(pathJoin("a", "b")).toBe("a/b")
+    expect(pathJoin("a/", "b")).toBe("a/b")
+    expect(pathJoin("a/b/c", "d")).toBe("a/b/c/d")
+    expect(pathJoin("", "b")).toBe("b")
+    expect(pathJoin("a", "")).toBe("a")
+    expect(pathJoin("", "")).toBe("")
+}
+
+test fn path_names() {
+    expect(pathName("a/b/c.txt")).toBe("c.txt")
+    expect(pathName("a/b/c/")).toBe("c")
+    expect(pathName("c.txt")).toBe("c.txt")
+    expect(pathName("a/")).toBe("a")
+    expect(pathName("/")).toBe("")
+    expect(pathName("")).toBe("")
+    expect(pathDir("a/b/c.txt")).toBe("a/b")
+    expect(pathDir("a/b/c/")).toBe("a/b")
+    expect(pathDir("c.txt")).toBe("")
+    expect(pathDir("a/b")).toBe("a")
+    expect(pathDir("/")).toBe("")
+}
+
+test fn path_class_joins() {
+    let p = Path("a/b/c.txt")
+    expect(p.text()).toBe("a/b/c.txt")
+    expect(p.name()).toBe("c.txt")
+    expect(p.dir()).toBe("a/b")
+    expect(p.join("d/x").text()).toBe("a/b/c.txt/d/x")
+    expect(p.join("tail").text()).toBe("a/b/c.txt/tail")
+}
+
+test fn file_round_trip() {
+    let f = File("fs_seed_tmp.txt")
+    if (f.exists()) {
+        f.remove()
+    }
+    expect(f.write("hello fs")).toBe(true)
+    expect(f.exists()).toBe(true)
+    match (f.read()) {
+        case some(t) -> expect(t).toBe("hello fs")
+        case none -> expect(true).toBe(false)
+    }
+    expect(f.remove()).toBe(true)
+    expect(f.exists()).toBe(false)
+}
+
+test fn file_read_missing_is_none() {
+    if (file_exists("fs_seed_missing.txt")) {
+        delete("fs_seed_missing.txt")
+    }
+    let f = File("fs_seed_missing.txt")
+    match (f.read()) {
+        case some(t) -> expect(true).toBe(false)
+        case none -> expect(true).toBe(true)
+    }
+}
+
+test fn dir_create_list_remove() {
+    let d = Dir("fs_seed_tmpdir")
+    if (d.exists()) {
+        d.remove()
+    }
+    expect(d.exists()).toBe(false)
+    expect(d.create()).toBe(true)
+    expect(d.exists()).toBe(true)
+    match (d.list()) {
+        case some(entries) -> expect(len(entries)).toBe(0)
+        case none -> expect(true).toBe(false)
+    }
+    expect(d.remove()).toBe(true)
+    expect(d.exists()).toBe(false)
+}
+
+test fn dir_list_after_write() {
+    let dir = Dir("fs_seed_tmpdir2")
+    if (dir.exists()) {
+        dir.remove()
+    }
+    dir.create()
+    let f = File("fs_seed_tmpdir2/inner.txt")
+    f.write("x")
+    match (dir.list()) {
+        case some(entries) -> expect(len(entries)).toBe(1)
+        case none -> expect(true).toBe(false)
+    }
+    f.remove()
+    dir.remove()
+}
+
+test fn file_stream_read() {
+    let f = File("fs_seed_stream.txt")
+    if (f.exists()) {
+        f.remove()
+    }
+    expect(f.write("stream body")).toBe(true)
+    match (f.openRead()) {
+        case some(s) -> {
+            match (s.read(100)) {
+                case some(bs) -> {
+                    expect(str(bs)).toBe("stream body")
+                    s.close()
+                }
+                case none -> expect(true).toBe(false)
+            }
+        }
+        case none -> expect(true).toBe(false)
+    }
+    f.remove()
+}

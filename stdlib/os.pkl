@@ -1,0 +1,15 @@
+module std.os
+
+/// Process-level seeds (`std.os`). Wraps the `args`/`exit` intrinsics.
+/// `env`/`cwd`/`platform` are pending an env intrinsic.
+
+/// The program's command-line arguments (`List<string>`, program name
+/// excluded).
+fn argv() -> List<string> {
+    args()
+}
+
+/// Terminate the process with `code`.
+fn exitWith(code: int) {
+    exit(code)
+}
