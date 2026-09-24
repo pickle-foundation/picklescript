@@ -1,0 +1,63 @@
+module std.collections.list
+
+/// List-comprehension seeds (`std.collections.list`). Generic empty-list
+/// staging needs a typed proto value (`[]` infers `List<?>`, no `List<T>()`
+/// ctor), so list-returning helpers take a `proto: T` argument; rank/query
+/// helpers avoid it.
+
+/// A copy of `xs[lo..hi)` with clamping to `[0, len(xs)]` and `lo <= hi`.
+/// `proto` provides a typed empty list for staging (any `T` value works).
+fn sliceOf<T>(xs: List<T>, lo: int, hi: int, proto: T) -> List<T> {
+    var a = lo
+    var b = hi
+    if (a < 0) {
+        a = 0
+    }
+    if (b > len(xs)) {
+        b = len(xs)
+    }
+    let out = [proto]
+    out.remove(0)
+    var i = a
+    while (i < b) {
+        out.push(xs[i])
+        i = i + 1
+    }
+    out
+}
+
+/// A new list with `count` copies of `proto`.
+fn filled<T>(proto: T, count: int) -> List<T> {
+    let out = [proto]
+    out.remove(0)
+    var i = 0
+    while (i < count) {
+        out.push(proto)
+        i = i + 1
+    }
+    out
+}
+
+/// Whether `xs` contains a value equal to `v` (linear scan).
+fn containsElem<T>(xs: List<T>, v: T) -> bool {
+    var i = 0
+    while (i < len(xs)) {
+        if (xs[i] == v) {
+            return true
+        }
+        i = i + 1
+    }
+    false
+}
+
+/// Index of the first value equal to `v` in `xs`, or -1.
+fn indexOfElem<T>(xs: List<T>, v: T) -> int {
+    var i = 0
+    while (i < len(xs)) {
+        if (xs[i] == v) {
+            return i
+        }
+        i = i + 1
+    }
+    -1
+}
