@@ -181,4 +181,40 @@ elseif (ByteEq "$g6dir\runner.txt" "tools\diff\testrunner_golden.txt") { $g8ok++
 else { $g8fail++; Write-Output "GATE8 testrunner: stdout mismatch vs golden" }
 Write-Output "GATE8 TESTRUNNER BYTE-PARITY (stdout byte-eq vs Rust goldens): PASS=$g8ok FAIL=$g8fail"
 
+# ---- GATE 9: `pickle test` byte-parity — the ported test driver (AOT-built
+# pklc_test.exe) synthesizes a harness for every battery *_test.pkl and the
+# harness (executed via irx-run) must reproduce the Rust `pickle test` stdout
+# byte-for-byte with the same exit code. Proves the whole ported test stack:
+# Loader/Rewriter/Resolver/emit + captureBegin/captureTake + ported std.test
+# runner + describe/hook decoding. ----
+$g9tests = @(Get-ChildItem "tests\pickle\*_test.pkl")
+$pklcTest = "tools\diff\port\pklc_test.exe"
+& $cli build "cli-selfhost\test.pkl" -o $pklcTest 2>&1 | Out-Null
+if (-not (Test-Path -LiteralPath $pklcTest)) {
+    Write-Output "GATE9 TEST DRIVER: BUILD FAILED"
+} else {
+    $g9dir = "tools\diff\g9"
+    New-Item -ItemType Directory -Path $g9dir -Force | Out-Null
+    $g9ok = 0; $g9fail = 0
+    foreach ($m in $g9tests) {
+        $target = "tests\pickle\$($m.BaseName).pkl"
+        # Rust oracle behavior: pickle test <file>
+        cmd /c "`"$cli`" test `"$target`" > `"$g9dir\rust.txt`" 2>nul"
+        $rc = $LASTEXITCODE
+        # Port behavior: AOT-built driver emits the harness IRX, then irx-run it
+        & $pklcTest $target 2>&1 | Out-Null
+        $harness = "tools\diff\port\$($m.BaseName)_harness.irx"
+        if (-not (Test-Path -LiteralPath $harness)) {
+            $g9fail++; Write-Output "GATE9 $($m.BaseName): harness not produced"; continue
+        }
+        cmd /c "`"$cli`" irx-run `"$harness`" > `"$g9dir\port.txt`" 2>nul"
+        $ic = $LASTEXITCODE
+        $r = [System.IO.File]::ReadAllText((Resolve-Path "$g9dir\rust.txt"))
+        $p = [System.IO.File]::ReadAllText((Resolve-Path "$g9dir\port.txt"))
+        if ($rc -eq $ic -and $r -eq $p) { $g9ok++ }
+        else { $g9fail++; Write-Output "GATE9 $($m.BaseName): exit=$rc/$ic stdout_match=$($r -eq $p)" }
+    }
+    Write-Output "GATE9 TEST BYTE-PARITY (stdout+exit, $($g9tests.Count) files): PASS=$g9ok FAIL=$g9fail"
+}
+
 Write-Output "===== BATTERY COMPLETE ====="

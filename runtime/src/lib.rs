@@ -367,6 +367,8 @@ pub mod abi {
     pub use crate::panic::pickle_panic_no_iface_method;
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;
+    pub use crate::panic::pickle_test_capture_begin;
+    pub use crate::panic::pickle_test_capture_take;
 
     pub use crate::raw::pickle_raw_alloc;
     pub use crate::raw::pickle_raw_free;

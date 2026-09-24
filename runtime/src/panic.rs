@@ -35,6 +35,32 @@ pub fn take_captured_panic() -> Option<String> {
     LAST_PANIC.with(|c| c.borrow_mut().take())
 }
 
+/// ABI: `captureBegin()` from the ported test harness. Enters capture mode so
+/// a failing test body records a message instead of killing the process. Does
+/// not clear a pending message: a failure recorded before the begin (e.g. by
+/// a hook) must survive until the harness' `captureTake()`.
+#[no_mangle]
+pub extern "C" fn pickle_test_capture_begin() {
+    set_capture_mode(true);
+}
+
+/// ABI: `captureTake()` from the ported test harness. Exits nothing and
+/// returns the message of the most recent captured failure as a `string?`
+/// object (null when none), or null if capture is off.
+#[no_mangle]
+pub extern "C" fn pickle_test_capture_take() -> *mut crate::object::PickleObject {
+    if is_capturing() {
+        if let Some(msg) = take_captured_panic() {
+            return crate::strings::string_from_bytes(
+                msg.as_bytes().as_ptr(),
+                msg.len(),
+                crate::gc::gc_mut(),
+            );
+        }
+    }
+    std::ptr::null_mut()
+}
+
 fn record_panic(msg: String) {
     LAST_PANIC.with(|c| *c.borrow_mut() = Some(msg));
 }

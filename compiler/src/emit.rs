@@ -1239,6 +1239,8 @@ impl<'a> Emitter<'a> {
                     | "stderr_stream"
                     | "args"
                     | "exit"
+                    | "captureBegin"
+                    | "captureTake"
             )
     }
 
@@ -8118,6 +8120,8 @@ impl<'a> Emitter<'a> {
                         | "stderr_stream"
                         | "args"
                         | "exit"
+                        | "captureBegin"
+                        | "captureTake"
                 ) {
                     return false;
                 }
@@ -9436,6 +9440,25 @@ impl<'a> Emitter<'a> {
                 let code = self.expr(&args[0].value)?;
                 self.extern_call_void("pickle_exit", vec![IrTy::Int], vec![code]);
                 Ok(self.unit_temp())
+            }
+            "captureBegin" => {
+                if !args.is_empty()
+                    || args.iter().any(|a| a.name.is_some() || a.spread)
+                {
+                    return self.bad(e.span, "`captureBegin()` takes no arguments");
+                }
+                self.extern_call_void("pickle_test_capture_begin", vec![], vec![]);
+                Ok(self.unit_temp())
+            }
+            "captureTake" => {
+                if !args.is_empty()
+                    || args.iter().any(|a| a.name.is_some() || a.spread)
+                {
+                    return self.bad(e.span, "`captureTake()` takes no arguments");
+                }
+                // Returns the captured failure message as a `string` object,
+                // or `null` (`none`) when there is none.
+                self.extern_call_t1("pickle_test_capture_take", vec![], IrTy::Ptr, vec![])
             }
             _ if self.generic_user_fn(name) => self.bad(
                 e.span,

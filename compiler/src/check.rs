@@ -2381,6 +2381,15 @@ impl<'a> Checker<'a> {
             if bname == "exit" {
                 return self.check_exit(e, args);
             }
+            // `captureBegin()`: enter the test-harness capture mode.
+            if bname == "captureBegin" {
+                return self.check_capture_begin(e, args);
+            }
+            // `captureTake()`: drain the captured failure message as
+            // `string?`, or `none`.
+            if bname == "captureTake" {
+                return self.check_capture_take(e, args);
+            }
             // Testing-framework `expect(value)`.
             if bname == "expect" && !self.resolved.fns.contains_key("expect") {
                 return self.check_expect(e, args);
@@ -4438,6 +4447,26 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         Ty::Empty
+    }
+
+    /// `captureBegin()`: enter the test-harness capture mode (turns failing
+    /// asserts into recorded failures) without clearing any pending message.
+    fn check_capture_begin(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if !args.is_empty() || args.iter().any(|a| a.name.is_some() || a.spread) {
+            self.err(e.span, "`captureBegin()` takes no arguments");
+            return Ty::Unknown;
+        }
+        Ty::Empty
+    }
+
+    /// `captureTake()`: drain the captured failure message as `string?`, or
+    /// `none` when nothing was recorded.
+    fn check_capture_take(&mut self, e: &Expr, args: &[CallArg]) -> Ty {
+        if !args.is_empty() || args.iter().any(|a| a.name.is_some() || a.spread) {
+            self.err(e.span, "`captureTake()` takes no arguments");
+            return Ty::Unknown;
+        }
+        Ty::Option(Box::new(Ty::String))
     }
 
     fn check_if(&mut self, e: &Expr, cond: &IfCond, then: &Block, else_else: Option<&Expr>) -> Ty {

@@ -451,6 +451,17 @@ impl<'a> Resolver<'a> {
             mk("args", vec![], Ty::List(Box::new(Ty::String)), false),
             // `exit(code)`: terminate the process with a numeric code.
             mk("exit", vec![], Ty::Empty, false),
+            // `captureBegin()` / `captureTake()`: raw-buffer capture flags --
+            // checked strictly by dedicated rules; loose declarations make the
+            // names resolvable and dispatchable inside the `pickle test`
+            // harness.
+            mk("captureBegin", vec![], Ty::Empty, false),
+            mk(
+                "captureTake",
+                vec![],
+                Ty::Option(Box::new(Ty::String)),
+                false,
+            ),
             // `assert(cond, msg?)` is checked strictly (`bool`, optional
             // `string`) by a dedicated rule; the loose declaration just makes
             // the name resolvable and dispatchable.
