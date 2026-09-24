@@ -219,16 +219,19 @@ The `std.os` process surface ships as intrinsics:
   `List<string>` on every call, **excluding the program name** (`argv[1..]`).
   Under `pickle run`/`pickle irx-run`, trailing `--` arguments are forwarded
   verbatim (`pickle run prog.pkl -- a b`); an AOT-built executable sees the
-  real process `argv`. `pickle test` runs start fresh, so `args()` is empty in
-  the test runner. Every call materializes a new list — mutating one snapshot
-  never affects another.
+  real process `argv` (a single leading `--` separator is stripped, matching
+  the `run`/`irx-run` convention). `pickle test` runs start fresh, so `args()`
+  is empty in the test runner. Every call materializes a new list — mutating one
+  snapshot never affects another.
 - `exit(code: int) -> void` — flushes buffered output and terminates the
   process with `code` (clamped to the host's exit-code range; guaranteed not
   to return).
 
 `args()`/`exit()` in a Pickle source are what let the self-hosted compiler's
-driver accept a target-path argument: `pickle run compiler-selfhost/lexer.pkl
--- file.pkl` (port gap 3, resolved).
+driver accept a target-path argument: `pickle run cli-selfhost/main.pkl --
+target.pkl` forwards the target as `args()[0]` (port gap 3, resolved and wired
+2026-09-24). The ported drivers prefer `args()` targets and fall back to their
+previous file-derived target lists when no trailing `--` args are given.
 
 ## Networking & HTTP
 
