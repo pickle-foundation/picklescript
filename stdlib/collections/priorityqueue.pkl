@@ -1,0 +1,89 @@
+module std.collections.priorityqueue
+
+/// A priority queue seed: a binary heap over `List<T>` ordered by a caller
+/// comparison `cmp(a, b) -> bool` ("`a` precedes `b`"). Heap-invariant
+/// (min-heap when `cmp` is `a < b`). Uses the typed proto-value staging for
+/// the backing list and stores the comparator as a function value.
+class PriorityQueue<T> {
+    var items: List<T>
+    var cmp: fn (T, T) -> bool
+
+    constructor(proto: T, order: fn (T, T) -> bool) {
+        this.items = [proto]
+        this.items.remove(0)
+        this.cmp = order
+    }
+
+    /// Number of elements.
+    fn size() -> int {
+        len(this.items)
+    }
+
+    /// Push `v` onto the heap.
+    fn push(v: T) {
+        this.items.push(v)
+        this._siftUp(len(this.items) - 1)
+    }
+
+    /// Remove and return the top; `none` when empty.
+    fn pop() -> T? {
+        if (len(this.items) == 0) {
+            return none
+        }
+        let top = this.items[0]
+        let last = this.items[len(this.items) - 1]
+        this.items.remove(len(this.items) - 1)
+        if (len(this.items) > 0) {
+            this.items[0] = last
+            this._siftDown(0)
+        }
+        top
+    }
+
+    /// The top element; `none` when empty.
+    fn peek() -> T? {
+        if (len(this.items) == 0) {
+            return none
+        }
+        this.items[0]
+    }
+
+    fn _siftUp(i: int) {
+        var k = i
+        while (k > 0) {
+            let p = (k - 1) / 2
+            if (this.cmp(this.items[k], this.items[p])) {
+                let t = this.items[k]
+                this.items[k] = this.items[p]
+                this.items[p] = t
+                k = p
+            } else {
+                return
+            }
+        }
+    }
+
+    fn _siftDown(i: int) {
+        let n = len(this.items)
+        var k = i
+        while (true) {
+            let l = 2 * k + 1
+            if (l >= n) {
+                return
+            }
+            let r = l + 1
+            var m = l
+            if (r < n && this.cmp(this.items[r], this.items[l])) {
+                m = r
+            }
+            if (this.cmp(this.items[m], this.items[k])) {
+                let t = this.items[k]
+                this.items[k] = this.items[m]
+                this.items[m] = t
+                k = m
+            } else {
+                return
+            }
+        }
+    }
+}

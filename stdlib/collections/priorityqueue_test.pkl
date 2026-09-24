@@ -1,0 +1,91 @@
+module std.collections.priorityqueue_test
+
+import { PriorityQueue } from std.collections.priorityqueue
+
+fn lt(a: int, b: int) -> bool {
+    a < b
+}
+
+test fn min_heap_order() {
+    let pq = PriorityQueue<int>(0, lt)
+    pq.push(5)
+    pq.push(3)
+    pq.push(8)
+    pq.push(1)
+    pq.push(4)
+    expect(pq.size()).toBe(5)
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(3)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(4)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(5)
+        case none -> expect(false).toBe(true)
+    }
+    expect(pq.size()).toBe(1)
+    match (pq.peek()) {
+        case some(v) -> expect(v).toBe(8)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(8)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(_) -> expect(false).toBe(true)
+        case none -> {}
+    }
+}
+
+test fn push_pop_interleave() {
+    let pq = PriorityQueue<int>(0, lt)
+    pq.push(10)
+    pq.push(2)
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    pq.push(1)
+    pq.push(5)
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(1)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(5)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(10)
+        case none -> expect(false).toBe(true)
+    }
+    expect(pq.size()).toBe(0)
+}
+
+test fn duplicates_kept() {
+    let pq = PriorityQueue<int>(0, lt)
+    pq.push(4)
+    pq.push(4)
+    pq.push(2)
+    expect(pq.size()).toBe(3)
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(2)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(4)
+        case none -> expect(false).toBe(true)
+    }
+    match (pq.pop()) {
+        case some(v) -> expect(v).toBe(4)
+        case none -> expect(false).toBe(true)
+    }
+}
