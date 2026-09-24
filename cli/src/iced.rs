@@ -39,6 +39,7 @@ static SYMS_PATH: Mutex<Option<String>> = Mutex::new(None);
 /// Hard cap on VEH handler re-entries. An exception handler on Windows can be
 /// re-dispatched if it faults while running; once we exceed the cap we exit
 /// rather than spiral forever.
+#[cfg(windows)]
 static REENTRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Latches whether crash-time symbolication (DbgHelp) is wanted. Like
@@ -170,23 +171,36 @@ fn backtrace_from(rsp: usize) -> Vec<String> {
 const STANZA: &[u8] = b"The pickle jar cracked.\n\nInternal compiler error:\nE9999\n\nThe compiler encountered something it did not expect.\nNo pickles were harmed, but the vinegar level is concerning.\n";
 
 static PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(windows)]
 static IN_BT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(windows)]
 static CAUGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Crash state shared between the VEH handler (which runs on a nearly
 /// exhausted stack and may write nothing) and a reporter thread (full stack)
 /// that formats and prints the diagnostics. The handler only writes atomics
 /// and then spins, so its own stack usage stays in the overflow headroom.
+#[cfg(windows)]
 static CRASH_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_RIP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_RSP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_ACC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_CODE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_SBASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_SLIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_TID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_RSI: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static CRASH_RCX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
 static SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Format and print the most recent crash from the given sequence number with
@@ -1063,7 +1077,7 @@ mod unix {
                 libc::SIGFPE,
             ] {
                 let mut action: libc::sigaction = std::mem::zeroed();
-                action.sa_sigaction = handler as usize;
+                action.sa_sigaction = handler as *const () as usize;
                 libc::sigemptyset(&mut action.sa_mask);
                 action.sa_flags = libc::SA_SIGINFO;
                 libc::sigaction(sig, &action, std::ptr::null_mut());
