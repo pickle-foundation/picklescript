@@ -3055,8 +3055,8 @@ impl<'a> Checker<'a> {
         if let Some((sspan, elem)) = spread_elem {
             // The spread fills every parameter from `position` onward.
             if position < params.len() {
-                for k in position..params.len() {
-                    self.check_assignable(&params[k], &elem, sspan, "argument");
+                for p in params.iter().skip(position) {
+                    self.check_assignable(p, &elem, sspan, "argument");
                 }
             } else if position > params.len() {
                 self.err(e.span, "too many arguments in call");
@@ -3180,8 +3180,8 @@ impl<'a> Checker<'a> {
         }
         if let Some((sspan, elem)) = spread_elem {
             if position < params.len() {
-                for k in position..params.len() {
-                    self.check_assignable(&params[k], &elem, sspan, "argument");
+                for p in params.iter().skip(position) {
+                    self.check_assignable(p, &elem, sspan, "argument");
                 }
             } else if position > params.len() {
                 self.err(e.span, "too many arguments in call");
@@ -3295,8 +3295,8 @@ impl<'a> Checker<'a> {
                 // parameter positions, exactly like `check_args`.
                 None => {
                     if position < params.len() {
-                        for k in position..params.len() {
-                            self.check_assignable(&params[k].ty, &elem, sspan, "argument");
+                        for p in params.iter().skip(position) {
+                            self.check_assignable(&p.ty, &elem, sspan, "argument");
                         }
                     } else if position > params.len() {
                         self.err(sspan, "too many arguments in call");

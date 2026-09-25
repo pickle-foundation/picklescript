@@ -611,6 +611,18 @@ struct Emitter<'a> {
     failed: bool,
 }
 
+/// A spread call target captured at each instantiation site, bundling the
+/// parameters, result type, optional receiver, and argument list so the
+/// lowering entry point stays under the clippy argument-count limit.
+struct SpreadCall<'a> {
+    span: Span,
+    fid: FuncId,
+    pty: &'a [Ty],
+    ret: &'a Ty,
+    receiver: Option<Temp>,
+    args: &'a [CallArg],
+}
+
 impl<'a> Emitter<'a> {
     fn emit(&mut self) {
         for item in &self.prog.items {
@@ -9298,7 +9310,17 @@ impl<'a> Emitter<'a> {
                     .get(&fid)
                     .map(|i| i.ret.clone())
                     .unwrap_or(Ty::Unknown);
-                return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
+                return self.spread_static_call(
+                    e,
+                    SpreadCall {
+                        span: e.span,
+                        fid,
+                        pty: &pty,
+                        ret: &ret,
+                        receiver: None,
+                        args,
+                    },
+                );
             }
             let fparams = self.module.funcs[fid.0].params.clone();
             let mut arg_temps = Vec::new();
@@ -9331,12 +9353,14 @@ impl<'a> Emitter<'a> {
                 let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
                 return self.spread_static_call(
                     e,
-                    e.span,
-                    fid,
-                    &pty,
-                    &Ty::Class(name.to_string(), Vec::new()),
-                    None,
-                    args,
+                    SpreadCall {
+                        span: e.span,
+                        fid,
+                        pty: &pty,
+                        ret: &Ty::Class(name.to_string(), Vec::new()),
+                        receiver: None,
+                        args,
+                    },
                 );
             }
             let fparams = self.module.funcs[fid.0].params.clone();
@@ -10001,7 +10025,17 @@ impl<'a> Emitter<'a> {
                 .get(&fid)
                 .map(|i| i.ret.clone())
                 .unwrap_or(Ty::Unknown);
-            return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
+            return self.spread_static_call(
+                e,
+                SpreadCall {
+                    span: e.span,
+                    fid,
+                    pty: &pty,
+                    ret: &ret,
+                    receiver: None,
+                    args,
+                },
+            );
         }
         let mut arg_temps = Vec::new();
         for (i, a) in args.iter().enumerate() {
@@ -10739,7 +10773,17 @@ impl<'a> Emitter<'a> {
                             .get(&fid)
                             .map(|i| i.ret.clone())
                             .unwrap_or(Ty::Unknown);
-                        return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
+return self.spread_static_call(
+                            e,
+                            SpreadCall {
+                                span: e.span,
+                                fid,
+                                pty: &pty,
+                                ret: &ret,
+                                receiver: None,
+                                args,
+                            },
+                        );
                     }
                     return self.call_method(e, fid, args, None);
                 }
@@ -10924,7 +10968,17 @@ impl<'a> Emitter<'a> {
                 .get(&fid)
                 .map(|i| i.ret.clone())
                 .unwrap_or(Ty::Unknown);
-            return self.spread_static_call(e, e.span, fid, &pty, &ret, receiver, args);
+            return self.spread_static_call(
+                e,
+                SpreadCall {
+                    span: e.span,
+                    fid,
+                    pty: &pty,
+                    ret: &ret,
+                    receiver,
+                    args,
+                },
+            );
         }
         let call_args = self.marshal_method_args(e, fid, args, receiver)?;
         self.emit_call_to(fid, call_args, e)
@@ -11078,17 +11132,14 @@ impl<'a> Emitter<'a> {
     /// every caller) unboxes them back into the ordinary call ABI. A runtime
     /// arity guard panics (`pickle_panic_arity_diff`) when the spread list's
     /// length does not exactly fill the remaining parameters, so the
-    /// trampoline may assume its boxed list has exactly `pty.len()` entries.
-    fn spread_static_call(
-        &mut self,
-        _e: &Expr,
-        span: Span,
-        fid: FuncId,
-        pty: &[Ty],
-        ret: &Ty,
-        receiver: Option<Temp>,
-        args: &[CallArg],
-    ) -> Result<Temp, ()> {
+    /// trampoline may assume its boxed list has exactly `c.pty.len()` entries.
+    fn spread_static_call(&mut self, _e: &Expr, c: SpreadCall<'_>) -> Result<Temp, ()> {
+        let span = c.span;
+        let fid = c.fid;
+        let pty = c.pty;
+        let ret = c.ret;
+        let receiver = c.receiver;
+        let args = c.args;
         // The checker validates shape and coverage; the emitter re-checks the
         // lowering prerequisites it depends on before registering anything.
         if pty.iter().any(|t| matches!(t, Ty::Ref(_))) {
@@ -11125,8 +11176,8 @@ impl<'a> Emitter<'a> {
         // representation exactly (an `int` into `int, byte` still shares the
         // i64 box, but nothing may cross scalar/managed families).
         let erep = self.elem_rep(&elem_ty, sp_arg.span)?;
-        for i in m..pty.len() {
-            if self.elem_rep(&pty[i], sp_arg.span)? != erep {
+        for pt in pty.iter().skip(m) {
+            if self.elem_rep(pt, sp_arg.span)? != erep {
                 return self.bad(
                     span,
                     "spreading over parameters with mixed element representations is not lowered yet",
