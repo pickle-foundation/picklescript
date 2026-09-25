@@ -382,12 +382,12 @@ fn parse_and_lex_errors_get_e0111_and_e0101() {
 
 #[test]
 fn codegen_not_lowered_gets_e0900_only_when_it_says_so() {
-    let src = "fn main() {\n    let t = (1, 2)\n    let (x, y) = t\n    println(x, y)\n}";
+    let src = "fn main() {\n    let o: int? = 1\n    let some(x) = o\n    println(x)\n}";
     let d = check_str(src);
     let msgs = error_msgs(&d);
     assert!(
         !d.any_error(),
-        "tuple expressions and destructuring should not be a checker error: {msgs}"
+        "refutable option destructuring should not be a checker error: {msgs}"
     );
     // The codegen `bad()` recovers to the diag sink via emit_ir: force it.
     let d2 = DiagnosticSink::new();

@@ -4001,6 +4001,26 @@ impl<'a> Emitter<'a> {
                         }
                         Ok(())
                     }
+                    // `let (a, b) = <tuple>` irrefutable destructuring (matches
+                    // `bind_pattern` on the checker side). Tuple patterns are
+                    // irrefutable, so every name is bound unconditionally; the
+                    // init is evaluated once and each name binds to a fresh slot
+                    // (the same binder the match arms use). A tuple
+                    // destructuring requires an initializer. Refutable patterns
+                    // (`let some(v) = ...`) keep bailing: resolving an absent
+                    // option here would dereference null.
+                    Pattern::Tuple(_) => {
+                        let Some(e) = init else {
+                            return self.bad(
+                                *span,
+                                "destructuring patterns require an initializer",
+                            );
+                        };
+                        let st = self.ty_of(&e.span).unwrap_or(Ty::Unknown);
+                        let v = self.expr(e)?;
+                        self.bind_match_value(pattern, &st, v, e.span)?;
+                        Ok(())
+                    }
                     _ => self.bad(*span, "destructuring patterns are not lowered yet"),
                 }
             }
@@ -4169,37 +4189,43 @@ impl<'a> Emitter<'a> {
                 );
             }
         }
-        let Pattern::Binding { name, .. } = pattern else {
-            return self.bad(
-                span,
-                "iteration patterns other than a binding are not lowered yet",
-            );
-        };
         let seq_ot = match self.ty_of(&sequence.span) {
             Some(Ty::Ref(inner)) => Some((*inner).clone()),
             other => other,
         };
         if let Some(Ty::String) = &seq_ot {
+            let Pattern::Binding { name, .. } = pattern else {
+                return self.bad(
+                    span,
+                    "iteration patterns other than a binding are not lowered yet",
+                );
+            };
             let seq_t = self.expr(sequence)?;
             return self.for_in_string(name, seq_t, body);
         }
         if let Some(Ty::List(inner)) = &seq_ot {
             let elem = inner.as_ref().clone();
             let seq_t = self.expr(sequence)?;
-            return self.for_in_values(name, seq_t, elem, body, span);
+            return self.for_in_values(pattern, seq_t, elem, body, span);
         }
         if let Some(Ty::Map(_, v)) = &seq_ot {
+            let Pattern::Binding { .. } = pattern else {
+                return self.bad(
+                    span,
+                    "iteration patterns other than a binding are not lowered yet",
+                );
+            };
             let map_t = self.expr(sequence)?;
             let vals =
                 self.extern_call_t1("pickle_map_values", vec![IrTy::Ptr], IrTy::Ptr, vec![map_t])?;
-            return self.for_in_values(name, vals, v.as_ref().clone(), body, span);
+            return self.for_in_values(pattern, vals, v.as_ref().clone(), body, span);
         }
         // `Iterable<T>` protocol: the sequence is an interface-typed value or
         // a class/struct that transitively implements `Iterable<elem>` (builtin
         // List/Map/String/Range keep their direct lowering above).
         if let Some(elem) = self.iterable_elem(&seq_ot.clone().unwrap_or(Ty::Unknown)) {
             let seq_t = self.expr(sequence)?;
-            return self.for_in_protocol(name, &elem, seq_t, body, span);
+            return self.for_in_protocol(pattern, &elem, seq_t, body, span);
         }
         let (start, end, incl) = match &sequence.kind {
             ExprKind::Binary {
@@ -4262,6 +4288,9 @@ impl<'a> Emitter<'a> {
             break_target: end_id,
         });
         self.push_scope();
+        let Pattern::Binding { name, .. } = pattern else {
+            return self.bad(span, "iteration patterns other than a binding are not lowered yet");
+        };
         self.declare(name, idx);
         self.block_body_only(body)?;
         self.pop_scope();
@@ -4294,7 +4323,7 @@ impl<'a> Emitter<'a> {
     /// keeps it and its boxed elements reachable for the whole loop.
     fn for_in_values(
         &mut self,
-        name: &str,
+        pattern: &Pattern,
         seq_t: Temp,
         elem: Ty,
         body: &Block,
@@ -4368,7 +4397,21 @@ impl<'a> Emitter<'a> {
         };
         let elem_slot = self.new_slot(elem_ir);
         self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
-        self.declare(name, elem_slot);
+        match pattern {
+            Pattern::Binding { name, .. } => self.declare(name, elem_slot),
+            Pattern::Tuple(_) => {
+                // `for ((a, b) in xs)` over a `List<(int, int)>`: read the
+                // tuple fields out of the boxed element into each part slot.
+                let ev = self.load(elem_slot);
+                self.bind_match_value(pattern, &elem, ev, span)?;
+            }
+            _ => {
+                return self.bad(
+                    span,
+                    "iteration patterns other than a binding or tuple are not lowered yet",
+                )
+            }
+        }
         self.block_body_only(body)?;
         self.pop_scope();
         self.loops.pop();
@@ -4407,7 +4450,7 @@ impl<'a> Emitter<'a> {
     /// keeps them reachable across trips.
     fn for_in_protocol(
         &mut self,
-        name: &str,
+        pattern: &Pattern,
         elem: &Ty,
         seq_t: Temp,
         body: &Block,
@@ -4456,7 +4499,19 @@ impl<'a> Emitter<'a> {
         let v = self.opt_resolve(raw, elem, span)?;
         let elem_slot = self.new_slot(elem_ir);
         self.instr(IrInstr::StoreSlot { slot: elem_slot, v });
-        self.declare(name, elem_slot);
+        match pattern {
+            Pattern::Binding { name, .. } => self.declare(name, elem_slot),
+            Pattern::Tuple(_) => {
+                let ev = self.load(elem_slot);
+                self.bind_match_value(pattern, elem, ev, span)?;
+            }
+            _ => {
+                return self.bad(
+                    span,
+                    "iteration patterns other than a binding or tuple are not lowered yet",
+                )
+            }
+        }
         self.block_body_only(body)?;
         self.pop_scope();
         self.loops.pop();
@@ -6102,7 +6157,7 @@ impl<'a> Emitter<'a> {
                 if op != AssignOp::Add {
                     return self.bad(
                         span,
-                        format!("compound assignment on this string only supports `+=`"),
+                        "compound assignment on this string only supports `+=`",
                     );
                 }
                 self.extern_call_t1(

@@ -1345,6 +1345,107 @@ fn emits_compound_assignment_across_targets() {
 }
 
 #[test]
+fn emits_let_tuple_destructuring() {
+    // `let (a, b) = t` destructuring: the init is evaluated once and each
+    // name binds a fresh slot via `pickle_tuple_field` (mirroring the match
+    // binder). Nested tuples and the `var`/`let` forms all lower.
+    let m = emit_str(
+        r#"fn main() {
+            var t = (1, 2)
+            let (a, b) = t
+            println(a)
+            println(b)
+            var (x, y) = (3, 4)
+            println(x + y)
+            let (n, (m, _)) = (5, (6, 7))
+            println(n)
+            println(m)
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(
+        syms.iter().any(|s| s == "pickle_tuple_field"),
+        "externs: {syms:?}"
+    );
+    let main = m.funcs.iter().find(|f| f.name == "main").expect("main");
+    // No option resolution: `let some(v)` stays bailing, so the tuple
+    // binder must not pull in `opt_resolve`.
+    assert!(
+        !syms.iter().any(|s| s == "opt_resolve"),
+        "externs: {syms:?}"
+    );
+    // Three tuple destructures: `(a, b)`, `(x, y)`, `(n, (m, _))` (nested
+    // tuple is two fields for the inner + one for the outer `n`).
+    let tuple_field_calls = main
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call {
+                callee: Callee::Extern(ex),
+                ..
+            } = i
+            {
+                m.externs.get(ex.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_tuple_field")
+        .count();
+    assert_eq!(
+        tuple_field_calls, 8,
+        "(a, b): 2, (x, y): 2, (n, (m, _)): outer 2 + inner (m, _) 2, dump:\n{main}"
+    );
+}
+
+#[test]
+fn emits_for_in_list_of_tuples() {
+    // `for ((x, y) in xs)` over a `List<(int, int)>`: each iteration reads
+    // the boxed tuple element and unboxes its fields, one fresh slot per
+    // name (the same binder `let (a, b) = t` uses).
+    let m = emit_str(
+        r#"fn sum(xs: List<(int, int)>) -> int {
+            var total = 0
+            for ((x, y) in xs) {
+                total = total + x - y
+            }
+            return total
+        }"#,
+    );
+    let syms = externs(&m);
+    assert!(
+        syms.iter().any(|s| s == "pickle_tuple_field"),
+        "externs: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|s| s == "pickle_list_get"),
+        "externs: {syms:?}"
+    );
+    let sum = m.funcs.iter().find(|f| f.name == "sum").expect("sum");
+    // The element slot holds the boxed tuple; fields are unboxed per trip via
+    // `pickle_tuple_field` (twice per iteration, once per part).
+    let tuple_field_calls = sum
+        .blocks
+        .iter()
+        .flat_map(|b| b.instrs.iter())
+        .filter_map(|i| {
+            if let IrInstr::Call {
+                callee: Callee::Extern(ex),
+                ..
+            } = i
+            {
+                m.externs.get(ex.0).map(|e| e.symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .filter(|s| *s == "pickle_tuple_field")
+        .count();
+    assert_eq!(tuple_field_calls, 2, "two tuple parts per iteration, dump:\n{sum}");
+}
+
+#[test]
 fn emits_static_property_accessors_receiverless() {
     // Static property accessors lower as receiver-less functions
     // (`pkl_<T>_sm_<p>_get`/`_set`), dispatch via `Type.prop`, and can

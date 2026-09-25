@@ -1653,4 +1653,26 @@ mod tests {
             }"#,
         );
     }
+
+    #[test]
+    fn run_let_destructuring_and_for_in_tuples() {
+        run_source(
+            r#"fn main() {
+                var t = (1, 2)
+                let (a, b) = t
+                println(a + b)
+                var (x, y) = (3, 4)
+                println(x + y)
+                let (l, (inner, _)) = (5, (6, 7))
+                println(l + inner)
+                for ((i, j) in [(10, 20), (30, 40)]) {
+                    println(i * j)
+                }
+                var pairs: List<(int, int)> = [(7, 3), (5, 2)]
+                for ((p, q) in pairs) {
+                    println(p - q)
+                }
+            }"#,
+        );
+    }
 }
