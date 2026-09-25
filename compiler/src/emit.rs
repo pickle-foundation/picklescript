@@ -108,6 +108,7 @@ pub fn emit_ir(
         collect_writes: false,
         next_closure: 0,
         tramp_fids: HashMap::new(),
+        spread_tramps: HashMap::new(),
         method_tramp_fids: HashMap::new(),
         fn_tramp: HashMap::new(),
         fname: String::new(),
@@ -236,6 +237,24 @@ enum FnSource<'a> {
     /// and runs `pkl_static_init` before the test runner starts (test modules
     /// have no `main`, so the preamble cannot ride on one).
     TestSetup,
+    /// A dynamically-callable forwarder for a fixed-arity call site that was
+    /// written with a spread (`...list`). Slot 0 is the receiver for an
+    /// instance-method target (else absent), the final slot holds a boxed
+    /// `List` of the spread elements, and the intermediate slots carry the
+    /// explicitly-supplied leading arguments, each boxed by its own parameter
+    /// representation. The body unboxes every argument back into a freshly
+    /// allocated spill slot (using the parameter's own representation), frees
+    /// nothing, and calls `target` with the ordinary `(slot0, ...)` ABI.
+    /// Registered once per target so every caller shares the dispatch.
+    SpreadTrampoline {
+        span: Span,
+        target: FuncId,
+        /// The target's full parameter types (receiver excluded), exactly as
+        /// `src_param_tys` computed them at the original call site.
+        pty: Vec<Ty>,
+        ret: Ty,
+        receiver: bool,
+    },
 }
 
 /// A registered, lowerable user class/struct.
@@ -379,7 +398,7 @@ fn static_field_info(table: &ClassTable, name: &str) -> Option<FieldInfo> {
 }
 
 /// Runtime representation of a `List<T>` element.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ElemRep {
     /// Pass the managed value through as a pointer (strings, classes, lists…).
     Ptr,
@@ -549,6 +568,10 @@ struct Emitter<'a> {
     /// so a function referenced as a value is wrapped once regardless of how many
     /// sites reference it.
     tramp_fids: HashMap<FuncId, FuncId>,
+    /// Target function id -> its spread-trampoline (`FnSource::SpreadTrampoline`).
+    /// One trampoline per target serves every call site that spread a
+    /// (`...list`) argument into that target.
+    spread_tramps: HashMap<FuncId, FuncId>,
     /// Method bound-value trampolines, keyed by (static receiver class, method
     /// name, resolved fid): a bound instance method used as a value needs one
     /// forwarder per receiver class/method, and the forwarder dispatches
@@ -2800,6 +2823,16 @@ impl<'a> Emitter<'a> {
                 self.owner = None;
                 self.build_method_trampoline(span, target, &pty, &ret, &branches);
             }
+            FnSource::SpreadTrampoline {
+                span,
+                target,
+                pty,
+                ret,
+                receiver,
+            } => {
+                self.owner = None;
+                self.build_spread_trampoline(span, target, &pty, &ret, receiver);
+            }
             FnSource::Ctor {
                 table,
                 inits,
@@ -3191,6 +3224,88 @@ impl<'a> Emitter<'a> {
             slot: ret_slot,
         });
         self.term(IrTerm::Return { v: Some(dst) });
+    }
+
+    /// Build the body of a spread trampoline: a forwarder whose parameters are
+    /// `(recv)?, boxed` — an optional receiver slot followed by a boxed `List`
+    /// that holds every argument value (fixed positions boxed by each
+    /// parameter's own representation, spread elements in place). The body
+    /// unboxes each entry back by the parameter's own representation and calls
+    /// `target` with the ordinary `(slot0, ...)` ABI, returning its result.
+    /// The caller's arity guard guarantees exactly `pty.len()` entries.
+    fn build_spread_trampoline(
+        &mut self,
+        span: Span,
+        target: FuncId,
+        pty: &[Ty],
+        ret: &Ty,
+        receiver: bool,
+    ) {
+        let _ = self.map_ty(ret, span).map(|ir| self.fret = ir);
+        let recv_slot = if receiver {
+            let recv_slot = self.new_slot(IrTy::Ptr);
+            self.fparams.push(IrParam {
+                name: "recv".to_string(),
+                ty: IrTy::Ptr,
+            });
+            self.declare("recv", recv_slot);
+            recv_slot
+        } else {
+            Slot(0)
+        };
+        let list_slot = self.new_slot(IrTy::Ptr);
+        self.fparams.push(IrParam {
+            name: "boxed".to_string(),
+            ty: IrTy::Ptr,
+        });
+        self.declare("boxed", list_slot);
+        let list = self.load(list_slot);
+        let mut real: Vec<Temp> = Vec::new();
+        for (i, t) in pty.iter().enumerate() {
+            let idx = self.int_const(i as i64);
+            let raw = match self.extern_call_t1(
+                "pickle_list_get",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![list, idx],
+            ) {
+                Ok(t) => t,
+                Err(()) => return,
+            };
+            match self.elem_rep(t, span) {
+                Ok(ElemRep::Scalar(_, unbox, ir)) => {
+                    let v = self.extern_call_t1(unbox, vec![IrTy::Ptr], ir, vec![raw]);
+                    let v = match v {
+                        Ok(v) => v,
+                        Err(()) => return,
+                    };
+                    real.push(v);
+                }
+                Ok(ElemRep::Ptr) => real.push(raw),
+                Err(()) => return,
+            }
+        }
+        let mut args = Vec::new();
+        if receiver {
+            args.push(self.load(recv_slot));
+        }
+        args.extend(real);
+        if matches!(self.fret, IrTy::Unit) {
+            self.instr(IrInstr::Call {
+                dst: None,
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: None });
+        } else {
+            let dst = self.temp();
+            self.instr(IrInstr::Call {
+                dst: Some(dst),
+                callee: Callee::Func(target),
+                args,
+            });
+            self.term(IrTerm::Return { v: Some(dst) });
+        }
     }
 
     /// Lower a constructor. Parameters are the explicit `constructor(...)`'s
@@ -4239,6 +4354,15 @@ impl<'a> Emitter<'a> {
                 rhs,
             } => (lhs, rhs, true),
             _ => {
+                // A stored range value (`let r = 1..5; for (x in r)`): it is a
+                // real `List<int>`, so iterate it like a list. Literal ranges
+                // keep the direct counter loop above (their syntax matches
+                // `Binary { Range }`, which is handled first).
+                if let Some(Ty::Range(inner)) = &seq_ot {
+                    let elem = inner.as_ref().clone();
+                    let seq_t = self.expr(sequence)?;
+                    return self.for_in_values(pattern, seq_t, elem, body, span);
+                }
                 return self.bad(
                     sequence.span,
                     "`for (x in ...)` over non-range, non-list sequences is not lowered yet",
@@ -5093,9 +5217,40 @@ impl<'a> Emitter<'a> {
         match op {
             AstBinOp::And | AstBinOp::Or => return self.logic(e, op, lhs, rhs),
             AstBinOp::NullCoalesce => return self.null_coalesce(e, lhs, rhs),
-            AstBinOp::Range
-            | AstBinOp::RangeIncl
-            | AstBinOp::Send
+            // `a..b` / `a..=b` as a *value*: materialize a `List<int>` via
+            // `pickle_range` (end-exclusive, step 1); `..=` bumps the end by
+            // one. Bounds must be `int` (the checker guarantees it). The
+            // direct for-in form never reaches here — `for_in` lowers literal
+            // ranges as a counter loop without building a list.
+            AstBinOp::Range | AstBinOp::RangeIncl => {
+                self.ensure_int(lhs)?;
+                self.ensure_int(rhs)?;
+                let start = self.expr(lhs)?;
+                let end = self.expr(rhs)?;
+                let one = self.int_const(1);
+                if op == AstBinOp::Range {
+                    return self.extern_call_t1(
+                        "pickle_range",
+                        vec![IrTy::Int, IrTy::Int, IrTy::Int],
+                        IrTy::Ptr,
+                        vec![start, end, one],
+                    );
+                }
+                let end1 = self.temp();
+                self.instr(IrInstr::BinOp {
+                    dst: end1,
+                    op: IrBinOp::Add,
+                    a: end,
+                    b: one,
+                });
+                return self.extern_call_t1(
+                    "pickle_range",
+                    vec![IrTy::Int, IrTy::Int, IrTy::Int],
+                    IrTy::Ptr,
+                    vec![start, end1, one],
+                );
+            }
+            AstBinOp::Send
             | AstBinOp::Is
             | AstBinOp::In
             | AstBinOp::Pow => return self.bad(e.span, "this operator is not lowered yet"),
@@ -6710,6 +6865,7 @@ impl<'a> Emitter<'a> {
                 return Ok(dst);
             }
             Some(Ty::List(inner)) => inner.as_ref().clone(),
+            Some(Ty::Range(inner)) => inner.as_ref().clone(),
             Some(Ty::Ref(inner)) if matches!(inner.as_ref(), Ty::List(..)) => {
                 match inner.as_ref() {
                     Ty::List(e) => e.as_ref().clone(),
@@ -9135,12 +9291,18 @@ impl<'a> Emitter<'a> {
         };
         // User function?
         if let Some(&fid) = self.module.funcs_by_name.get(name) {
+            if args.iter().any(|a| a.spread) {
+                let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
+                let ret = self
+                    .finfo
+                    .get(&fid)
+                    .map(|i| i.ret.clone())
+                    .unwrap_or(Ty::Unknown);
+                return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
+            }
             let fparams = self.module.funcs[fid.0].params.clone();
             let mut arg_temps = Vec::new();
             for (i, a) in args.iter().enumerate() {
-                if a.spread {
-                    return self.bad(a.span, "spread arguments are not lowered yet");
-                }
                 let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
                 let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
                 let t = self.borrow_arg(src.as_ref(), a)?;
@@ -9165,12 +9327,21 @@ impl<'a> Emitter<'a> {
             let Some(&fid) = self.ctor_ids.get(&cid) else {
                 return self.bad(e.span, format!("`{name}` has no constructor"));
             };
+            if args.iter().any(|a| a.spread) {
+                let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
+                return self.spread_static_call(
+                    e,
+                    e.span,
+                    fid,
+                    &pty,
+                    &Ty::Class(name.to_string(), Vec::new()),
+                    None,
+                    args,
+                );
+            }
             let fparams = self.module.funcs[fid.0].params.clone();
             let mut arg_temps = Vec::new();
             for (i, a) in args.iter().enumerate() {
-                if a.spread {
-                    return self.bad(a.span, "spread arguments are not lowered yet");
-                }
                 let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
                 let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
                 let t = self.borrow_arg(src.as_ref(), a)?;
@@ -9236,6 +9407,15 @@ impl<'a> Emitter<'a> {
             "print" | "println" => {
                 let newline = name == "println";
                 for a in args {
+                    if a.spread {
+                        let a_ty = self.ty_of(&a.value.span);
+                        let Some(Ty::List(inner)) = a_ty else {
+                            return self.bad(a.value.span, "spread argument in `print` must be a `List`")
+                        };
+                        let sp_t = self.expr(&a.value)?;
+                        self.print_spread_list(a.value.span, sp_t, &inner)?;
+                        continue;
+                    }
                     let t = self.expr(&a.value)?;
                     let a_ty = self.ty_of(&a.value.span);
                     let sym: &str = match a_ty {
@@ -9312,7 +9492,7 @@ impl<'a> Emitter<'a> {
                     Some(Ty::String) => {
                         self.extern_call_t1("pickle_str_len", vec![IrTy::Str], IrTy::Int, vec![t])
                     }
-                    Some(Ty::List(_)) => {
+                    Some(Ty::List(_) | Ty::Range(_)) => {
                         self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![t])
                     }
                     Some(Ty::Map(_, _)) => {
@@ -9814,11 +9994,17 @@ impl<'a> Emitter<'a> {
         };
         // Mirror the plain user-function call: borrow `&T` reference params,
         // wrap optional params, and store the result.
+        if args.iter().any(|a| a.spread) {
+            let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
+            let ret = self
+                .finfo
+                .get(&fid)
+                .map(|i| i.ret.clone())
+                .unwrap_or(Ty::Unknown);
+            return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
+        }
         let mut arg_temps = Vec::new();
         for (i, a) in args.iter().enumerate() {
-            if a.spread {
-                return self.bad(a.span, "spread arguments are not lowered yet");
-            }
             let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
             let is_ref = matches!(src.as_ref(), Some(Ty::Ref(_)));
             let is_opt = matches!(src.as_ref(), Some(Ty::Option(_) | Ty::None));
@@ -10525,15 +10711,18 @@ impl<'a> Emitter<'a> {
         name: &str,
         args: &[CallArg],
     ) -> Result<Temp, ()> {
-        if args.iter().any(|a| a.spread) {
-            return self.bad(e.span, "spread arguments are not lowered yet");
-        }
         let ot = self.ty_of(&object.span);
 
         // `Type.staticMethod(...)`.
         if let ExprKind::Ident(tname) = &object.kind {
             if let Some(&cid) = self.class_by_name.get(tname) {
                 if let Some(&fid) = self.named_ctor_ids.get(&(cid, name.to_string())) {
+                    if args.iter().any(|a| a.spread) {
+                        return self.bad(
+                            e.span,
+                            "spreading into a named constructor is not lowered yet",
+                        );
+                    }
                     return self.call_method(e, fid, args, None);
                 }
                 if let Some(&(fid, is_static)) = self.method_ids.get(&(cid, name.to_string())) {
@@ -10542,6 +10731,15 @@ impl<'a> Emitter<'a> {
                             e.span,
                             format!("instance method `{name}` must be called on an instance of `{tname}`"),
                         );
+                    }
+                    if args.iter().any(|a| a.spread) {
+                        let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
+                        let ret = self
+                            .finfo
+                            .get(&fid)
+                            .map(|i| i.ret.clone())
+                            .unwrap_or(Ty::Unknown);
+                        return self.spread_static_call(e, e.span, fid, &pty, &ret, None, args);
                     }
                     return self.call_method(e, fid, args, None);
                 }
@@ -10610,6 +10808,11 @@ impl<'a> Emitter<'a> {
             );
         }
 
+        // Receive-receiver (interface/list/map/stream/…) methods reject spreads:
+        // only class/struct methods are wired through `spread_static_call`.
+        if args.iter().any(|a| a.spread) {
+            return self.bad(e.span, "spread arguments are not lowered for this receiver");
+        }
         match ot {
             Some(ref otv) if self.iface_of(otv).is_some() => {
                 self.interface_method_call(e, otv, object, name, args)
@@ -10709,13 +10912,22 @@ impl<'a> Emitter<'a> {
     /// instance methods.
     fn call_method(
         &mut self,
-        _e: &Expr,
+        e: &Expr,
         fid: FuncId,
         args: &[CallArg],
         receiver: Option<Temp>,
     ) -> Result<Temp, ()> {
-        let call_args = self.marshal_method_args(_e, fid, args, receiver)?;
-        self.emit_call_to(fid, call_args, _e)
+        if args.iter().any(|a| a.spread) {
+            let pty = self.src_param_tys.get(&fid).cloned().unwrap_or_default();
+            let ret = self
+                .finfo
+                .get(&fid)
+                .map(|i| i.ret.clone())
+                .unwrap_or(Ty::Unknown);
+            return self.spread_static_call(e, e.span, fid, &pty, &ret, receiver, args);
+        }
+        let call_args = self.marshal_method_args(e, fid, args, receiver)?;
+        self.emit_call_to(fid, call_args, e)
     }
 
     /// Resolve the IR parameter type at `fparam_idx` (which counts the
@@ -10804,6 +11016,12 @@ impl<'a> Emitter<'a> {
         receiver: Temp,
         branches: &[(u32, FuncId)],
     ) -> Result<Temp, ()> {
+        if args.iter().any(|a| a.spread) {
+            return self.bad(
+                e.span,
+                "spread arguments cannot dispatch virtually (the method is overridden)",
+            );
+        }
         let ret_ty = self.irty(e.span)?;
         let ret_slot = self.new_slot(ret_ty);
         let join = self.new_block();
@@ -10853,8 +11071,272 @@ impl<'a> Emitter<'a> {
         Ok(dst)
     }
 
-    /// Lower `object.name(...)` where the receiver's static type is an
-    /// interface. Two dispatch layers, mirroring the class cascade:
+    /// Lower a call whose final argument is a spread (`...list`) into a fixed
+    /// target function. Every argument — the explicitly-supplied prefix plus
+    /// the spread elements — is boxed into one `List`; the target's per-target
+    /// `FnSource::SpreadTrampoline` (registered on first use and shared by
+    /// every caller) unboxes them back into the ordinary call ABI. A runtime
+    /// arity guard panics (`pickle_panic_arity_diff`) when the spread list's
+    /// length does not exactly fill the remaining parameters, so the
+    /// trampoline may assume its boxed list has exactly `pty.len()` entries.
+    fn spread_static_call(
+        &mut self,
+        _e: &Expr,
+        span: Span,
+        fid: FuncId,
+        pty: &[Ty],
+        ret: &Ty,
+        receiver: Option<Temp>,
+        args: &[CallArg],
+    ) -> Result<Temp, ()> {
+        // The checker validates shape and coverage; the emitter re-checks the
+        // lowering prerequisites it depends on before registering anything.
+        if pty.iter().any(|t| matches!(t, Ty::Ref(_))) {
+            return self.bad(span, "spreading into a `&T` parameter is not lowered yet");
+        }
+        if let Some(FnSource::TopLevel(f)) = self.fsource.get(&fid) {
+            if f.params.iter().any(|p| p.default.is_some()) {
+                return self.bad(
+                    span,
+                    "spreading into a parameter with a default value is not lowered yet",
+                );
+            }
+        }
+        if let Some(info) = self.finfo.get(&fid) {
+            if info.params.iter().any(|p| p.rest) {
+                return self.bad(
+                    span,
+                    "spreading into a rest parameter is only lowered for `println`",
+                );
+            }
+        }
+        let m = args.iter().take_while(|a| !a.spread).count();
+        if m > pty.len() {
+            return self.bad(span, "too many arguments for this call");
+        }
+        let Some((sp_arg, true)) = args.get(m).map(|a| (a, a.spread)) else {
+            return self.bad(span, "internal error: missing spread argument");
+        };
+        let elem_ty = match self.ty_of(&sp_arg.value.span) {
+            Some(Ty::List(inner)) => (*inner).clone(),
+            _ => return self.bad(sp_arg.span, "a spread argument must be a `List`"),
+        };
+        // Every parameter the spread covers must round-trip the element
+        // representation exactly (an `int` into `int, byte` still shares the
+        // i64 box, but nothing may cross scalar/managed families).
+        let erep = self.elem_rep(&elem_ty, sp_arg.span)?;
+        for i in m..pty.len() {
+            if self.elem_rep(&pty[i], sp_arg.span)? != erep {
+                return self.bad(
+                    span,
+                    "spreading over parameters with mixed element representations is not lowered yet",
+                );
+            }
+        }
+        if self.map_ty(ret, span).is_err() {
+            return self.bad(span, "spread call return type is not lowered yet");
+        }
+        let tramp = match self.spread_tramps.get(&fid) {
+            Some(&t) => t,
+            None => {
+                let t = self.push_class_func(
+                    "fn.spread",
+                    &format!("pkl_sptramp_{}", fid.0),
+                    FnSource::SpreadTrampoline {
+                        span,
+                        target: fid,
+                        pty: pty.to_vec(),
+                        ret: ret.clone(),
+                        receiver: receiver.is_some(),
+                    },
+                );
+                self.spread_tramps.insert(fid, t);
+                t
+            }
+        };
+        let ret_ir = self.map_ty(ret, span).unwrap_or(IrTy::Unit);
+        let res_slot = self.new_slot(ret_ir);
+
+        // Build the boxed argument list: the fixed prefix boxed by each
+        // parameter's own representation, then the spread elements verbatim
+        // (they already carry the element representation).
+        let cap = self.int_const(pty.len() as i64);
+        let xs = self.extern_call_t1("pickle_list_new", vec![IrTy::Int], IrTy::Ptr, vec![cap])?;
+        let base = receiver.map_or(0, |_| 1);
+        for (i, a) in args.iter().enumerate().take(m) {
+            let src = self.src_param_tys.get(&fid).and_then(|v| v.get(i)).cloned();
+            let mut t = self.borrow_arg(src.as_ref(), a)?;
+            let fparam = self.callee_param_ir(fid, base + i, i, a.value.span);
+            if !matches!(src.as_ref(), Some(Ty::Ref(_)))
+                && matches!(fparam, Some(IrTy::Ptr))
+            {
+                let vt = self.ty_of(&a.value.span).unwrap_or(Ty::Unknown);
+                t = self.option_wrap(t, &vt, a.value.span)?;
+            }
+            let rep = self.elem_rep(&pty[i], a.value.span)?;
+            let bx = match rep {
+                ElemRep::Ptr => t,
+                ElemRep::Scalar(box_sym, _, ir) => {
+                    self.extern_call_t1(box_sym, vec![ir], IrTy::Ptr, vec![t])?
+                }
+            };
+            self.extern_call_void("pickle_list_push", vec![IrTy::Ptr, IrTy::Ptr], vec![xs, bx]);
+        }
+        let sp = self.expr(&sp_arg.value)?;
+        let n = self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![sp])?;
+        let r = self.int_const((pty.len() - m) as i64);
+        let ok = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: ok,
+            op: IrBinOp::Eq,
+            a: n,
+            b: r,
+        });
+        let r_ok = self.new_block();
+        let r_panic = self.new_block();
+        let join = self.new_block();
+        self.term(IrTerm::BranchIf {
+            cond: ok,
+            then: r_ok,
+            else_: r_panic,
+        });
+        self.cur = r_panic;
+        self.extern_call_void("pickle_panic_arity_diff", vec![], vec![]);
+        self.term(IrTerm::Branch { target: join });
+        self.cur = r_ok;
+        let r_missing = pty.len() - m;
+        for k in 0..r_missing {
+            let idx = self.int_const(k as i64);
+            let raw = self.extern_call_t1(
+                "pickle_list_get",
+                vec![IrTy::Ptr, IrTy::Int],
+                IrTy::Ptr,
+                vec![sp, idx],
+            )?;
+            self.extern_call_void(
+                "pickle_list_push",
+                vec![IrTy::Ptr, IrTy::Ptr],
+                vec![xs, raw],
+            );
+        }
+        let mut call_args = Vec::new();
+        if let Some(recv) = receiver {
+            call_args.push(recv);
+        }
+        call_args.push(xs);
+        let dst = self.temp();
+        self.instr(IrInstr::Call {
+            dst: Some(dst),
+            callee: Callee::Func(tramp),
+            args: call_args,
+        });
+        self.instr(IrInstr::StoreSlot {
+            slot: res_slot,
+            v: dst,
+        });
+        self.term(IrTerm::Branch { target: join });
+        self.cur = join;
+        Ok(self.load(res_slot))
+    }
+
+    /// `...xs` as a `print`/`println` operand: emit a runtime loop that
+    /// prints every element individually. Scalar element reps are unboxed and
+    /// printed with their scalar printer; managed elements (string, class,
+    /// nested list, ...) go straight to `pickle_print_obj`. An empty spread
+    /// prints nothing.
+    fn print_spread_list(&mut self, span: Span, sp: Temp, elem: &Ty) -> Result<(), ()> {
+        let (sym, print_ir) = match elem {
+            Ty::Int => ("pickle_print_i64", IrTy::Int),
+            Ty::Float => ("pickle_print_f64", IrTy::Float),
+            Ty::Bool => ("pickle_print_bool", IrTy::Bool),
+            Ty::Byte => ("pickle_print_byte", IrTy::Int),
+            Ty::Char => ("pickle_print_char", IrTy::Char),
+            _ => ("pickle_print_obj", IrTy::Ptr),
+        };
+        let rep = self.elem_rep(elem, span)?;
+        let seq_slot = self.new_slot(IrTy::Ptr);
+        let idx_slot = self.new_slot(IrTy::Int);
+        let len_slot = self.new_slot(IrTy::Int);
+        self.instr(IrInstr::StoreSlot {
+            slot: seq_slot,
+            v: sp,
+        });
+        let zero = self.temp();
+        self.instr(IrInstr::Const {
+            dst: zero,
+            c: IrConst::Int(0),
+        });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: zero,
+        });
+        let seq_l = self.load(seq_slot);
+        let len_t = self.extern_call_t1("pickle_list_len", vec![IrTy::Ptr], IrTy::Int, vec![seq_l])?;
+        self.instr(IrInstr::StoreSlot {
+            slot: len_slot,
+            v: len_t,
+        });
+        let cond_id = self.new_block();
+        let body_id = self.new_block();
+        let next_id = self.new_block();
+        let end_id = self.new_block();
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = cond_id;
+        let cur_t = self.load(idx_slot);
+        let end_l = self.load(len_slot);
+        let cmp = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: cmp,
+            op: IrBinOp::Lt,
+            a: cur_t,
+            b: end_l,
+        });
+        self.term(IrTerm::BranchIf {
+            cond: cmp,
+            then: body_id,
+            else_: end_id,
+        });
+        self.cur = body_id;
+        let cur_i = self.load(idx_slot);
+        let seq_l = self.load(seq_slot);
+        let raw = self.extern_call_t1(
+            "pickle_list_get",
+            vec![IrTy::Ptr, IrTy::Int],
+            IrTy::Ptr,
+            vec![seq_l, cur_i],
+        )?;
+        let v = match rep {
+            ElemRep::Scalar(_, unbox, el_ir)
+                if matches!(elem, Ty::Int | Ty::Float | Ty::Bool | Ty::Byte | Ty::Char) =>
+            {
+                self.extern_call_t1(unbox, vec![IrTy::Ptr], el_ir, vec![raw])?
+            }
+            _ => raw,
+        };
+        self.extern_call_void(sym, vec![print_ir], vec![v]);
+        self.term(IrTerm::Branch { target: next_id });
+        self.cur = next_id;
+        let c = self.load(idx_slot);
+        let one = self.temp();
+        self.instr(IrInstr::Const {
+            dst: one,
+            c: IrConst::Int(1),
+        });
+        let nxt = self.temp();
+        self.instr(IrInstr::BinOp {
+            dst: nxt,
+            op: IrBinOp::Add,
+            a: c,
+            b: one,
+        });
+        self.instr(IrInstr::StoreSlot {
+            slot: idx_slot,
+            v: nxt,
+        });
+        self.term(IrTerm::Branch { target: cond_id });
+        self.cur = end_id;
+        Ok(())
+    }
     /// * a compile-time chain of `pickle_class_is(receiver, D_cid)` checks over
     ///   every registered class that (transitively) implements the interface,
     ///   deepest-derived-first, each branching to that class's own resolved
@@ -11253,7 +11735,16 @@ impl<'a> Emitter<'a> {
             | Ty::Stream
             | Ty::Ptr(..)
             | Ty::Fn(..) => Ok(Ptr),
-            Ty::Ref(..) => self.bad(span, "lists of `&T` references are not supported yet"),
+            // A `&T` element carries a reference *value*: for a scalar referent
+            // that is the address (an `i64`), boxed as an integer; for a
+            // managed referent the identity `Ptr` passes through uncoated.
+            Ty::Ref(inner) => {
+                if Self::scalar_ir(inner.as_ref()).is_some() {
+                    Ok(Scalar("pickle_box_i64", "pickle_unbox_i64", IrTy::Int))
+                } else {
+                    Ok(Ptr)
+                }
+            }
             Ty::None | Ty::Empty => {
                 self.bad(span, "a list of `none` has no element representation")
             }

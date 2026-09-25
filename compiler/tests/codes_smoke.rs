@@ -196,8 +196,8 @@ fn classifier_pins_message_to_code() {
             C::CallNonFunction,
         ),
         (
-            "`&T` references are supported only as function parameter types (a field)",
-            C::RefParamOnly,
+            "cannot initialize a `let` binding by borrowing a bare `int` value into a `&int` reference; `&T` references may only be formed from an existing `&T` value or a managed referent",
+            C::StoredRef,
         ),
         ("tuple values are not lowered yet", C::NotLowered),
     ];
@@ -300,7 +300,7 @@ fn catalogue_entries_are_unique_and_stable() {
         ErrorCode::OverwriteManual,
         ErrorCode::LeakedOwned,
         ErrorCode::UnsafeRequired,
-        ErrorCode::RefParamOnly,
+        ErrorCode::StoredRef,
         ErrorCode::NotLowered,
     ];
     for code in all {

@@ -364,6 +364,7 @@ pub mod abi {
     pub use crate::stream::pickle_stream_read;
     pub use crate::stream::pickle_stream_write;
 
+    pub use crate::panic::pickle_panic_arity_diff;
     pub use crate::panic::pickle_panic_no_iface_method;
     pub use crate::panic::pickle_panic_no_match;
     pub use crate::panic::pickle_panic_none_unwrap;

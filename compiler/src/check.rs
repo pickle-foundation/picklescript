@@ -135,8 +135,8 @@ pub fn classify_message(msg: &str) -> Option<crate::error::ErrorCode> {
         ("cannot cast `", Cast),
         // E02xx-adjacent reference rules surfaced by the checker.
         (
-            "references are supported only as function parameter types",
-            RefParamOnly,
+            "`&T` references may only be formed from an existing `&T` value or a managed referent",
+            StoredRef,
         ),
         // E03xx pattern errors without a dedicated code stay unlisted on
         // purpose: `tuple pattern does not match a tuple value` has no bucket
@@ -374,8 +374,8 @@ impl<'a> Checker<'a> {
                         .map(|f| f.ty.clone())
                         .unwrap_or(Ty::Unknown);
                     let got = self.check_expr(&c.value);
-                    self.guard_ref_use(&ty, c.span, "a `const` binding");
                     self.check_assignable(&ty, &got, c.span, "const initializer");
+                    self.guard_stored_ref(&ty, &got, c.span, "a `const` binding");
                 }
                 ItemKind::Class(c) => self.check_class_bodies(c),
                 ItemKind::Struct(s) => self.check_struct_bodies(s),
@@ -714,16 +714,31 @@ impl<'a> Checker<'a> {
         self.check_assignable(want, got, span, what);
     }
 
-    /// `&T` is supported only as a function parameter type. Anywhere else a
-    /// stored or returned `&T` would dangle (its referent is a borrowed local),
-    /// so those uses are rejected up front.
-    fn guard_ref_use(&mut self, ty: &Ty, span: Span, where_: &str) {
-        if matches!(ty, Ty::Ref(_)) {
-            self.err(
+    /// A `&T` value may be *stored or returned* only when the source already
+    /// IS the reference (`&T`), or when it is a managed referent sharing its
+    /// identity (no borrow; the GC keeps it alive). Storing/returning a bare
+    /// scalar referent is rejected up front: the borrow would dangle as soon
+    /// as the borrowing function's frame dies. (Call arguments keep the
+    /// implicit borrow: `f(x)` for `f(p: &T)`.)
+    fn guard_stored_ref(&mut self, want: &Ty, got: &Ty, span: Span, what: &str) {
+        let Ty::Ref(inner) = want else { return };
+        if got == want {
+            return;
+        }
+        let referent_is_managed = !matches!(
+            inner.as_ref(),
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Char | Ty::Byte
+        );
+        if got == inner.as_ref() && referent_is_managed {
+            return;
+        }
+        if got == inner.as_ref() {
+            self.err_note(
                 span,
                 format!(
-                    "`&T` references are supported only as function parameter types ({where_})"
+                    "cannot initialize {what} by borrowing a bare `{got}` value into a `{want}` reference; `&T` references may only be formed from an existing `&T` value or a managed referent"
                 ),
+                "pass the existing `&T` value, or borrow at a call argument instead",
             );
         }
     }
@@ -1107,8 +1122,6 @@ impl<'a> Checker<'a> {
             .and_then(|fns| fns.first())
             .map(|c| c.ret.clone())
             .unwrap_or(Ty::Empty);
-        let ret_ty = self.ret_ty.clone();
-        self.guard_ref_use(&ret_ty, f.span, "a return type");
         self.ret_manual = attrs.iter().any(|a| a.name == "manualAlloc");
         if self.ret_manual && !matches!(self.ret_ty, Ty::Class(..) | Ty::Struct(..)) {
             self.err_note(
@@ -1305,6 +1318,7 @@ impl<'a> Checker<'a> {
         if self.ret_ty != Ty::Empty && *got != Ty::Empty {
             let want = self.ret_ty.clone();
             self.check_assignable(&want, got, span, "return value");
+            self.guard_stored_ref(&want, got, span, "a return value");
         }
     }
 
@@ -1357,16 +1371,20 @@ impl<'a> Checker<'a> {
                 let annotated = ty
                     .as_ref()
                     .map(|t| self.resolved_fn_ty(t, &self.fn_generics));
-                // The declared type of a `let x: T`/`var x: T` binding lives on
-                // the pattern; `T` may not be an immutable `&T` reference.
-                if let Pattern::Binding { ty: Some(ann), .. } = pattern {
-                    let at = self.resolved_fn_ty(ann, &self.fn_generics);
-                    self.guard_ref_use(&at, *span, "a `let` binding");
-                }
-                if let Some(a) = &annotated {
-                    self.guard_ref_use(a, *span, "a `let` binding");
-                }
                 let inferred = init.as_ref().map(|e| self.check_expr(e));
+                // A `&T` binding may not borrow a bare scalar into storage; the
+                // declared (pattern first, then statement) reference type
+                // decides what `got` must be.
+                let pat_want = match pattern {
+                    Pattern::Binding { ty: Some(ann), .. } => {
+                        Some(self.resolved_fn_ty(ann, &self.fn_generics))
+                    }
+                    _ => None,
+                };
+                if let (Some(want), Some(got)) = (pat_want.or_else(|| annotated.clone()), &inferred)
+                {
+                    self.guard_stored_ref(&want, got, *span, "a `let` binding");
+                }
                 let final_ty = match (&annotated, &inferred) {
                     (Some(a), Some(i)) => {
                         self.check_assignable(a, i, *span, "initializer");
@@ -1418,8 +1436,8 @@ impl<'a> Checker<'a> {
                 let vt = self.check_expr(value);
                 if let Some(t) = ty {
                     let tt = self.resolved_fn_ty(t, &self.fn_generics);
-                    self.guard_ref_use(&tt, *span, "a `const` binding");
                     self.check_assignable(&tt, &vt, *span, "const initializer");
+                    self.guard_stored_ref(&tt, &vt, *span, "a `const` binding");
                     self.declare(name, tt, false);
                 } else {
                     self.declare(name, vt.clone(), false);
@@ -1463,6 +1481,7 @@ impl<'a> Checker<'a> {
                     }
                 } else {
                     self.check_assignable(&self.ret_ty.clone(), &vt, *span, "return value");
+                    self.guard_stored_ref(&self.ret_ty.clone(), &vt, *span, "a return value");
                 }
                 Ty::Empty
             }
@@ -1680,9 +1699,6 @@ impl<'a> Checker<'a> {
                 } => {
                     let ft = self.check_expr(e);
                     let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
-                    if let Some(w) = &w {
-                        self.guard_ref_use(w, *span, "a field");
-                    }
                     let w = w.or_else(|| {
                         self.resolved.types.get(&c.name).and_then(|e| match e {
                             TypeTableEntry::Class(t) | TypeTableEntry::Struct(t) => t
@@ -1710,6 +1726,7 @@ impl<'a> Checker<'a> {
                     }
                     if let Some(w) = w {
                         self.check_assignable(&w, &ft, *span, "field initializer");
+                        self.guard_stored_ref(&w, &ft, *span, "a field");
                     }
                     if manual {
                         self.consume_into_owned(e, *span, "owned field");
@@ -1725,9 +1742,6 @@ impl<'a> Checker<'a> {
                     ..
                 } => {
                     let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
-                    if let Some(w) = &w {
-                        self.guard_ref_use(w, *span, "a field");
-                    }
                     let manual =
                         self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
                     if manual {
@@ -1867,6 +1881,7 @@ impl<'a> Checker<'a> {
                     }
                     if let Some(w) = w {
                         self.check_assignable(&w, &ft, *span, "field initializer");
+                        self.guard_stored_ref(&w, &ft, *span, "a field");
                     }
                     if manual {
                         self.consume_into_owned(e, *span, "owned field");
@@ -1882,9 +1897,6 @@ impl<'a> Checker<'a> {
                     ..
                 } => {
                     let w = ty.as_ref().map(|t| self.resolved_fn_ty(t, &table.generics));
-                    if let Some(w) = &w {
-                        self.guard_ref_use(w, *span, "a field");
-                    }
                     let manual =
                         self.check_field_attributes(attrs, w.as_ref(), *is_static, *const_, *span);
                     if manual {
@@ -1923,8 +1935,6 @@ impl<'a> Checker<'a> {
                 _ => None,
             })
             .unwrap_or(Ty::Empty);
-        let ret_ty = self.ret_ty.clone();
-        self.guard_ref_use(&ret_ty, md.span, "a return type");
         // Declare `this` in scope.
         if let Some(st) = &self.self_ty {
             self.declare("this", st.clone(), false);
@@ -2983,20 +2993,48 @@ impl<'a> Checker<'a> {
 
     fn check_args(&mut self, e: &Expr, params: &[Ty], args: &[CallArg]) {
         // Smallest overload wins is not implemented; we check against the
-        // declared signature literally (positional, then named/rest).
+        // declared signature literally (positional, then named/rest). A
+        // spread (`...list`) must be the single, final argument; its elements
+        // are checked against every parameter position it fills.
         let mut position = 0usize;
-        for a in args {
+        let mut spread_elem: Option<(Span, Ty)> = None;
+        for (idx, a) in args.iter().enumerate() {
+            if a.spread {
+                if idx != args.len() - 1 {
+                    self.err(
+                        a.span,
+                        "the spread argument (`...list`) must be the last argument in the call",
+                    );
+                }
+                if spread_elem.is_some() {
+                    self.err(
+                        a.span,
+                        "only one spread argument (`...list`) is allowed per call",
+                    );
+                }
+                let at = self.check_expr(&a.value);
+                match at {
+                    Ty::List(inner) => {
+                        if spread_elem.is_none() {
+                            spread_elem = Some((a.span, (*inner).clone()));
+                        }
+                    }
+                    Ty::Unknown => {}
+                    _ => {
+                        self.err(
+                            a.span,
+                            format!("a spread argument must be a `List`, found `{at}`"),
+                        );
+                    }
+                }
+                continue;
+            }
             if let Some(name) = &a.name {
                 self.err_note(
                     a.span,
                     format!("named argument `{name}` is not supported for this call"),
                     "positional arguments are expected here",
                 );
-                let _ = self.check_expr(&a.value);
-                position += 1;
-                continue;
-            }
-            if a.spread {
                 let _ = self.check_expr(&a.value);
                 position += 1;
                 continue;
@@ -3014,7 +3052,16 @@ impl<'a> Checker<'a> {
             self.check_assignable(&want, &got, a.span, "argument");
             position += 1;
         }
-        if position < params.len() {
+        if let Some((sspan, elem)) = spread_elem {
+            // The spread fills every parameter from `position` onward.
+            if position < params.len() {
+                for k in position..params.len() {
+                    self.check_assignable(&params[k], &elem, sspan, "argument");
+                }
+            } else if position > params.len() {
+                self.err(e.span, "too many arguments in call");
+            }
+        } else if position < params.len() {
             self.err(
                 e.span,
                 format!("expected {} argument(s), found {}", params.len(), position),
@@ -3078,17 +3125,44 @@ impl<'a> Checker<'a> {
         got: &HashMap<Span, Ty>,
     ) {
         let mut position = 0usize;
-        for a in args {
+        let mut spread_elem: Option<(Span, Ty)> = None;
+        for (idx, a) in args.iter().enumerate() {
+            if a.spread {
+                if idx != args.len() - 1 {
+                    self.err(
+                        a.span,
+                        "the spread argument (`...list`) must be the last argument in the call",
+                    );
+                }
+                if spread_elem.is_some() {
+                    self.err(
+                        a.span,
+                        "only one spread argument (`...list`) is allowed per call",
+                    );
+                }
+                let gt = got.get(&a.value.span).cloned().unwrap_or(Ty::Unknown);
+                match gt {
+                    Ty::List(inner) => {
+                        if spread_elem.is_none() {
+                            spread_elem = Some((a.span, (*inner).clone()));
+                        }
+                    }
+                    Ty::Unknown => {}
+                    other => {
+                        self.err(
+                            a.span,
+                            format!("a spread argument must be a `List`, found `{other}`"),
+                        );
+                    }
+                }
+                continue;
+            }
             if let Some(name) = &a.name {
                 self.err_note(
                     a.span,
                     format!("named argument `{name}` is not supported for this call"),
                     "positional arguments are expected here",
                 );
-                position += 1;
-                continue;
-            }
-            if a.spread {
                 position += 1;
                 continue;
             }
@@ -3104,7 +3178,15 @@ impl<'a> Checker<'a> {
             self.check_assignable(&want, &got_ty, a.span, "argument");
             position += 1;
         }
-        if position < params.len() {
+        if let Some((sspan, elem)) = spread_elem {
+            if position < params.len() {
+                for k in position..params.len() {
+                    self.check_assignable(&params[k], &elem, sspan, "argument");
+                }
+            } else if position > params.len() {
+                self.err(e.span, "too many arguments in call");
+            }
+        } else if position < params.len() {
             self.err(
                 e.span,
                 format!("expected {} argument(s), found {}", params.len(), position),
@@ -3123,18 +3205,44 @@ impl<'a> Checker<'a> {
         let rest_ty = params.iter().rev().find(|p| p.rest).map(|p| p.ty.clone());
         let fixed = params.iter().filter(|p| !p.rest).count();
         let mut position = 0usize;
-        for a in args {
+        let mut spread_elem: Option<(Span, Ty)> = None;
+        for (idx, a) in args.iter().enumerate() {
+            if a.spread {
+                if idx != args.len() - 1 {
+                    self.err(
+                        a.span,
+                        "the spread argument (`...list`) must be the last argument in the call",
+                    );
+                }
+                if spread_elem.is_some() {
+                    self.err(
+                        a.span,
+                        "only one spread argument (`...list`) is allowed per call",
+                    );
+                }
+                let at = self.check_expr(&a.value);
+                match at {
+                    Ty::List(inner) => {
+                        if spread_elem.is_none() {
+                            spread_elem = Some((a.span, (*inner).clone()));
+                        }
+                    }
+                    Ty::Unknown => {}
+                    _ => {
+                        self.err(
+                            a.span,
+                            format!("a spread argument must be a `List`, found `{at}`"),
+                        );
+                    }
+                }
+                continue;
+            }
             if let Some(name) = &a.name {
                 self.err_note(
                     a.span,
                     format!("named argument `{name}` is not supported for this call"),
                     "positional arguments are expected here",
                 );
-                let _ = self.check_expr(&a.value);
-                position += 1;
-                continue;
-            }
-            if a.spread {
                 let _ = self.check_expr(&a.value);
                 position += 1;
                 continue;
@@ -3156,7 +3264,46 @@ impl<'a> Checker<'a> {
             self.check_assignable(&want, &got, a.span, "argument");
             position += 1;
         }
-        if position < fixed && args.iter().all(|a| a.name.is_none()) {
+        if let Some((sspan, elem)) = spread_elem {
+            match &rest_ty {
+                // A rest callee (println, print, ...) absorbs every element
+                // into its variadic tail, wherever the spread lands.
+                Some(rt) => {
+                    if position < fixed {
+                        let mut missing = String::new();
+                        for p in params.iter().take(fixed).skip(position) {
+                            if !missing.is_empty() {
+                                missing.push_str(", ");
+                            }
+                            missing.push_str(&p.name);
+                        }
+                        self.err_note(
+                            e.span,
+                            format!(
+                                "missing argument{} for parameter{} `{}`",
+                                if missing.contains(',') { "s" } else { "" },
+                                if missing.contains(',') { "s" } else { "" },
+                                missing
+                            ),
+                            "all required parameters must be supplied",
+                        );
+                    } else if !matches!(rt, Ty::Unknown) {
+                        self.check_assignable(rt, &elem, sspan, "argument");
+                    }
+                }
+                // A fixed-arity function: the spread fills the remaining
+                // parameter positions, exactly like `check_args`.
+                None => {
+                    if position < params.len() {
+                        for k in position..params.len() {
+                            self.check_assignable(&params[k].ty, &elem, sspan, "argument");
+                        }
+                    } else if position > params.len() {
+                        self.err(sspan, "too many arguments in call");
+                    }
+                }
+            }
+        } else if position < fixed && args.iter().all(|a| a.name.is_none()) {
             // Missing required arguments.
             let missing = &params[position..fixed];
             if !missing.is_empty() {
@@ -3822,6 +3969,7 @@ impl<'a> Checker<'a> {
                             );
                         }
                         self.check_assignable(&l.ty, &vt, target.span, "assignment");
+                        self.guard_stored_ref(&l.ty, &vt, target.span, "an assignment");
                     }
                     None => {
                         // Implicit receiver field assignment: `count = x`
@@ -3851,6 +3999,7 @@ impl<'a> Checker<'a> {
                                         );
                                     }
                                     self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
+                                    self.guard_stored_ref(&f.0.ty, &vt, target.span, "an assignment");
                                     return Ty::Empty;
                                 }
                             }
@@ -3913,6 +4062,7 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
+                            self.guard_stored_ref(&f.0.ty, &vt, target.span, "an assignment");
                             return Ty::Empty;
                         }
                         if let Some(p) = self.find_property(&gname, name) {
@@ -3930,6 +4080,7 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             self.check_assignable(&p.ty, &vt, target.span, "assignment");
+                            self.guard_stored_ref(&p.ty, &vt, target.span, "an assignment");
                             return Ty::Empty;
                         }
                         self.err(
@@ -3991,6 +4142,7 @@ impl<'a> Checker<'a> {
                             );
                         }
                         self.check_assignable(&f.0.ty, &vt, target.span, "assignment");
+                        self.guard_stored_ref(&f.0.ty, &vt, target.span, "an assignment");
                     } else if let Some(p) = self.find_property(&class, name) {
                         if !p.has_set {
                             self.err(target.span, format!("property `{name}` has no setter"));
@@ -4000,6 +4152,12 @@ impl<'a> Checker<'a> {
                             &vt,
                             target.span,
                             "assignment",
+                        );
+                        self.guard_stored_ref(
+                            &self.subst(&p.ty, &args_map),
+                            &vt,
+                            target.span,
+                            "an assignment",
                         );
                     } else {
                         self.err(
@@ -4081,6 +4239,7 @@ impl<'a> Checker<'a> {
                 };
                 self.types.insert(target.span, elem_ty.clone());
                 self.check_assign_rhs(&elem_ty, &vt, value, target.span, "assignment");
+                self.guard_stored_ref(&elem_ty, &vt, target.span, "an assignment");
             }
             _ => {
                 self.err(
@@ -4110,8 +4269,6 @@ impl<'a> Checker<'a> {
         let saved_ret = self.ret_ty.clone();
         if let Some(ty) = return_ty {
             self.ret_ty = self.resolved_fn_ty(ty, &self.fn_generics);
-            let ret_ty = self.ret_ty.clone();
-            self.guard_ref_use(&ret_ty, e.span, "a lambda return type");
         } else {
             self.ret_ty = Ty::Unknown;
         }

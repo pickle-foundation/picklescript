@@ -151,6 +151,109 @@ fn emits_for_in_range() {
 }
 
 #[test]
+fn emits_range_as_value() {
+    let m = emit_str(
+        r#"fn range_val(n: int) {
+            var r = 2..n
+            println(len(r))
+            println(r[1])
+            for (x in r) {
+                println(x)
+            }
+        }
+
+        fn range_inc(v: int) -> int {
+            var ri = 0..=v
+            return ri[len(ri) - 1]
+        }"#,
+    );
+    let symbols: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    assert!(symbols.contains(&"pickle_range"), "{:?}", symbols);
+    let dump = format!("{m}");
+    // Both materializations call the runtime to build the list.
+    assert!(dump.contains("= call extern#"), "dump:\n{dump}");
+    // `..=` bumps the end by one before materializing: `end + 1`.
+    assert!(dump.contains("binop.add"), "dump:\n{dump}");
+}
+
+#[test]
+fn emits_ref_forwarding_and_stored_refs() {
+    let m = emit_str(
+        r#"fn fwd(p: &int) -> &int {
+            return p
+        }
+
+        fn use_ref(p: &int) -> int {
+            var a: &int = p
+            var refs: List<&int> = [p]
+            return *a + *refs[0]
+        }
+
+        fn main() {
+            var t = 3
+            println(*fwd(t))
+        }"#,
+    );
+    // Storing/returning a `&T` value lowers to plain `int64` (the address),
+    // so `a: &int` and `-> &int` need no boxing.
+    let symbols: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    assert!(!symbols.contains(&"pickle_append"), "{:?}", symbols);
+    // `[p]` boxes each address with the scalar box; `*p` derefs with LoadRaw.
+    assert!(symbols.contains(&"pickle_box_i64"), "{:?}", symbols);
+    let dump = format!("{m}");
+    // The implicit borrow `fwd(t)` takes the address of the local `t`.
+    assert!(dump.contains(" = addr slot s"), "dump:\n{dump}");
+    // Dereferencing a `&int` (the stored one) is a raw load through the
+    // address; the return of `fwd` forwards the copied address directly.
+    assert!(dump.contains("loadraw."), "dump:\n{dump}");
+}
+
+#[test]
+fn emits_spread_trampolines_and_unrolls() {
+    let m = emit_str(
+        r#"class Counter {
+            var x: int
+            var y: int
+            constructor(x: int, y: int) {
+                this.x = x
+                this.y = y
+            }
+            static fn add(a: int, b: int) -> int {
+                return a + b
+            }
+            fn bump(dx: int, dy: int) -> int {
+                return this.x + this.y + dx + dy
+            }
+        }
+
+        fn add3(a: int, b: int, c: int) -> int {
+            return a + b + c
+        }
+
+        fn main() {
+            let th: List<int> = [10, 20, 30]
+            let tw: List<int> = [40, 50]
+            println(add3(...th))
+            println(Counter.add(...tw))
+            println(Counter(...tw).bump(...tw))
+            println("spread-print:", ...th)
+        }"#,
+    );
+    let symbols: Vec<&str> = m.externs.iter().map(|e| e.symbol.as_str()).collect();
+    // The spread boxed list is built, elements fetched and unboxed, and the
+    // runtime arity guard is installed.
+    assert!(symbols.contains(&"pickle_list_new"), "{:?}", symbols);
+    assert!(symbols.contains(&"pickle_list_get"), "{:?}", symbols);
+    assert!(symbols.contains(&"pickle_unbox_i64"), "{:?}", symbols);
+    assert!(symbols.contains(&"pickle_panic_arity_diff"), "{:?}", symbols);
+    // `println("spread-print:", ...th)` unrolls with length + element loads.
+    assert!(symbols.contains(&"pickle_list_len"), "{:?}", symbols);
+    assert!(symbols.contains(&"pickle_print_i64"), "{:?}", symbols);
+    let dump = format!("{m}");
+    assert!(dump.contains("fn.spread"), "dump:\n{dump}");
+}
+
+#[test]
 fn emits_string_concat_and_cmp() {
     let m = emit_str(
         r#"fn hi(name: string) -> string {

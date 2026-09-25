@@ -306,13 +306,16 @@ cannot write, a call cannot observe its own side effect through the alias.
 
 Semantics and rules:
 
-- `&T` is allowed only as a function, method, or constructor parameter type.
-  Uses elsewhere are rejected: `let x: &int`, fields, `const`, return types,
-  lambda return types — all error with "`&T` references are supported only as
-  function parameter types".
-- Callers pass the bare value; the compiler borrows implicitly. An explicit
-  `&c` still yields a raw `*T` (an `unsafe` operation) and is *not* a way to
-  satisfy `&T`.
+- `&T` may be stored and returned like any other type once a reference *value*
+  exists: `let b: &int = a` (a second `&T`), `let c: &Point = obj` (a managed
+  referent shares its identity, GC keeps it alive), fields/consts of `&T`, and
+  `-> &T` returns forwarding an existing `&T`. The one thing that is still
+  rejected is *forming* a reference to a bare scalar in a stored or returned
+  position — `let x: &int = 5`, `return 5`, `field: &int = 5`, `x = 5` all
+  error with "`&T` references may only be formed from an existing `&T` value
+  or a managed referent" (the borrow would dangle once the frame dies).
+  Callers still pass the bare value for a `&T` parameter; the compiler borrows
+  implicitly.
 - Reading is fully supported through a `&T`: `*p` and `p[0]` for scalars,
   `p.field`, `p.method(...)`, `p[i]`, and `for (v in p)` — each dereferences
   the referent. Class/struct referents pass by identity; `&int`-style referents
@@ -323,8 +326,11 @@ Semantics and rules:
 - Borrowing a `#[manualAlloc]` value does not move or free it — the borrowed
   node can be read through several `&T` parameters and the owner still frees
   it exactly once (`node.free()`).
-- `List<&T>` is rejected for GC safety ("lists of `&T` references are not
-  supported yet"): a list element cannot be a non-owning reference.
+- `List<&T>` is now supported: a list of references carries reference *values*
+  (addresses for scalar referents, identities for managed referents), so
+  forwarding a `&T` through a list keeps working while the referent lives.
+  `List<&T?>` (an option of a reference) is still rejected ("lists of `&T`
+  references are not supported yet").
 
 The syntax is reserved for these references only; the pointer operators above
 are unchanged.

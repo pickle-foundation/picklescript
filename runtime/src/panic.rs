@@ -145,6 +145,17 @@ pub extern "C" fn pickle_panic_no_iface_method() -> ! {
     pickle_panic_cstr(b"pickle: interface method dispatch found no implementation\0".as_ptr())
 }
 
+/// ABI: a call built from a spread `...args` list whose runtime element count
+/// does not match the number of parameters it must fill. The compiler emits a
+/// static arity check before the call; this fires only when a spread list's
+/// length disagrees at runtime.
+#[no_mangle]
+pub extern "C" fn pickle_panic_arity_diff() -> ! {
+    pickle_panic_cstr(
+        b"pickle: spread list does not match the expected number of arguments\0".as_ptr(),
+    )
+}
+
 /// Replace the Rust panic hook so an internal panic cannot unwind across the
 /// `extern "C"` ABI. It prints `internal error: <msg>` and exits 1.
 ///

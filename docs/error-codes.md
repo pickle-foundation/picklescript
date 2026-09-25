@@ -494,13 +494,14 @@ let p = &local
 *p = 5
 ```
 
-### E0700 · reference outside parameter
+### E0700 · stored or returned reference
 
-`&T` exists only as a function parameter type; stored or returned `&T` would
-dangle once the borrowed local goes away.
+A `&T` value may be stored or returned only when the source already is the
+reference (`&T`) or a managed referent sharing its identity; borrowing a bare
+scalar local would dangle once the frame dies.
 
 ```
-let r: &int = &x
+let r: &int = 5
 ```
 
 ## E09xx — not lowered yet

@@ -71,7 +71,7 @@ pub enum ErrorCode {
     OverwriteManual,
     LeakedOwned,
     UnsafeRequired,
-    RefParamOnly,
+StoredRef,
     // E09xx: checker accepted, codegen has no lowering yet.
     NotLowered,
 }
@@ -131,7 +131,7 @@ impl ErrorCode {
             OverwriteManual => "E0505",
             LeakedOwned => "E0506",
             UnsafeRequired => "E0520",
-            RefParamOnly => "E0700",
+            StoredRef => "E0700",
             NotLowered => "E0900",
         }
     }
@@ -453,10 +453,10 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         example: "let p = &local\n*p = 5",
     },
     CatalogueEntry {
-        code: ErrorCode::RefParamOnly,
-        title: "reference outside parameter",
-        rule: "`&T` exists only as a function parameter type; stored or returned `&T` would dangle once the borrowed local goes away.",
-        example: "let r: &int = &x",
+        code: ErrorCode::StoredRef,
+        title: "stored or returned reference",
+        rule: "a `&T` value may be stored or returned only when the source already is the reference (`&T`) or a managed referent sharing its identity; borrowing a bare scalar local would dangle once the frame dies.",
+        example: "let r: &int = 5",
     },
     CatalogueEntry {
         code: ErrorCode::NotLowered,

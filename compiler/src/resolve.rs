@@ -712,8 +712,11 @@ impl<'a> TypeCtx<'a> {
         let (name, expected): (String, Vec<String>) = match bare {
             Ty::List(_) => {
                 if let Some(e) = args.first() {
-                    let holds_refs = matches!(e, Ty::Ref(_))
-                        || matches!(e, Ty::Option(inner) if matches!(inner.as_ref(), Ty::Ref(_)));
+                    // `List<&T>` is allowed (the element is a reference value).
+                    // `List<&T?>` keeps bailing: the option-of-reference case has
+                    // no lowering yet.
+                    let holds_refs =
+                        matches!(e, Ty::Option(inner) if matches!(inner.as_ref(), Ty::Ref(_)));
                     if holds_refs {
                         self.diags.emit(
                             Diagnostic::error_at(

@@ -355,7 +355,15 @@ fn extern_pair(
     params: &[IrTy],
     ret: IrTy,
 ) -> (SigRef, GlobalValue) {
-    if let Some(p) = cache.get(symbol) {
+    // Key on the full signature: the same runtime symbol (e.g. `pickle_list_new`)
+    // may be referenced with different arities from different IR externs.
+    let mut key = String::with_capacity(symbol.len() + params.len() * 4 + 8);
+    key.push_str(symbol);
+    for p in params {
+        key.push_str(&format!(",{p:?}"));
+    }
+    key.push_str(&format!("->{ret:?}"));
+    if let Some(p) = cache.get(&key) {
         return (p.0, p.1);
     }
     let sig = extern_signature(params, ret);
@@ -367,7 +375,7 @@ fn extern_pair(
         tls: false,
     });
     let p = (sr, gv, sig);
-    cache.insert(symbol.to_string(), p);
+    cache.insert(key, p);
     (sr, gv)
 }
 
@@ -1086,6 +1094,7 @@ fn runtime_addr(name: &str) -> Option<usize> {
         "pickle_static_set" => abi::pickle_static_set as *const () as usize,
         "pickle_panic_no_match" => abi::pickle_panic_no_match as *const () as usize,
         "pickle_panic_none_unwrap" => abi::pickle_panic_none_unwrap as *const () as usize,
+        "pickle_panic_arity_diff" => abi::pickle_panic_arity_diff as *const () as usize,
         "pickle_test_capture_begin" => abi::pickle_test_capture_begin as *const () as usize,
         "pickle_test_capture_take" => abi::pickle_test_capture_take as *const () as usize,
         "pickle_test_fail_obj" => abi::pickle_test_fail_obj as *const () as usize,
@@ -1204,6 +1213,7 @@ pub fn register_runtime_symbols() {
         "pickle_static_set",
         "pickle_panic_no_match",
         "pickle_panic_none_unwrap",
+        "pickle_panic_arity_diff",
         "pickle_test_capture_begin",
         "pickle_test_capture_take",
         "pickle_test_fail_obj",
@@ -1672,6 +1682,143 @@ mod tests {
                 for ((p, q) in pairs) {
                     println(p - q)
                 }
+            }"#,
+        );
+    }
+
+    /// A range used as a *value*: `var r = 2..6` materializes a `List<int>` via
+    /// `pickle_range`, so `len(r)`, `r[i]`, and `for (x in r)` all work on the
+    /// stored range (`..=` is end-inclusive).
+    #[test]
+    fn run_range_as_value() {
+        run_source(
+            r#"fn main() {
+                var r = 2..6
+                println(len(r))
+                println(r[1])
+                println(r[len(r) - 1])
+                var t = 0
+                for (x in r) {
+                    t = t + x
+                }
+                println(t)
+                var ri = 2..=5
+                println(len(ri))
+                println(ri[0])
+                println(ri[len(ri) - 1])
+            }"#,
+        );
+    }
+
+    /// `&T` beyond parameters: references can be stored in `let`/`var` bindings,
+    /// returned from functions, kept in `List<&T>`, and dereferenced — scalar
+    /// referents by address, managed referents by identity.
+    #[test]
+    fn run_ref_values_across_positions() {
+        run_source(
+            r#"class Point {
+                x: int = 0
+                constructor(x: int) {
+                    this.x = x
+                }
+            }
+
+            fn fwd(p: &int) -> &int {
+                return p
+            }
+
+            fn sum2(a: &int, b: &int) -> int {
+                return *a + *b
+            }
+
+            fn collect(p: &int) -> int {
+                var refs: List<&int> = [p]
+                var total = 0
+                for (r in refs) {
+                    total = total + *r
+                }
+                return total
+            }
+
+            fn main() {
+                var t = 7
+                var s = 13
+                let r1: &int = fwd(t)
+                var q: &int = r1
+                println(*r1)
+                println(sum2(t, s))
+                println(sum2(r1, q))
+                println(collect(t))
+                var o = Point(5)
+                let pc: &Point = o
+                var objs: List<&Point> = [pc]
+                for (pp in objs) {
+                    println(pp.x)
+                }
+                println(objs[0].x)
+            }"#,
+        );
+    }
+
+    /// Spread arguments (`f(...xs)`) across every static call target: a plain
+    /// function (whole-list and prefix + spread), a struct-like constructor, a
+    /// static and instance method (including a chained `Ctor(...xs).m(...ys)`
+    /// receiver), a generic function, and variadic `println`/`print` where the
+    /// spread unrolls element-by-element. The runtime arity guard is exercised
+    /// only implicitly here (a separate panic test covers the mismatch path).
+    #[test]
+    fn run_spread_arguments() {
+        run_source(
+            r#"class Point {
+                x: int = 0
+                y: int = 0
+                constructor(x: int, y: int) {
+                    this.x = x
+                    this.y = y
+                }
+                fn sum() -> int {
+                    return this.x + this.y
+                }
+            }
+
+            class Counter {
+                var x: int
+                var y: int
+                constructor(x: int, y: int) {
+                    this.x = x
+                    this.y = y
+                }
+                static fn add(a: int, b: int) -> int {
+                    return a + b
+                }
+                fn bump(dx: int, dy: int) -> int {
+                    return this.x + this.y + dx + dy
+                }
+            }
+
+            fn add3(a: int, b: int, c: int) -> int {
+                return a + b + c
+            }
+
+            fn generic3<T>(a: T, b: T, c: T) -> T {
+                return b
+            }
+
+            fn main() {
+                let th: List<int> = [10, 20, 30]
+                let tw: List<int> = [40, 50]
+                let ys: List<string> = ["a", "b"]
+                println(add3(...th))
+                println(add3(th[0], ...tw))
+                let p = Point(...tw)
+                println(p.x, p.y, p.sum())
+                println(Counter.add(...tw))
+                println(generic3<int>(...th))
+                println("spread-print:", ...th)
+                print("inline", 9, 7, "\n", ...tw)
+                println("strings:", ...ys)
+                println(Counter(...tw).bump(...tw))
+                println("done")
             }"#,
         );
     }

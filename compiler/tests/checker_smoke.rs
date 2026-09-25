@@ -2524,10 +2524,10 @@ fn rejects_assign_in_unsafe_over_ref_still_errors() {
 }
 
 #[test]
-fn rejects_non_param_ref_positions() {
+fn rejects_bare_scalar_stored_refs() {
     let d = check_str(
         r#"class Box {
-            b: &int
+            b: &int = 5
         }
 
         fn badRet() -> &int {
@@ -2537,36 +2537,54 @@ fn rejects_non_param_ref_positions() {
         fn main() {
             let x: &int = 5
             const y: &int = 6
-            var cx: Box = Box()
-            let v: List<&int> = []
+            var cx = Box()
+            var z: &int = x
+            z = 7
         }"#,
     );
     let msgs = error_msgs(&d);
     assert!(has_errors(&d), "expected errors, got none");
     assert!(
-        msgs.contains("supported only as function parameter types (a field)"),
-        "expected a field diagnostic, got:\n{msgs}"
+        msgs.contains("`&T` references may only be formed from an existing `&T` value or a managed referent"),
+        "expected stored-ref diagnostics (field/return/let/const/assignment), got:\n{msgs}"
     );
     assert!(
-        msgs.contains("supported only as function parameter types (a return type)"),
-        "expected a return-type diagnostic, got:\n{msgs}"
-    );
-    assert!(
-        msgs.contains("supported only as function parameter types (a `let` binding)"),
-        "expected a let-binding diagnostic, got:\n{msgs}"
-    );
-    assert!(
-        msgs.contains("supported only as function parameter types (a `const` binding)"),
-        "expected a const-binding diagnostic, got:\n{msgs}"
-    );
-    assert!(
-        msgs.contains("lists of `&T` references are not supported yet"),
-        "expected a list-of-references diagnostic, got:\n{msgs}"
+        !msgs.contains("lists of `&T` references are not supported yet"),
+        "plain `List<&T>` must type-check now, got:\n{msgs}"
     );
 }
 
 #[test]
-fn rejects_method_and_lambda_ref_returns() {
+fn accepts_stored_refs_from_values() {
+    let d = check_str(
+        r#"class Point {
+            x: int = 0
+        }
+
+        fn fwd(p: &int) -> &int {
+            return p
+        }
+
+        fn main() {
+            var t = 3
+            let a: &int = fwd(t)
+            let b: &int = a
+            var o = Point()
+            let c: &Point = o
+            var refs: List<&int> = [a, b]
+            var objs: List<&Point> = [c]
+            println(*a)
+        }"#,
+    );
+    assert!(
+        !has_errors(&d),
+        "expected stored `&T` to type-check, got:\n{}",
+        error_msgs(&d)
+    );
+}
+
+#[test]
+fn rejects_bare_scalar_method_and_lambda_ref_returns() {
     let d = check_str(
         r#"class Point {
             x: int
@@ -2576,24 +2594,28 @@ fn rejects_method_and_lambda_ref_returns() {
             }
         }
 
+        fn take(p: &int) -> int {
+            return *p
+        }
+
         fn lambdaRet() -> int {
-            let f = fn(p: int) -> &int { return 1 }
+            let f = fn() -> &int { return 1 }
             return 1
         }
 
+        fn okRet(p: &int) -> &int {
+            return p
+        }
+
         fn main() {
-            println(3)
+            println(take(1))
         }"#,
     );
     let msgs = error_msgs(&d);
     assert!(has_errors(&d), "expected errors, got none");
     assert!(
-        msgs.contains("supported only as function parameter types (a return type)"),
-        "expected a method return-type diagnostic, got:\n{msgs}"
-    );
-    assert!(
-        msgs.contains("supported only as function parameter types (a lambda return type)"),
-        "expected a lambda return-type diagnostic, got:\n{msgs}"
+        msgs.contains("`&T` references may only be formed from an existing `&T` value or a managed referent"),
+        "expected stored-ref diagnostics for method/lambda returns, got:\n{msgs}"
     );
 }
 
